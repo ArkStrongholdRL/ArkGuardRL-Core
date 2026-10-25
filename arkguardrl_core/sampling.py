@@ -22,6 +22,7 @@ from .routes import residual as rp
 from .recording import RecordingEnv
 from .io import sha, write
 from .construction import potential as construction_potential
+from .ready_cost import ReadyCost
 
 ROLLOUT_SCHEMA = 'arkguardrl-core/live-capture-receipt/v1'
 
@@ -133,6 +134,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     ctx.collection_index += 1
     used_bytes = 0
     reward = rewards.NativeProgressCore()
+    ready_cost = ReadyCost(ctx.config['end_prep_loss']) if ctx.config.get('end_prep_loss') else None
     counts, components = Counter(), Counter()
     rejected, total_reward = 0, 0.0
     started = time.monotonic()
@@ -207,6 +209,12 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             if type(result.accepted) is not bool:
                 raise RuntimeError('Selected action was not executed; batch not trained')
             info = reward.step(before, result.observation)
+            if ready_cost is not None:
+                loss,receipt=ready_cost.step(before,result.observation,action,result.accepted)
+                info={**info,'schema':ctx.objective_contract.reward_schema,
+                    'base_schema':info['schema'],'reward':info['reward']-loss,
+                    'components':{**info['components'],'end_prep_loss':-loss},
+                    'end_prep_loss':receipt}
             construction=ctx.config.get('construction_potential')
             if construction is not None:
                 before_phi=construction_potential(before,ctx.public,construction)

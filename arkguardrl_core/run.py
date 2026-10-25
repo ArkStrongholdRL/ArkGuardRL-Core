@@ -22,10 +22,13 @@ class SamplerConfig:
     trace_max_bytes: int = 64*1024**2
     prep_action_cost: float = 0.0
     construction_potential: dict | None = None
+    end_prep_loss: dict | None = None
 
     def __post_init__(self):
         from .construction import validate
         validate(self.construction_potential)
+        from .ready_cost import validate as validate_ready_cost
+        validate_ready_cost(self.end_prep_loss)
         for name in ('max_decisions', 'max_advances', 'max_episode_bytes', 'full_trace_every', 'trace_max_bytes'):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError('Positive integer sampler bound required: '+name)
@@ -108,9 +111,15 @@ class Run:
             if self.contract.gamma != 1.:
                 raise ValueError('Construction potential implementation requires native gamma1')
             objective['construction_potential']=cfg
+        if self.sampler.end_prep_loss is not None:
+            cfg=self.sampler.end_prep_loss
+            if not set(cfg['bonds'])<=set(self.public.bond_rules()):
+                raise ValueError('End-PREP loss covenant absent from public catalog')
+            objective['end_prep_loss']=cfg
         cost_schema = 'arkguardrl-core/prep-attempt-cost/'+fingerprint(objective)+'/v1'
         self.objective_contract = (replace(self.contract, reward_schema=cost_schema)
-            if self.cost_arm or self.sampler.construction_potential is not None else self.contract)
+            if self.cost_arm or self.sampler.construction_potential is not None
+            or self.sampler.end_prep_loss is not None else self.contract)
         self._sources, self._native_sources = source_hashes(), neural.source_hashes()
         self._last_source_check = -float('inf')
         self._configuration = fingerprint({'sampler': self.config, 'ppo': self.training})
