@@ -12,12 +12,22 @@ from .models import Policy
 from .routes import features as route
 
 SCHEMA = 'arkguardrl-core/frozen-base-covenant-residual/v1'
+CONTEXT_SCHEMA = 'arkguardrl-core/full-entity-context-residual/v1'
 
 
 def validate(config):
-    if set(config) != {'schema', 'bond', 'band_index', 'hidden', 'logit_bound'}:
+    fields = {'schema', 'bond', 'band_index', 'hidden', 'logit_bound'}
+    if config.get('schema') == CONTEXT_SCHEMA:
+        fields |= {'encoder', 'layers', 'heads', 'ff_multiplier'}
+        if config['encoder'] not in ('pool', 'transformer'):
+            raise ValueError('Explicit full-context encoder required')
+        if config['layers'] != 2 or config['heads'] != 4 or config['hidden'] % config['heads']:
+            raise ValueError('Two bounded layers and four dividing heads required')
+        if config['ff_multiplier'] not in (2, 4):
+            raise ValueError('Bounded feedforward multiplier required')
+    if set(config) != fields:
         raise ValueError('Explicit specialist configuration required')
-    if config['schema'] != SCHEMA or config['bond'] not in layout.BOND_IDS:
+    if config['schema'] not in (SCHEMA, CONTEXT_SCHEMA) or config['bond'] not in layout.BOND_IDS:
         raise ValueError('Unknown specialist representation or covenant')
     if type(config['band_index']) is not int or not 0 < config['band_index'] < layout.ENTITY_VOCAB:
         raise ValueError('Public fixed-band catalog index required')
@@ -70,6 +80,10 @@ class SpecialistPolicy(Policy):
         candidates = torch.cat((referred[:, :, :, layout.ENTITY_PREFIX:], identities), -1).flatten(2)
         features = torch.cat((state[:, None].expand(-1, count, -1), candidates, actions[:, :, 5:], routes), -1)
         delta = self.specialist_config['logit_bound'] * self.specialist_actor(features).squeeze(-1).tanh()
+        value_delta = self.specialist_value(state).squeeze(-1)
+        return self.finish(logp, value, delta, value_delta, gate, referred, actions, valid)
+
+    def finish(self, logp, value, delta, value_delta, gate, referred, actions, valid):
         adjusted = logp + delta*gate[:, None]
         # Band selection is part of the declared actor for collection AND replay.
         # Finite zero-probability logits keep the existing PPO audit contract.
@@ -82,5 +96,5 @@ class SpecialistPolicy(Policy):
             raise ValueError('Fixed band not present exactly once in legal actor candidates')
         forced = torch.where(fixed, adjusted.new_zeros(()), adjusted.new_full((), -1e9))
         adjusted = torch.where(has_band[:, None], forced, adjusted).masked_fill(~valid, -torch.inf)
-        values = value + self.specialist_value(state).squeeze(-1)*gate
+        values = value + value_delta*gate
         return adjusted.log_softmax(1), values

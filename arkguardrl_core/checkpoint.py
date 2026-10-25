@@ -57,8 +57,13 @@ def load(path, contract):
     if declared != ident or payload['identity_sha256'] != fingerprint(ident):
         raise ValueError('Core input/source/model identity mismatch')
     if 'specialist' in declared:
-        from .specialist import SpecialistPolicy
-        model = SpecialistPolicy(contract, payload['definitions'], declared['width'], declared['route_backend'], declared['specialist'])
+        from .specialist import SpecialistPolicy, CONTEXT_SCHEMA
+        if declared['specialist']['schema'] == CONTEXT_SCHEMA:
+            from .entity_context import EntityContextPolicy
+            policy_type = EntityContextPolicy
+        else:
+            policy_type = SpecialistPolicy
+        model = policy_type(contract, payload['definitions'], declared['width'], declared['route_backend'], declared['specialist'])
     else:
         model = Policy(contract, payload['definitions'], declared['width'], declared['route_backend'])
     restore_verified_state(model, payload['state_dict'])
