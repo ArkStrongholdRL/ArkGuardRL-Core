@@ -53,6 +53,9 @@ class _SupportTable:
     def supports(self, u):
         key = frozenset(u['cover'])
         if key not in self.covers:
+            if len(self.covers) >= MAX_CANDIDATES:
+                self.covers.clear()
+                self.blocker_totals.clear()
             self.covers[key] = frozenset(at for at, needed in self.required.items() if needed <= key)
         return self.covers[key]
 

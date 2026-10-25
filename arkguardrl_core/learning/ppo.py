@@ -98,7 +98,10 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
     started = time.monotonic()
     prepared, prepared_bytes = [], 0
     for index, row in enumerate(rows):
-        item = data.prepare(actor, row.inputs())
+        # Live rollout storage remains owned for this synchronous update.
+        # Collation copies its inputs; neither preparation nor training mutates
+        # the retained tensors. Avoid a second complete candidate/route bank.
+        item = data.prepare(actor, row.inputs(), copy_inputs=False)
         item['anchor_logps'] = rows[index].anchor_logps
         item['old_logps'] = rows[index].old_logps
         item['labels'] = torch.tensor([rows[index].capture['index'], rows[index].capture['old_logp'],

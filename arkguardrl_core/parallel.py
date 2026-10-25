@@ -19,7 +19,7 @@ from .io import sha, write
 from .transport import decode_row
 
 FRAME_BYTES = 1024 * 1024
-WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v3'
+WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v4'
 
 
 def _receive(connection, deadline):
@@ -81,7 +81,7 @@ def _worker(connection, data_connection, ctx, options):
             load_seconds = time.monotonic()-load_started
             if sampling.weights_hash(model) != task['weights_sha256']:
                 raise ValueError('Worker actor parameter identity mismatch')
-            sender = RowSender(data_connection, token, ctx, options['transfer_window'], options['queue_rows'])
+            sender = RowSender(data_connection, token, ctx, options['transfer_window'], options['queue_rows'], options['block_rows'])
             inference_bytes = 0
 
             def infer(inputs, index):
@@ -140,17 +140,18 @@ def _worker(connection, data_connection, ctx, options):
 class Collector:
     """Reusable across PPO iterations; no learning or GPU model in the workers."""
     def __init__(self, ctx, workers=4, *, transfer_mode='stream', transfer_window=4, queue_rows=2,
-                 model_cache=True, inference_mode='local', inference_wait_ms=2.):
+                 model_cache=True, inference_mode='local', inference_wait_ms=2., block_rows=8):
         if type(workers) is not int or not 1 <= workers <= 16:
             raise ValueError('Collector workers must be 1..16')
         if transfer_mode not in ('stream', 'episode') or inference_mode not in ('local', 'batch-cpu', 'batch-mps'):
             raise ValueError('Unknown explicit collection execution mode')
         if (type(transfer_window) is not int or not 1 <= transfer_window <= 16
                 or type(queue_rows) is not int or not 1 <= queue_rows <= 8
-                or not 0 <= inference_wait_ms <= 50 or type(model_cache) is not bool):
+                or not 0 <= inference_wait_ms <= 50 or type(model_cache) is not bool
+                or type(block_rows) is not int or not 1 <= block_rows <= 32):
             raise ValueError('Invalid bounded collector settings')
         self.options = dict(transfer_mode=transfer_mode, transfer_window=transfer_window,
-                            queue_rows=queue_rows, model_cache=model_cache,
+                            queue_rows=queue_rows, block_rows=block_rows, model_cache=model_cache,
                             inference_mode=inference_mode, inference_wait_ms=inference_wait_ms)
         self._anchor = self._anchor_key = None
         self.ctx, self.workers = ctx, workers
@@ -241,7 +242,7 @@ class Collector:
                 task = pending.popleft()
                 active[child['pipe']] = {'child': child, 'task': task, 'rows': [],
                     'report': None, 'buffer': bytearray(), 'row_length': None,
-                    'digest': None, 'wire_bytes': 0, 'raw_bytes': 0, 'decode_seconds': 0.0,
+                    'digest': None, 'block_rows': None, 'wire_bytes': 0, 'raw_bytes': 0, 'decode_seconds': 0.0,
                     'next_inference': 0, 'inference_pending': False}
                 child['pipe'].send(task)
                 if not pending:
@@ -299,16 +300,20 @@ class Collector:
                         state['report'] = report
                     elif kind == 'frame':
                         part = message['payload']
-                        if (message['index'] != len(state['rows'])
+                        if (type(message.get('rows')) is not int or not 1 <= message['rows'] <= self.options['block_rows']
+                                or len(state['rows'])+message['rows'] > self.ctx.config['max_decisions']
+                                or message['index'] != len(state['rows'])
                                 or len(state['rows']) >= self.ctx.config['max_decisions']
-                                or (state['report'] is not None and len(state['rows']) >= state['report']['decisions'])
+                                or (state['report'] is not None and len(state['rows'])+message['rows'] > state['report']['decisions'])
                                 or not isinstance(part, bytes) or not 0 < len(part) <= FRAME_BYTES
                                 or message['offset'] != len(state['buffer'])
                                 or not 0 < message['length'] <= self.ctx.config['max_episode_bytes']):
                             raise ValueError('Live frame bounds/order mismatch')
                         if state['row_length'] is None:
                             state['row_length'], state['digest'] = message['length'], message['sha256']
-                        if message['length'] != state['row_length'] or message['sha256'] != state['digest']:
+                            state['block_rows'] = message['rows']
+                        if (message['length'] != state['row_length'] or message['sha256'] != state['digest']
+                                or message['rows'] != state['block_rows']):
                             raise ValueError('Live row frame identity changed')
                         state['buffer'].extend(part)
                         total_wire += len(part)
@@ -319,24 +324,30 @@ class Collector:
                             if hashlib.sha256(state['buffer']).hexdigest() != state['digest']:
                                 raise ValueError('Live row transport digest mismatch')
                             decode_started = time.monotonic()
-                            row, raw_bytes = decode_row(state['buffer'], self.ctx.config['max_episode_bytes'])
+                            if self.options['block_rows'] == 1:
+                                row, raw_bytes = decode_row(state['buffer'], self.ctx.config['max_episode_bytes'])
+                                block = [row]
+                            else:
+                                from .columnar import decode_rows
+                                block, raw_bytes = decode_rows(state['buffer'], self.ctx.config['max_episode_bytes'], state['block_rows'])
                             state['decode_seconds'] += time.monotonic()-decode_started
                             state['raw_bytes'] += raw_bytes
                             total_raw += raw_bytes
                             if total_raw > self.ctx.ppo.max_buffer_bytes:
                                 raise MemoryError('Inflated live transport exceeds buffer budget')
-                            transition = row.transition
-                            expected_episode = ('games/'
-                                f'{os.path.basename(task["directory"])}/{task["seed"]}/{revision}')
-                            if (transition is None or transition.episode_id != expected_episode
-                                    or transition.decision_index != len(state['rows'])
-                                    or row.capture['episode_id'] != expected_episode
-                                    or row.policy_sha != policy_sha
-                                    or any(v.device.type != 'cpu' for v in row.inputs().values())):
-                                raise ValueError('Live row identity/device mismatch')
-                            state['rows'].append(row)
+                            for row in block:
+                                transition = row.transition
+                                expected_episode = ('games/'
+                                    f'{os.path.basename(task["directory"])}/{task["seed"]}/{revision}')
+                                if (transition is None or transition.episode_id != expected_episode
+                                        or transition.decision_index != len(state['rows'])
+                                        or row.capture['episode_id'] != expected_episode
+                                        or row.policy_sha != policy_sha
+                                        or any(v.device.type != 'cpu' for v in row.inputs().values())):
+                                    raise ValueError('Live row identity/device mismatch')
+                                state['rows'].append(row)
                             state['buffer'] = bytearray()
-                            state['row_length'] = state['digest'] = None
+                            state['row_length'] = state['digest'] = state['block_rows'] = None
                         connection.send(('ack', task['token'], message['index'], message['offset']))
                     elif kind == 'done':
                         if (state['report'] is None or state['buffer']

@@ -61,7 +61,12 @@ def validate_expanded(obs, actions):
         raise ValueError('Invalid execution budget context')
 
 
-def prepare(model, row):
+def prepare(model, row, *, copy_inputs=True):
+    """Validate/expand inputs; optionally borrow caller-owned read-only tensors.
+
+    Borrowing keeps the tensors alive but shares storage. The caller must retain
+    exclusive mutation ownership until all collation/update work finishes.
+    """
     if next(model.parameters()).device.type != 'cpu':
         raise ValueError('Prepare public inputs with the CPU actor')
     if any(value.device.type != 'cpu' for value in row.values()):
@@ -77,7 +82,8 @@ def prepare(model, row):
         obs = model.base.definitions.expand(row['obs'])
         validate_expanded(obs, row['candidates'])
     facts = obs[layout.FACT_START:layout.CONTROL_START].reshape(layout.MAX_FACTS, layout.FACT_DIM)
-    return {k: v.detach().clone() for k, v in row.items() if k != 'obs'} | {
+    return {k: (v.detach().clone() if copy_inputs else v.detach())
+            for k, v in row.items() if k != 'obs'} | {
         'tables': obs[:layout.FACT_START].clone(),
         'control': obs[layout.CONTROL_START:].clone(), 'facts': facts[facts[:, 0] == 1].clone()}
 

@@ -33,6 +33,7 @@ def main():
     run.add_argument('--transfer-mode', choices=('stream', 'episode'), default='stream')
     run.add_argument('--transfer-window', type=int, default=4, help='Outstanding 1 MiB frames per worker (1..16)')
     run.add_argument('--queue-rows', type=int, default=2, help='Bounded sender queue per worker (1..8)')
+    run.add_argument('--transport-rows', type=int, default=8, help='Rows per columnar block (1 uses legacy row codec; max 32)')
     run.add_argument('--no-model-cache', action='store_true', help='Reload both policies per game for comparison')
     run.add_argument('--inference-mode', choices=('local', 'batch-cpu', 'batch-mps'), default='local')
     run.add_argument('--inference-wait-ms', type=float, default=2., help='Maximum batching wait (0..50 ms)')
@@ -60,7 +61,8 @@ def main():
         parser.error('Workers must be 1..16')
     if args.iterations < 1 or len(args.seeds) % args.iterations:
         parser.error('Seeds must split into nonempty equal groups for iterations')
-    if not 1 <= args.transfer_window <= 16 or not 1 <= args.queue_rows <= 8 or not 0 <= args.inference_wait_ms <= 50:
+    if (not 1 <= args.transfer_window <= 16 or not 1 <= args.queue_rows <= 8
+            or not 1 <= args.transport_rows <= 32 or not 0 <= args.inference_wait_ms <= 50):
         parser.error('Invalid bounded transfer/inference settings')
     games_per_iteration = len(args.seeds)//args.iterations
     learn._setup_torch(seed=args.rng_seed)
@@ -77,7 +79,7 @@ def main():
         checked_anchor, _ = checkpoint.load(args.anchor, ctx.contract)
         del checked_anchor
         options = dict(transfer_mode=args.transfer_mode, transfer_window=args.transfer_window,
-            queue_rows=args.queue_rows, model_cache=not args.no_model_cache,
+            queue_rows=args.queue_rows, block_rows=args.transport_rows, model_cache=not args.no_model_cache,
             inference_mode=args.inference_mode, inference_wait_ms=args.inference_wait_ms)
         write(ctx.root/'inputs.json', {'checkpoint_sha256': sha(args.checkpoint), 'anchor_sha256': sha(args.anchor),
             'seeds': args.seeds, 'rollout_rng_start': args.rng_seed, 'optimizer_rng': args.rng_seed,

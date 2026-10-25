@@ -278,3 +278,40 @@ are in `ArkGuardRL/docs/research/20261025/optimization-single-receipt.json`.
   speedup inferred from that ratio. Frozen and final complete live game/MPS PPO
   runs matched 297 actions/states, with four updates each. Detailed receipts are
   in research `results/runtime-feature-blocks-20261025`.
+
+## Columnar live blocks and borrowed PPO preparation (2026-10-25)
+
+- Pipe v4 carries bounded blocks (default 8, maximum 32 live rows). Each tensor
+  field has an owned contiguous CPU slab and validated ragged shape/offset table;
+  decoded row views do not overlap. Full observations, transitions, candidates,
+  geometry and audit metadata remain. The legacy row codec is selectable with
+  `--transport-rows 1`. Partial blocks flush at episode completion; unfinished
+  episodes still cannot reach PPO. This is not cross-process shared memory.
+- PPO preparation borrows retained live tensors for the synchronous update;
+  collation copies execution blocks and never mutates the source bank. Generic
+  prepare still defaults to independent copies. Live capture/preparation and
+  decompression budgets remain enforced; they do not bound total process RSS.
+  The persistent board support cache also has an explicit eviction bound.
+- Codec checks covered exact legacy values/dtypes/metadata, ragged/empty and
+  noncontiguous inputs, storage lifetime after packet release, nonoverlapping
+  slices, invalid offsets/shapes/dtypes/duplicate fields and byte limits. Sender
+  checks covered full/partial blocks, bounded frames/queue, ordering, wrong and
+  absent ACKs, and shutdown. A real truncated game discarded eight rows already
+  staged in the parent and closed the worker without returning training data.
+- Matched live games/PPO and two eight-game, four-worker pairs preserved behavior;
+  selected rollout log probabilities and values also matched the frozen baseline
+  exactly. Final checkpoints/optimizers strictly reloaded with CPU storage. Two
+  persistent PPO rounds completed 923 decisions and eight updates, reusing worker
+  and Node PIDs and preserving Adam steps 4 -> 8.
+- On one freshly collected 297-decision batch, copied versus borrowed CPU PPO
+  updates were bitwise equal; inputs were unchanged after all updates. MPS weights
+  were not bitwise reproducible even for identical-mode repeated updates (maximum
+  difference 3.96e-5 in this check); no bitwise GPU weight claim is made. Existing
+  pre-update probability/value replay checks passed in every full PPO run.
+- Eight-game payload fell from about 93.66 to 53.33 MiB, frames 1519 -> 195.
+  End-to-end collection varied: 17.56 -> 17.73 s in one pair, 17.33 -> 16.62 s in
+  reverse order. Encoding/decoding costs fell in both pairs. Four-worker peak RSS
+  slightly increased (final pair 4.56 -> 4.70 GiB); reduced copying is not a claim
+  of lower aggregate RSS. Final single-game entrypoint was 14.24 s; two-round
+  entrypoint was 29.98 s. All measurements/limitations are in research
+  `docs/research/20261025/FEATURE-BLOCKS.md` and its JSON receipt.
