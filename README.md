@@ -54,7 +54,7 @@ objective contract并记录具体系数，不能冒充原生或历史成本目�
 由选定公开catalog独立构造。可使用Run的public/contract；新模型保存后才绑定live策略。
 路线模型目前支持width1/width2的参数布局，拆分前完整批量实测只有width1。
 
-新的路线采样/批量入口每次只执行一轮PPO，种子与输入文件由调用方显式传入：
+路线采样/批量入口默认执行一轮PPO；可显式指定多轮，种子与输入文件由调用方传入：
 
 ```sh
 python -m arkguardrl_core iterate \
@@ -70,7 +70,7 @@ python -m arkguardrl_core iterate \
 
 示例种子只是命令形式，不是推荐的正式训练/评估划分。输出目录必须全新；加
 `--collect-only`可只采样。`--workers 1`也使用同一采样器，按局串行并复用Node。
-actor/anchor在CPU，学习端可选CPU/MPS；
+默认每worker的actor/anchor在CPU，学习端可选CPU/MPS；
 CUDA代码路径可显式选择但拆分前没有本机硬件验证。设备不可用明确拒绝，不自动回退。
 较大batch可能按候选补齐估计分块，按样本数加权累积，逻辑batch只裁剪/更新一次。
 估计不是内存峰值保证；单状态超限明确停止，不删候选。
@@ -78,6 +78,12 @@ CUDA代码路径可显式选择但拆分前没有本机硬件验证。设备不�
 每个spawn worker使用一个Torch线程并独占Node、history和反馈流。每轮冻结同一策略，
 父进程按任务顺序收齐完整自然终止对局，再执行PPO；任一局失败则整轮不更新。
 回传的是本轮live行，逐行拆成最多1MiB、有确认和摘要校验的帧，不从历史日志恢复。
+默认`--transfer-mode stream`在下一决策补齐bootstrap后开始回传，用独立线程与数据pipe
+重叠采样和编码/回传；控制与可选推理走另一条pipe。每worker默认最多4帧未确认、
+2行等待编码（`--transfer-window 1..16`、`--queue-rows 1..8`）。父进程暂存的行
+必须等整局审计通过且帧收齐才交给PPO；失败则整轮丢弃。`--transfer-mode episode`
+保留整局结束后再回传的对照模式。流式回传仍在worker保留本局行用于审计，
+会与父进程暂存重叠；它减少结束时等待，并不保证降低总RSS。
 CPU张量按原dtype/shape编码成连续字节，与完整元数据一起用zlib level1无损压缩；
 接收端限制解压大小，重建独立可写CPU存储。没有删候选、降低精度或省略审计字段。
 报告区分压缩载荷、解压后载荷、张量/元数据大小及编解码时间；`wire_bytes`只统计
@@ -87,9 +93,27 @@ CPU张量按原dtype/shape编码成连续字节，与完整元数据一起用zli
 这些是数据/分配估计预算，不能当作进程RSS硬限制。
 
 可在Python中跨轮保留`arkguardrl_core.parallel.Collector`上下文，多次调用`collect`；
-每次传入新checkpoint、anchor、种子、RNG和递增revision。worker只在输入文件变化时
-重新加载权重，Node跨局复用；每局结束先dispose旧match和scheduler，再建立新游戏。
-CLI每次只运行一轮，退出时清理worker及其Node。
+每次传入新checkpoint、anchor、种子、RNG和递增revision。actor/anchor分别按文件内容
+缓存；actor更新不会重载未变的anchor。每局绑定复用严格加载回执，同时重新检查
+源码、文件和当前参数哈希。`--no-model-cache`供重载对照。Node跨局复用；每局结束
+先dispose旧match和scheduler，再建立新游戏。
+
+CLI的`--iterations N`将显式种子列表按顺序均分成N组，所有种子须唯一。worker、
+Node、优化器和优化器随机流跨轮复用，anchor固定，下一轮actor使用本轮新检查点。
+`--collect-only --iterations N`可测试同权重复用。每轮保存`iteration-XXXX.json`与
+`episodes-rXXXX.json`，最终输出`summary.json`；`--max-wall`是整个运行的总预算。
+每局抽样使用独立CPU Generator，不受worker调度、模型构造或推理batch顺序消耗RNG
+的影响。协议为`per-episode-cpu-generator/v1`，旧版本种子的具体轨迹会改变。
+
+实验选项`--inference-mode batch-cpu|batch-mps`把多个worker的当前决策汇集到父进程，
+保留完整候选并按执行内存预算分块，最多等待`--inference-wait-ms`（默认2ms）。
+每worker仍负责自己的特征、游戏、采样RNG和日志；默认`local`不发送推理请求。
+推理请求另有`inference_request_bytes`统计，不计入live行的`wire_bytes`。
+合批数较小时请求传输、同步与等待可能超过计算收益，应以同种子完整局实测决定。
+报告提供各worker完成局数、任务占用率、最后派发至结束的尾部时长、分项耗时、
+加载次数、传输窗口、进程峰值RSS及推理batch分布。单进程RSS不含Node；总峰值
+需外部按进程树采样。流式`transfer_seconds`表示游戏结束后剩余回传等待，
+`encode_seconds`等重叠阶段的耗时不能直接相加当作总耗时。
 
 PPO更新前概率/价值核对和更新后KL统计复用准备好的输入，按学习设备批量执行；
 输入准备保留索引、引用、语义事实和预算校验，不再通过完整encoder前向做检查。

@@ -3,9 +3,11 @@
 Historical route checkpoints must be strictly loaded in their frozen research
 checkout and explicitly adopted; this loader never rewrites old identities.
 """
+from pathlib import Path
 from arkguardrl import neural
 from arkguardrl.contracts import fingerprint
 from .identity import source_hashes
+from .io import sha
 from .models import Policy, SCHEMA
 from .routes import residual
 
@@ -35,8 +37,12 @@ def save(path, model, contract, metadata):
         'identity_sha256': fingerprint(ident), 'definitions': model.base.definitions.bank,
         'metadata': metadata, 'state_dict': {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}})
 
+    from .sampling import weights_hash
+    model._core_load_receipt = (str(Path(path).resolve()), sha(path), fingerprint(ident), weights_hash(model))
+
 
 def load(path, contract):
+    file_sha = sha(path)
     payload = neural.load_payload(path)
     if payload.get('schema') != SCHEMA:
         raise ValueError('Extracted core checkpoint required; adopt verified legacy weights explicitly')
@@ -45,4 +51,25 @@ def load(path, contract):
     if declared != ident or payload['identity_sha256'] != fingerprint(ident):
         raise ValueError('Core input/source/model identity mismatch')
     model = Policy(contract, payload['definitions'], declared['width'], declared['route_backend'])
-    return restore_verified_state(model, payload['state_dict']), payload['metadata']
+    restore_verified_state(model, payload['state_dict'])
+    if sha(path) != file_sha:
+        raise ValueError('Checkpoint changed during strict load')
+    from .sampling import weights_hash
+    model._core_load_receipt = (str(Path(path).resolve()), file_sha,
+                               fingerprint(ident), weights_hash(model))
+    return model, payload['metadata']
+
+
+def verify_bound(model, path, contract):
+    """Reuse strict load evidence, but recheck source, file and live parameters."""
+    from .sampling import weights_hash
+    receipt = getattr(model, '_core_load_receipt', None)
+    current = (str(Path(path).resolve()), sha(path),
+               fingerprint(identity(contract, model.width, model.route_backend)), weights_hash(model))
+    if receipt is None:
+        restored, _ = load(path, contract)
+        if restored._core_load_receipt != current:
+            raise ValueError('Live actor differs from the declared checkpoint')
+        model._core_load_receipt = current
+    elif receipt != current:
+        raise ValueError('Strict load receipt differs from current source/file/parameters')

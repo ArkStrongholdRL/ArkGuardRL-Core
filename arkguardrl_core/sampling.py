@@ -114,12 +114,12 @@ def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason
 
 
 def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directory, log_mode=None,
-            session_pool=None):
+            session_pool=None, on_row=None, inference=None):
     """Collect one complete live episode. Never reload PPO rows from artifacts."""
     ctx.check(sources=True)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
-    torch.manual_seed(rng_seed)
+    rng = torch.Generator(device='cpu').manual_seed(rng_seed)
     model.eval()
     ctx.bind_policy(model, checkpoint, revision)
     policy_sha = sha(checkpoint)
@@ -135,6 +135,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     counts, components = Counter(), Counter()
     rejected, total_reward = 0, 0.0
     started = time.monotonic()
+    phase_times = Counter()
+    behavior = hashlib.sha256()
     from .route_arrays import RouteFeatureCache
     route_cache = RouteFeatureCache() if model.route_backend == 'array' else None
     trace_name = 'trajectory.jsonl' if log_mode == 'full' else 'receipts.jsonl.gz'
@@ -151,23 +153,33 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
         while not (result.terminated or result.truncated):
             if len(rows) % 64 == 0:
                 ctx.check()
+            phase_started = time.monotonic()
             before = result.observation
             decision = session.decision()
             geometry = environment.geometry()
             inputs = model.row(decision, geometry, ctx.public, route_cache=route_cache)
+            phase_times['feature_seconds'] += time.monotonic()-phase_started
+            phase_started = time.monotonic()
             with torch.no_grad():
-                logp, value = model(inputs)
+                if inference is None:
+                    logp, value = model(inputs)
+                    anchor_logps = anchor(inputs)[0].log_softmax(0).detach().cpu().clone()
+                else:
+                    logp, value, anchor_logps = inference(inputs, len(rows))
                 distribution = torch.distributions.Categorical(logits=logp)
-                chosen = distribution.sample()
+                chosen = torch.multinomial(distribution.probs, 1, generator=rng).squeeze(0)
                 index, old_logp, value = int(chosen), float(distribution.log_prob(chosen)), float(value)
                 old_logps = distribution.logits.detach().cpu().clone()
-                anchor_logps = anchor(inputs)[0].log_softmax(0).detach().cpu().clone()
+            phase_times['inference_seconds'] += time.monotonic()-phase_started
+            phase_started = time.monotonic()
             if pending is not None:
                 rows[-1].transition = Transition.from_step(ctx.objective_contract,
                     **pending, next_value=value)
                 environment._record({'kind': 'bootstrap-link', 'decisionIndex': len(rows)-1,
                     'nextValue': value, 'source': 'next-live-decision-value'})
                 pending = None
+                if on_row is not None:
+                    on_row(rows[-1])
             capture = snapshot_from_inputs(decision, session.history, inputs, episode_id=episode_id,
                 index=index, reason='fresh-autonomous-route-policy', policy_revision=revision,
                 old_logp=old_logp, value=value)
@@ -186,7 +198,11 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 'geometrySha256': fingerprint(geometry), 'selectedIndex': index,
                 'selectedLogProbability': old_logp, 'policyRevision': revision,
                 'policySha256': policy_sha})
+            phase_times['capture_seconds'] += time.monotonic()-phase_started
+            phase_started = time.monotonic()
             result = session.step(action)
+            phase_times['environment_seconds'] += time.monotonic()-phase_started
+            behavior.update(canonical((action, result.accepted, fingerprint(before), fingerprint(result.observation))))
             if type(result.accepted) is not bool:
                 raise RuntimeError('Selected action was not executed; batch not trained')
             info = reward.step(before, result.observation)
@@ -205,6 +221,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 pending = None
             rows.append(LiveRow(capture, transition, inputs['route_obs'].detach().clone(),
                 inputs['route_actions'].detach().clone(), geometry, old_logps, anchor_logps, policy_sha, info['reward'], charged))
+            if on_row is not None and rows[-1].transition is not None:
+                on_row(rows[-1])
             environment._record({'kind': 'policy-sample', 'experiment': ctx.schema,
                 'episodeId': episode_id, 'decisionIndex': len(rows)-1,
                 'policyRevision': revision, 'policySha256': policy_sha,
@@ -244,7 +262,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
         'weights_sha256': state_hash, 'capture_bytes_upper_bound': used_bytes,
         'trajectory_audit': audit, 'log_mode': log_mode,
         'collection_elapsed': time.monotonic()-started,
-        'route_cache': dict(route_cache.stats) if route_cache is not None else {}}
+        'route_cache': dict(route_cache.stats) if route_cache is not None else {},
+        'sampling_rng': 'per-episode-cpu-generator/v1', 'behavior_sha256': behavior.hexdigest(),
+        'phases': dict(phase_times)}
     write(directory / 'summary.json', report)
     if log_mode == 'full':
         # Full diagnostics retain independent post-read verification/compression.

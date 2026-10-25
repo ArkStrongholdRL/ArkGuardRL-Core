@@ -209,3 +209,53 @@ are in `ArkGuardRL/docs/research/20261025/optimization-single-receipt.json`.
 - Collection and whole-process measurements improved, subject to shared-machine
   and MPS noise. Detailed receipts are in the research repository at
   `docs/research/20261025/array-validation-receipt.json`.
+
+## Concurrent collection and persistent rounds (2026-10-25)
+
+- Actor and anchor cache separately by checkpoint bytes. Binding a loaded actor
+  checks a strict load receipt against current source, file and parameter hashes
+  without constructing another model. Each episode owns a CPU Generator; RNG
+  protocol v1 deliberately changes historical seeded trajectories, while worker
+  count, model-cache state and batching do not consume that episode's RNG.
+- Dedicated control/inference and data pipes support a bounded background sender
+  (default four outstanding 1 MiB frames, two queued rows). Only finalized
+  bootstrap rows may stream. The parent quarantines rows until natural episode
+  termination, public audit and complete ordered transfer have all succeeded.
+  Workers retain their episode bank for audit; streaming is not a memory-saving
+  claim. Byte budgets are allocation estimates, not aggregate RSS limits.
+- `--iterations` partitions unique explicit seeds into equal consecutive groups.
+  Worker/Node processes and optimizer state persist; updated actors reload while
+  an unchanged anchor stays cached. Intermediate checkpoints and training states
+  have unique names, preserving exclusive artifact creation. A reported worker
+  failure gets bounded graceful cleanup before forceful shutdown escalation.
+- Optional CPU/MPS cross-worker inference preserves candidates, uses bounded
+  memory splitting and explicit wait times, and samples in each worker. It stays
+  opt-in: measured batches were too small to offset request transport/waiting.
+- A fixed eight-game workload (1519 decisions) produced identical action/result/
+  state digests at 1/2/4/8 workers, with either transfer mode and CPU/MPS batched
+  inference. Both batched backends also completed two-game MPS PPO smoke rounds
+  including the existing live probability/value replay checks. No archived
+  samples were used for training. Final source completed two PPO rounds/four
+  live games: same worker/Node PIDs, second-round actor reloads only, Adam steps
+  advancing from 4 to 8, distinct updated weights, strict CPU checkpoint and
+  optimizer reload. A separate fixed-policy two-round run reloaded neither
+  model nor Node on its second round and matched the same seed trajectories.
+- Focused checks covered multi-frame ordering/window bounds, wrong/missing ACKs,
+  deadline cleanup, unfinished bootstrap rejection, inference packet byte/shape/
+  dtype/field guards and independent storage, parameter/file tampering, strict
+  source rejection, and a real truncated episode that discards staged rows and
+  closes its workers. Binding preserved global Torch RNG without another load.
+- Process-tree RSS was sampled externally every 200 ms, including Node. The
+  1/2/4/8-worker collection sweep took 44.24/26.40/19.03/18.19 s; including process
+  startup/exit, four workers finished before eight and used less memory. These
+  are current scaling results, not speedups over the pre-existing worker pool.
+  Transfer timing varied between paired runs; do not generalize the first pair's
+  23% reduction. All paired results, terminal drain, inference payloads, memory,
+  source identities and final round timings are retained in the research repo's
+  `results/runtime-concurrent-20261025` and concurrent-collection report.
+  Three stream/episode pairs measured collection at 19.03/24.71, 18.88/19.05,
+  and 26.38/27.03 s. Final-source repeat terminal-drain sums were 0.17/5.82 s.
+  The alternating binding microbenchmark measured 4.96 ms for receipt checks
+  versus 225.36 ms for a current strict reload plus parameter comparison; this
+  isolates binding, not historical end-to-end performance. Full records are at
+  `docs/research/20261025/CONCURRENT-COLLECTION.md` in the research repository.

@@ -138,11 +138,7 @@ class Run:
     def bind_policy(self, model, path, revision):
         if type(revision) is not int or revision < 0:
             raise ValueError('Nonnegative policy revision required')
-        from .sampling import weights_hash
-        restored, _ = checkpoint.load(path, self.contract)
-        if weights_hash(restored) != weights_hash(model):
-            raise ValueError('Live actor weights differ from the declared checkpoint')
-        del restored
+        checkpoint.verify_bound(model, path, self.contract)
 
     def save(self, path, model, **metadata):
         self.check(sources=True)
