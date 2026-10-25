@@ -12,11 +12,17 @@ from .models import Policy, SCHEMA
 from .routes import residual
 
 
-def identity(contract, width, route_backend):
-    return {'schema': SCHEMA, 'input_contract': residual.contract(contract),
+def identity(contract, width, route_backend, specialist=None):
+    result = {'schema': SCHEMA, 'input_contract': residual.contract(contract),
         'width': width, 'route_backend': route_backend,
         'architecture': 'native-v7-width; compact semantic facts; route residual; same parameter shapes',
         'native_sources': neural.source_hashes(), 'core_sources': source_hashes()}
+    if specialist is not None:
+        from .specialist import validate
+        validate(specialist)
+        result['specialist'] = dict(specialist)
+        result['architecture'] = 'frozen native-width route policy; bounded public covenant actor/value residual'
+    return result
 
 
 def restore_verified_state(model, state):
@@ -32,7 +38,7 @@ def restore_verified_state(model, state):
 
 
 def save(path, model, contract, metadata):
-    ident = identity(contract, model.width, model.route_backend)
+    ident = identity(contract, model.width, model.route_backend, getattr(model, 'specialist_config', None))
     neural.save_payload(path, {'schema': SCHEMA, 'identity': ident,
         'identity_sha256': fingerprint(ident), 'definitions': model.base.definitions.bank,
         'metadata': metadata, 'state_dict': {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}})
@@ -47,10 +53,14 @@ def load(path, contract):
     if payload.get('schema') != SCHEMA:
         raise ValueError('Extracted core checkpoint required; adopt verified legacy weights explicitly')
     declared = payload['identity']
-    ident = identity(contract, declared['width'], declared['route_backend'])
+    ident = identity(contract, declared['width'], declared['route_backend'], declared.get('specialist'))
     if declared != ident or payload['identity_sha256'] != fingerprint(ident):
         raise ValueError('Core input/source/model identity mismatch')
-    model = Policy(contract, payload['definitions'], declared['width'], declared['route_backend'])
+    if 'specialist' in declared:
+        from .specialist import SpecialistPolicy
+        model = SpecialistPolicy(contract, payload['definitions'], declared['width'], declared['route_backend'], declared['specialist'])
+    else:
+        model = Policy(contract, payload['definitions'], declared['width'], declared['route_backend'])
     restore_verified_state(model, payload['state_dict'])
     if sha(path) != file_sha:
         raise ValueError('Checkpoint changed during strict load')
@@ -65,7 +75,8 @@ def verify_bound(model, path, contract):
     from .sampling import weights_hash
     receipt = getattr(model, '_core_load_receipt', None)
     current = (str(Path(path).resolve()), sha(path),
-               fingerprint(identity(contract, model.width, model.route_backend)), weights_hash(model))
+               fingerprint(identity(contract, model.width, model.route_backend,
+                                    getattr(model, 'specialist_config', None))), weights_hash(model))
     if receipt is None:
         restored, _ = load(path, contract)
         if restored._core_load_receipt != current:

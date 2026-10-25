@@ -116,7 +116,11 @@ def forward(model, data):
     result = new_mass.gather(1, schedules)+adjusted-normalizers.gather(1, schedules)
     result = result.masked_fill(~data['valid'], -torch.inf)
     # Match the collector/PPO's additional per-state normalization exactly in meaning.
-    return result.log_softmax(1), model.base.critic(hidden).squeeze(-1)
+    value = model.base.critic(hidden).squeeze(-1)
+    if hasattr(model, 'specialist_config'):
+        return model.adjust(result.log_softmax(1), value, obs, control, actions,
+                            data['route_actions'], data['valid'])
+    return result.log_softmax(1), value
 
 
 def entropy(logp, data):
