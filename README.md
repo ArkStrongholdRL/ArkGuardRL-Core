@@ -166,3 +166,7 @@ selected Candidate的数值特征构造时规范化为不可变tuple；同进程
 
 未新增测试、fixture或测试框架。初次拆分检查与后续获准的运行记录见
 [VALIDATION](docs/VALIDATION.md)，详细迁移边界见 [EXTRACTION](docs/EXTRACTION.md)。
+
+公开准备期高水位输入可通过独立 entity-policy schema 启用，含每盟约历史最高档位、
+活跃层数、当前拆档及预计 ready 成本。采样保存当时 CPU 张量，PPO 按完整前缀重新
+核对；原观测与旧检查点身份不改写。接口和验证边界见 [PREP-HISTORY](docs/PREP-HISTORY.md)。

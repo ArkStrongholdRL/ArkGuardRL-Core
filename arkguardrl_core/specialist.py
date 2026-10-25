@@ -13,11 +13,12 @@ from .routes import features as route
 
 SCHEMA = 'arkguardrl-core/frozen-base-covenant-residual/v1'
 CONTEXT_SCHEMA = 'arkguardrl-core/full-entity-context-residual/v1'
+HISTORY_CONTEXT_SCHEMA = 'arkguardrl-core/full-entity-prep-history-residual/v1'
 
 
 def validate(config):
     fields = {'schema', 'bond', 'band_index', 'hidden', 'logit_bound'}
-    if config.get('schema') == CONTEXT_SCHEMA:
+    if config.get('schema') in (CONTEXT_SCHEMA,HISTORY_CONTEXT_SCHEMA):
         fields |= {'encoder', 'layers', 'heads', 'ff_multiplier'}
         if config['encoder'] not in ('pool', 'transformer'):
             raise ValueError('Explicit full-context encoder required')
@@ -25,9 +26,13 @@ def validate(config):
             raise ValueError('Two bounded layers and four dividing heads required')
         if config['ff_multiplier'] not in (2, 4):
             raise ValueError('Bounded feedforward multiplier required')
+    if config.get('schema')==HISTORY_CONTEXT_SCHEMA:
+        fields.add('prep_history')
+        from .prep_history import validate as validate_history
+        validate_history(config['prep_history'])
     if set(config) != fields:
         raise ValueError('Explicit specialist configuration required')
-    if config['schema'] not in (SCHEMA, CONTEXT_SCHEMA) or config['bond'] not in layout.BOND_IDS:
+    if config['schema'] not in (SCHEMA, CONTEXT_SCHEMA,HISTORY_CONTEXT_SCHEMA) or config['bond'] not in layout.BOND_IDS:
         raise ValueError('Unknown specialist representation or covenant')
     if type(config['band_index']) is not int or not 0 < config['band_index'] < layout.ENTITY_VOCAB:
         raise ValueError('Public fixed-band catalog index required')

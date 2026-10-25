@@ -19,7 +19,7 @@ from .io import sha, write
 from .transport import decode_row
 
 FRAME_BYTES = 1024 * 1024
-WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v4'
+WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v5'
 
 
 def _receive(connection, deadline):
@@ -279,7 +279,8 @@ class Collector:
                                 or message['index'] != state['next_inference']
                                 or message['index'] >= self.ctx.config['max_decisions']):
                             raise ValueError('Unexpected or reordered inference request')
-                        row = unpack_tensors(message['packet'], INPUTS, self.ctx.config['max_episode_bytes'])
+                        expected_inputs = INPUTS | ({'prep_history'} if getattr(model, 'specialist_config', {}).get('prep_history') else set())
+                        row = unpack_tensors(message['packet'], expected_inputs, self.ctx.config['max_episode_bytes'])
                         state['inference_pending'] = True
                         requests.append((connection, state, message['index'], row))
                         if first_request is None:

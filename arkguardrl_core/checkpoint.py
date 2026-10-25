@@ -22,6 +22,10 @@ def identity(contract, width, route_backend, specialist=None):
         validate(specialist)
         result['specialist'] = dict(specialist)
         result['architecture'] = 'frozen native-width route policy; bounded public covenant actor/value residual'
+        if 'prep_history' in specialist:
+            from .prep_history import description
+            result['input_contract']={**result['input_contract'],
+                'prep_history':description(specialist['prep_history'])}
     return result
 
 
@@ -57,8 +61,8 @@ def load(path, contract):
     if declared != ident or payload['identity_sha256'] != fingerprint(ident):
         raise ValueError('Core input/source/model identity mismatch')
     if 'specialist' in declared:
-        from .specialist import SpecialistPolicy, CONTEXT_SCHEMA
-        if declared['specialist']['schema'] == CONTEXT_SCHEMA:
+        from .specialist import SpecialistPolicy, CONTEXT_SCHEMA,HISTORY_CONTEXT_SCHEMA
+        if declared['specialist']['schema'] in (CONTEXT_SCHEMA,HISTORY_CONTEXT_SCHEMA):
             from .entity_context import EntityContextPolicy
             policy_type = EntityContextPolicy
         else:

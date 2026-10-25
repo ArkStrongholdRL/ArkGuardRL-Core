@@ -119,7 +119,7 @@ def forward(model, data):
     value = model.base.critic(hidden).squeeze(-1)
     if hasattr(model, 'adjust_context'):
         return model.adjust_context(result.log_softmax(1), value, obs, control, actions,
-            data['route_actions'], data['valid'], data['facts'], data['fact_state'])
+            data['route_actions'], data['valid'], data['facts'], data['fact_state'], data.get('prep_history'))
     if hasattr(model, 'specialist_config'):
         return model.adjust(result.log_softmax(1), value, obs, control, actions,
                             data['route_actions'], data['valid'])

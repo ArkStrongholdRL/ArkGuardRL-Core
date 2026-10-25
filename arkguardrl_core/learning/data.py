@@ -72,6 +72,12 @@ def prepare(model, row, *, copy_inputs=True):
     if any(value.device.type != 'cpu' for value in row.values()):
         raise ValueError('Preparation requires owned CPU inputs')
     neural.validate_tensors(*(row[k] for k in ('obs', 'candidates', 'schedules', 'experts')))
+    history_config = getattr(model, 'specialist_config', {}).get('prep_history')
+    if history_config is not None:
+        from ..prep_history import validate_tensor
+        validate_tensor(row.get('prep_history'), history_config)
+    elif 'prep_history' in row:
+        raise ValueError('Unexpected PREP history for history-free model')
     for key, shape in (('route_obs', (rf.OBS_DIM,)),
                        ('route_actions', (len(row['candidates']), rf.ACTION_DIM))):
         value = row[key]
@@ -126,6 +132,10 @@ def collate(rows, device='cpu', max_bytes=1024**3):
     if estimate > max_bytes:
         raise ValueError('Padded batch exceeds declared memory budget; no candidate truncation')
     result = {k: torch.stack([r[k] for r in rows]) for k in ('tables', 'control', 'route_obs')}
+    if any('prep_history' in r for r in rows):
+        if not all('prep_history' in r for r in rows):
+            raise ValueError('Mixed PREP history contracts in batch')
+        result['prep_history'] = torch.stack([r['prep_history'] for r in rows])
     if 'labels' in rows[0]:
         if not all('labels' in r and 'anchor_logps' in r for r in rows):
             raise ValueError('Mixed supervised/unsupervised batch')

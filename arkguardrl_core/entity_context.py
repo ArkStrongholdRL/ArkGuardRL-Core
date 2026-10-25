@@ -52,6 +52,10 @@ class EntityContextPolicy(SpecialistPolicy):
         state_dim = layout.GLOBAL_DIM+len(layout.BOND_IDS)*layout.BOND_DIM+layout.CONTROL_DIM-6
         self.specialist_entity = nn.Linear(4*basic_dim+mechanism_dim+semantic_dim,dim)
         self.specialist_state = nn.Linear(state_dim,dim)
+        if 'prep_history' in config:
+            from .prep_history import dimension
+            self.specialist_history=nn.Linear(dimension(config['prep_history']),dim,bias=False)
+            nn.init.zeros_(self.specialist_history.weight)
         self.specialist_blocks = nn.ModuleList([EntityBlock(dim,config['heads'],config['ff_multiplier'],
             config['encoder']=='transformer') for _ in range(config['layers'])])
         self.specialist_relation_bias = nn.Embedding(7,config['heads'])
@@ -75,10 +79,11 @@ class EntityContextPolicy(SpecialistPolicy):
         result,values = self.adjust_context(logp[None],value.reshape(1),obs[None],
             obs[layout.CONTROL_START:][None],row['candidates'][None],row['route_actions'][None],
             torch.ones_like(logp,dtype=torch.bool)[None],facts,
-            torch.zeros(len(facts),dtype=torch.long,device=obs.device))
+            torch.zeros(len(facts),dtype=torch.long,device=obs.device),
+            row['prep_history'][None] if 'prep_history' in row else None)
         return result[0],values[0]
 
-    def adjust_context(self,logp,value,tables,control,actions,routes,valid,facts,fact_state):
+    def adjust_context(self,logp,value,tables,control,actions,routes,valid,facts,fact_state,prep_history=None):
         batch,count = valid.shape
         entities = tables[:,layout.ENTITY_START:layout.BOND_START].reshape(batch,layout.MAX_ENTITIES,layout.ENTITY_DIM)
         bonds = tables[:,layout.BOND_START:layout.MECH_START].reshape(batch,len(layout.BOND_IDS),layout.BOND_DIM)
@@ -109,7 +114,14 @@ class EntityContextPolicy(SpecialistPolicy):
         semantics = (sums/nums.clamp_min(1)).reshape(batch,-1,fact_features.shape[-1])[:,1:layout.MAX_ENTITIES+1]
         raw = torch.cat((basic,linked,mechanism,semantics),-1)
         tokens = self.specialist_entity(raw)*present[:,:,None]
-        tokens = torch.cat((self.specialist_state(state)[:,None],tokens),1)
+        state_token=self.specialist_state(state)
+        if hasattr(self,'specialist_history'):
+            from .prep_history import validate_tensor
+            validate_tensor(prep_history,self.specialist_config['prep_history'],batch)
+            state_token=state_token+self.specialist_history(prep_history)
+        elif prep_history is not None:
+            raise ValueError('History tensor supplied to a history-free entity policy')
+        tokens = torch.cat((state_token[:,None],tokens),1)
         token_valid = torch.cat((torch.ones(batch,1,dtype=torch.bool,device=tables.device),present),1)
         key_mask = tables.new_zeros(batch,1,1,layout.MAX_ENTITIES+1).masked_fill(~token_valid[:,None,None],-torch.inf)
         if self.specialist_config['encoder']=='transformer':

@@ -50,21 +50,26 @@ class ReadyCost:
         cost=0.
         if (accepted and before['phase']=='PREP' and action['t']=='g.ready'
                 and action.get('ready',True)):
-            now=self.statuses(before);cfg=self.config
-            losses={};gains={}
-            for key,(tier,layers) in now.items():
-                peak,peak_layers=self.peak[key]
-                lost=max(0,peak-tier)
-                # Retaining a lower tier of the same dismantled bond is not a
-                # replacement for the tier it just lost.
-                gained=max(0,tier-self.start[key][0]) if lost==0 else 0
-                losses[key]=lost*(cfg['flat_per_tier']+cfg['layer_weight']*math.tanh(peak_layers/cfg['layer_scale']))
-                gains[key]=gained*(cfg['flat_per_tier']+cfg['layer_weight']*math.tanh(layers/cfg['layer_scale']))
-            gross=math.fsum(losses.values())
-            credit=cfg['replacement_credit']*math.fsum(gains.values())
-            cost=min(cfg['max_cost'],max(0.,gross-credit))
-            receipt=dict(round=before['round'],start=self.start.copy(),peak=self.peak.copy(),
-                final=now,losses=losses,replacement_gains=gains,gross_loss=gross,
-                replacement_credit=credit,cost=cost)
+            receipt=self.project(before)
+            cost=receipt['cost']
         if after['round']==self.round:self.observe(after)
         return cost,receipt
+
+    def project(self,state):
+        """Cost of ending PREP now, without executing or inventing an action."""
+        self.observe(state)
+        if state['phase']!='PREP' or state['personalEnded']:return None
+        now=self.statuses(state);cfg=self.config
+        losses={};gains={}
+        for key,(tier,layers) in now.items():
+            peak,peak_layers=self.peak[key]
+            lost=max(0,peak-tier)
+            gained=max(0,tier-self.start[key][0]) if lost==0 else 0
+            losses[key]=lost*(cfg['flat_per_tier']+cfg['layer_weight']*math.tanh(peak_layers/cfg['layer_scale']))
+            gains[key]=gained*(cfg['flat_per_tier']+cfg['layer_weight']*math.tanh(layers/cfg['layer_scale']))
+        gross=math.fsum(losses.values())
+        credit=cfg['replacement_credit']*math.fsum(gains.values())
+        cost=min(cfg['max_cost'],max(0.,gross-credit))
+        return dict(round=state['round'],start=self.start.copy(),peak=self.peak.copy(),
+            final=now,losses=losses,replacement_gains=gains,gross_loss=gross,
+            replacement_credit=credit,cost=cost)

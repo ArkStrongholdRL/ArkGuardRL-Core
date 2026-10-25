@@ -4,7 +4,7 @@ GPL-3.0-or-later, extracted from ArkGuardRL route_ppo_fast. No archived rows are
 accepted as PPO data; only complete live episodes leave this collector.
 """
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import gzip
 import hashlib
 import json
@@ -77,17 +77,21 @@ class LiveRow:
     policy_sha: str
     base_reward: float
     prep_cost: float
+    prep_history: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float32))
 
     def inputs(self):
-        return {k: self.capture[k] for k in ('obs', 'candidates', 'schedules', 'experts')} | {
+        result = {k: self.capture[k] for k in ('obs', 'candidates', 'schedules', 'experts')} | {
             'route_obs': self.route_obs, 'route_actions': self.route_actions}
+        if self.prep_history.numel(): result['prep_history'] = self.prep_history
+        return result
 
     def evidence(self):
         return {'capture': self.capture, 'transition': self.transition.to_dict(),
                 'route_obs': self.route_obs, 'route_actions': self.route_actions,
                 'geometry': self.geometry, 'old_logps': self.old_logps,
                 'anchor_logps': self.anchor_logps, 'policy_sha256': self.policy_sha,
-                'base_reward': self.base_reward, 'prep_cost': self.prep_cost}
+                'base_reward': self.base_reward, 'prep_cost': self.prep_cost,
+                'prep_history': self.prep_history}
 
 
 def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason,
@@ -135,6 +139,12 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     used_bytes = 0
     reward = rewards.NativeProgressCore()
     ready_cost = ReadyCost(ctx.config['end_prep_loss']) if ctx.config.get('end_prep_loss') else None
+    history_config = getattr(model, 'specialist_config', {}).get('prep_history')
+    if history_config != getattr(anchor, 'specialist_config', {}).get('prep_history'):
+        raise ValueError('Actor/anchor PREP history contracts differ')
+    if history_config and ready_cost and history_config['loss_config'] != ready_cost.config:
+        raise ValueError('PREP history projection differs from reward contract')
+    history_tracker = ReadyCost(history_config['loss_config']) if history_config else None
     counts, components = Counter(), Counter()
     rejected, total_reward = 0, 0.0
     started = time.monotonic()
@@ -161,6 +171,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             decision = session.decision()
             geometry = environment.geometry()
             inputs = model.row(decision, geometry, ctx.public, route_cache=route_cache)
+            if history_tracker is not None:
+                from .prep_history import tensor_from_tracker
+                inputs['prep_history'] = tensor_from_tracker(history_tracker, before)
             phase_times['feature_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             with torch.no_grad():
@@ -188,7 +201,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 old_logp=old_logp, value=value)
             size = (learn._record_bytes(capture) + 32 * ctx.contract.feature_dim
                     + 2 * sum(x.numel() * x.element_size() for x in
-                              (inputs['route_obs'], inputs['route_actions'], old_logps, anchor_logps))
+                              (inputs['route_obs'], inputs['route_actions'], old_logps, anchor_logps,
+                               inputs.get('prep_history', torch.empty(0))))
                     + 2 * len(json.dumps(geometry)))
             used_bytes += size
             if used_bytes > ctx.config['max_episode_bytes']:
@@ -200,7 +214,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 'observationId': fingerprint(before), 'geometry': geometry,
                 'geometrySha256': fingerprint(geometry), 'selectedIndex': index,
                 'selectedLogProbability': old_logp, 'policyRevision': revision,
-                'policySha256': policy_sha})
+                'policySha256': policy_sha,
+                'prepHistorySha256': tensor_sha(inputs['prep_history']) if history_config else None})
             phase_times['capture_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             result = session.step(action)
@@ -239,7 +254,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 transition = Transition.from_step(ctx.objective_contract, **pending, next_value=next_value)
                 pending = None
             rows.append(LiveRow(capture, transition, inputs['route_obs'].detach().clone(),
-                inputs['route_actions'].detach().clone(), geometry, old_logps, anchor_logps, policy_sha, info['reward'], charged))
+                inputs['route_actions'].detach().clone(), geometry, old_logps, anchor_logps, policy_sha, info['reward'], charged,
+                inputs.get('prep_history', torch.empty(0, dtype=torch.float32)).detach().clone()))
             if on_row is not None and rows[-1].transition is not None:
                 on_row(rows[-1])
             environment._record({'kind': 'policy-sample', 'experiment': ctx.schema,
@@ -344,6 +360,8 @@ def verify_replay(row, logp, value):
 
 def verify_live(ctx, model, rows, revision, checkpoint):
     verify_live_metadata(ctx, rows, revision, checkpoint)
+    from .prep_history import verify_rows
+    verify_rows(model, rows)
     for row in rows:
         with torch.no_grad():
             logp, value = model(row.inputs())

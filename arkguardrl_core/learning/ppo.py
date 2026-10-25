@@ -89,6 +89,8 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
         raise ValueError('Complete live rows required for PPO')
     started = time.monotonic()
     worker.verify_live_metadata(ctx, rows, revision, checkpoint)
+    from ..prep_history import verify_rows
+    verify_rows(actor, rows)
     metadata_seconds = time.monotonic()-started
     advantages, returns = worker.learn._advantages(ctx.objective_contract, rows, config['gae_lambda'])
     advantages = torch.tensor(advantages, dtype=torch.float32)
