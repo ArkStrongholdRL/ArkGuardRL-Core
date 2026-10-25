@@ -182,3 +182,30 @@ are in `ArkGuardRL/docs/research/20261025/optimization-single-receipt.json`.
   An alternating same-process capture microbenchmark also improved, with exact
   non-time output equality. Measurements and limitations are in the research
   repository's `docs/research/20261025/snapshots-deltas-receipt.json`.
+
+
+## Candidate arrays, feature validation and move keys (2026-10-25)
+
+- Route rows use preallocated float64 arrays, bulk summary subtraction and finite
+  checks, then gather aliases and convert to the original float32 tensors. The
+  output owns storage independent of persistent cache entries. Candidate order,
+  duplicate-row delta semantics and compensated summaries remain unchanged.
+- Candidate construction normalizes numeric features once. Only the identical
+  immutable tuple verified in the same PID can reuse that numeric check later.
+  Dimensions/contracts/continuity remain checked. The private witness is omitted
+  from asdict/pickle; received, replaced and foreign-PID values are revalidated.
+- Exact standard board/hand move shapes use fixed-field action keys in the same
+  bounded LRU. Extended fields and other scalar types use the generic path; the
+  canonical digest algorithm and all action content are preserved.
+- 191 archived decisions matched old IDs/order, structured/routing features and
+  route tensors exactly. Targeted checks covered cache/alias/storage/empty rows,
+  nonfinite values, key mutation/types/extensions, feature replacement and
+  cross-serialization/PID validation. Archived rows were not used for PPO.
+- One frozen baseline and initial optimized round completed; after adding an
+  exact string-type fallback guard, the final source completed another full
+  game/PPO round. All three 191-action/result/state sequences matched, with two
+  updates per round. Final-source checkpoint reload and CPU model/optimizer
+  storage passed. No updated-policy gameplay evaluation was performed.
+- Collection and whole-process measurements improved, subject to shared-machine
+  and MPS noise. Detailed receipts are in the research repository at
+  `docs/research/20261025/array-validation-receipt.json`.

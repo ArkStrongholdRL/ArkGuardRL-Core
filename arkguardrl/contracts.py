@@ -38,6 +38,11 @@ def _intent_key(action, depth=0):
 
 
 def _intent_from_key(key):
+    if key and key[0] == 'board_move':
+        _, uid, row, col, direction = key
+        return {'t': 'g.move', 'uid': uid, 'to': {'area': 'board', 'row': row, 'col': col}, 'dir': direction}
+    if key and key[0] == 'hand_move':
+        return {'t': 'g.move', 'uid': key[1], 'to': {'area': 'hand', 'idx': key[2]}}
     return {k: _intent_from_key(value) if kind is dict else value for k, kind, value in key}
 
 
@@ -49,6 +54,19 @@ def _cached_action_id(schema, key):
 def action_id(action):
     if not isinstance(action, dict) or not isinstance(action.get("t"), str):
         raise ValueError("A native intent must contain a string t")
+    # Most candidates are placements. Exact key counts plus exact scalar types
+    # prove this compact key covers every field; extensions use the generic path.
+    if type(action) is dict and type(action['t']) is str and action['t'] == 'g.move':
+        uid, to = action.get('uid'), action.get('to')
+        if type(uid) is int and type(to) is dict and type(to.get('area')) is str:
+            if len(action) == 4 and len(to) == 3 and to.get('area') == 'board':
+                row, col, direction = to.get('row'), to.get('col'), action.get('dir')
+                if type(row) is int and type(col) is int and type(direction) is str and len(direction) <= 256:
+                    return _cached_action_id(ACTION_SCHEMA, ('board_move', uid, row, col, direction))
+            elif len(action) == 3 and len(to) == 2 and to.get('area') == 'hand':
+                index = to.get('idx')
+                if type(index) is int:
+                    return _cached_action_id(ACTION_SCHEMA, ('hand_move', uid, index))
     key = _intent_key(action)
     if key is not None:
         return _cached_action_id(ACTION_SCHEMA, key)

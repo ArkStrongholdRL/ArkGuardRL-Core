@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, fields
 import json
 import math
+import os
 from pathlib import Path
 import re
 from typing import ClassVar
@@ -170,14 +171,23 @@ class Candidate:
         object.__setattr__(self, "action_json", canonical(action).decode("utf-8"))
         if not isinstance(self.features, (list, tuple)) or not self.features:
             raise ValueError("Nonempty supplied joint state/action features required")
-        object.__setattr__(self, "features", _vector(self.features, len(self.features), "features"))
+        normalized = _vector(self.features, len(self.features), "features")
+        object.__setattr__(self, "features", normalized)
+        object.__setattr__(self, "_validated_features", normalized)
+        object.__setattr__(self, "_validation_pid", os.getpid())
 
     @classmethod
     def from_native(cls, contract, observation, action, features):
         _observation(contract, observation, decision=True)
+        if not isinstance(features, (list, tuple)) or len(features) != contract.feature_dim:
+            raise ValueError(f"features must have exactly {contract.feature_dim} entries")
         return cls(contract.contract_id, decision_id(observation), fingerprint(observation),
                    canonical(action).decode("utf-8"),
-                   _vector(features, contract.feature_dim, "features"))
+                   features)
+
+    def __getstate__(self):
+        # The validation witness is process-local, never artifact/pipe evidence.
+        return {field.name: getattr(self, field.name) for field in fields(self)}
 
     @property
     def action(self):
@@ -186,6 +196,19 @@ class Candidate:
     @property
     def action_id(self):
         return action_id(self.action)
+
+
+def _candidate_features(candidate, size):
+    values = candidate.features
+    if (type(values) is tuple and len(values) == size
+            and getattr(candidate, '_validation_pid', None) == os.getpid()
+            and getattr(candidate, '_validated_features', None) is values):
+        return values
+    normalized = _vector(values, size, 'candidate features')
+    object.__setattr__(candidate, 'features', normalized)
+    object.__setattr__(candidate, '_validated_features', normalized)
+    object.__setattr__(candidate, '_validation_pid', os.getpid())
+    return normalized
 
 
 def _candidates(contract, observation, candidates):
@@ -200,7 +223,7 @@ def _candidates(contract, observation, candidates):
             raise ValueError("Candidate training-contract mismatch")
         if row.decision_id != context or row.observation_id != snapshot:
             raise ValueError("Stale or mixed candidate observation context")
-        _vector(row.features, contract.feature_dim, "candidate features")
+        _candidate_features(row, contract.feature_dim)
         if row.action_id in seen:
             raise ValueError("Duplicate native action identity in candidate domain")
         seen.add(row.action_id)
@@ -327,7 +350,7 @@ def generalized_advantage_estimate(contract, transitions, *, gae_lambda):
     for index, row in enumerate(rows):
         if not isinstance(row, Transition) or row.contract_id != contract.contract_id:
             raise ValueError("Transition training-contract mismatch")
-        _vector(row.candidate.features, contract.feature_dim, "candidate features")
+        _candidate_features(row.candidate, contract.feature_dim)
         if contract.requires_final_outcome and row.terminated and row.final_outcome_json is None:
             raise ValueError("Settlement-dependent terminal reward has no final outcome")
         if index:

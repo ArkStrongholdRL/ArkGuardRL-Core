@@ -4,7 +4,6 @@ Derived from scripts/route_features.py. Only after-board summaries are batched;
 all original context validation, action order, swaps and withdrawals remain.
 No engine execution or future combat score is used here.
 """
-import math
 import platform
 import sys
 from collections import Counter, OrderedDict
@@ -341,10 +340,14 @@ def encode(state, actions, g, catalog, *, route_cache=None):
     terrain = {(x['row'], x['col']): x['kind'] for x in state['own']['deployment']['cells']}
     support_table = _SupportTable(units, ground, contacts, hc)
     cache = {}
-    rows = []
+    actions = tuple(actions)
+    if len(actions) > MAX_CANDIDATES:
+        raise ValueError('Array route candidate-domain bound exceeded; no slicing')
+    rows = np.zeros((len(actions), ACTION_DIM), dtype=np.float64)
+    row_sources = np.arange(len(actions))
     pending = []
     remember = []
-    for a in actions:
+    for index, a in enumerate(actions):
         source = pieces.get(a.get('uid'))
         to = a.get('to', {})
         move = a['t'] == 'g.move'
@@ -352,18 +355,17 @@ def encode(state, actions, g, catalog, *, route_cache=None):
         target = (to['row'], to['col']) if move and to.get('area') == 'board' else None
         key = (a.get('uid'), target, a.get('dir', 'RIGHT'), remove, to.get('idx'))
         if key in cache:
-            rows.append(cache[key])
+            row_sources[index] = cache[key]
             continue
-        row = [0.0] * ACTION_DIM
         if source and source['kind'] == 'chess' and (move or remove):
             persistent_key = route_cache.action_key(state, a, source) if route_cache is not None else None
             if route_cache is not None:
                 cached = route_cache.get_action(persistent_key)
                 if cached is not None:
-                    cache[key] = cached
-                    rows.append(cached)
+                    cache[key] = index
+                    rows[index] = cached
                     continue
-                remember.append((persistent_key, len(rows)))
+                remember.append((persistent_key, index))
             old = byuid.get(source['uid'])
             src = old['at'] if old else None
             actor = old
@@ -384,21 +386,20 @@ def encode(state, actions, g, catalog, *, route_cache=None):
                 at = target or actor['at']
                 support_features = support_table.query(actor, removed, added)
                 st = actor['stats']
-                after = [0.0] * 6
                 appended = (*added, actor) if target else ()
-                pending.append((len(rows), (tuple(unit_indices[u['uid']] for u in removed), appended)))
-                row = [float(known), actor['block'] / 8, float(actor['heal']), float(actor['air']), actor['dps'] / 2000, float(st.get('maxHp', 0)) / 10000, float(st.get('def', 0)) / 1000, float(st.get('res', 0)) / 100, float(at in ground), float(at in airpath), progress[0].get(at, 0), progress[1].get(at, 0), len(actor['cover'] & ground) / max(1, len(ground)), len(actor['cover'] & airpath) / max(1, len(airpath)), *support_features, gc.get(at, 0) / 2000, ac.get(at, 0) / 2000, *[after[i] - before[i] for i in range(6)], float(src in ground), float(src in airpath), float(terrain.get(at) == 'ranged'), float(at in bycell), float(move), float(remove)]
-        if len(row) != ACTION_DIM or not all((math.isfinite(x) for x in row)):
-            raise ValueError('Nonfinite/misshaped route candidate features')
-        cache[key] = row
-        rows.append(row)
+                pending.append((index, (tuple(unit_indices[u['uid']] for u in removed), appended)))
+                rows[index] = (float(known), actor['block'] / 8, float(actor['heal']), float(actor['air']), actor['dps'] / 2000, float(st.get('maxHp', 0)) / 10000, float(st.get('def', 0)) / 1000, float(st.get('res', 0)) / 100, float(at in ground), float(at in airpath), progress[0].get(at, 0), progress[1].get(at, 0), len(actor['cover'] & ground) / max(1, len(ground)), len(actor['cover'] & airpath) / max(1, len(airpath)), *support_features, gc.get(at, 0) / 2000, ac.get(at, 0) / 2000, *(0.0,) * 6, float(src in ground), float(src in airpath), float(terrain.get(at) == 'ranged'), float(at in bycell), float(move), float(remove))
+        cache[key] = index
     summaries = _summaries([change for _, change in pending], ground, airpath, contacts, units)
-    for (index, _), summary in zip(pending, summaries):
-        delta = [float(summary[i]) - before[i] for i in range(6)]
-        if not all(math.isfinite(value) for value in delta):
-            raise ValueError('Nonfinite array route summary')
-        rows[index][20:26] = delta
+    if pending:
+        indices = np.fromiter((index for index, _ in pending), dtype=np.int64, count=len(pending))
+        rows[indices, 20:26] = summaries - np.asarray(before, dtype=np.float64)
+    # Check every scalar in bulk, including computed deltas and cache hits.
+    if not np.isfinite(rows).all():
+        raise ValueError('Nonfinite route candidate features')
     if route_cache is not None:
         for key, index in remember:
-            route_cache.remember_action(key, rows[index])
-    return (torch.tensor(obs, dtype=torch.float32), torch.tensor(rows, dtype=torch.float32).reshape(-1, ACTION_DIM))
+            route_cache.remember_action(key, rows[index].tolist())
+    # Gather aliases only after deltas are filled, matching shared-list rows.
+    packed = rows[row_sources].astype(np.float32)
+    return torch.tensor(obs, dtype=torch.float32), torch.from_numpy(packed)
