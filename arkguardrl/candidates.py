@@ -215,6 +215,8 @@ def build_decision(state, catalog, history):
     if not isinstance(history, DecisionHistory):
         raise ValueError("Explicit native DecisionHistory required")
     blocked, actions, seen = history.blocked(state), [], set()
+    sorted_cells = tuple(sorted(cells.items()))
+    allowed_terrain = {}
     def add(action):
         key = action_id(action)
         if key in blocked or key in seen:
@@ -302,8 +304,11 @@ def build_decision(state, catalog, history):
                                 continue
                             add({"t": "g.move", "uid": uid, "to": {"area": "hand", "idx": target_index}})
                     if piece["kind"] in ("chess", "token"):
-                        for (row, col), tile_kind in sorted(cells.items()):
-                            if not terrain_allows(piece, tile_kind, catalog):
+                        for (row, col), tile_kind in sorted_cells:
+                            terrain_key = (piece['kind'], piece['id'], tile_kind)
+                            if terrain_key not in allowed_terrain:
+                                allowed_terrain[terrain_key] = terrain_allows(piece, tile_kind, catalog)
+                            if not allowed_terrain[terrain_key]:
                                 continue
                             occupant = occupied.get((row, col))
                             if area != "board":

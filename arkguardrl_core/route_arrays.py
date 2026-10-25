@@ -130,7 +130,7 @@ def validate_runtime():
         raise ValueError('Reference route feature layout changed')
 
 
-def _summaries(boards, ground, airpath, contacts):
+def _summaries(boards, ground, airpath, contacts, base_units=()):
     """Float64 with CPython3.12 compensated sum; arrays span candidates.
 
     Per-call banks contain only objects from this exact decision. No state cache
@@ -177,15 +177,50 @@ def _summaries(boards, ground, airpath, contacts):
     # Integer coverage of the complete contact requirement; no threshold on a
     # floating-point subtraction can create a spurious supported blocker.
     supports = cover.astype(np.int16) @ required.astype(np.int16).T == required.sum(1)
+    # A move/removal retains an ordered subset of the current board, followed
+    # by at most the swapped unit and moved unit. Accumulate each retained
+    # prefix once; update only its changed suffix for each candidate. Keep the
+    # compensated accumulator, not a rounded total, to preserve sum order.
+    base_ids = {id(value) for value in base_units}
+    prefixes, prefix_ids, tails = {}, [], []
+    for board, index in zip(boards, indices):
+        split = next((i for i, value in enumerate(board) if id(value) not in base_ids), len(board))
+        key = tuple(index[:split])
+        if key not in prefixes:
+            prefixes[key] = len(prefixes)
+        prefix_ids.append(prefixes[key])
+        tails.append(index[split:len(board)])
+    prefix_gc = np.zeros((len(prefixes), 36))
+    prefix_ac = prefix_gc.copy()
+    prefix_ge, prefix_ae = prefix_gc.copy(), prefix_gc.copy()
+    prefix_hc = np.zeros((len(prefixes), 36), dtype=np.int64)
+    prefix_support = np.zeros((len(prefixes), 36), dtype=np.int16)
+    for prefix, group in prefixes.items():
+        for selected in prefix:
+            for total, error, values in (
+                    (prefix_gc[group], prefix_ge[group], cover[selected]*dps[selected]),
+                    (prefix_ac[group], prefix_ae[group], cover[selected]*air_dps[selected])):
+                added = total+values
+                error += np.where(np.abs(total) >= np.abs(values), (total-added)+values, (values-added)+total)
+                total[:] = added
+            prefix_hc[group] += cover[selected]*healer[selected]
+            prefix_support[group] += supports[selected] & (dps[selected] > 0)
+    tail_width = max(map(len, tails), default=0)
+    suffix = np.zeros((len(boards), tail_width), dtype=np.int64)
+    for i, tail in enumerate(tails):
+        suffix[i, :len(tail)] = tail
+    prefix_ids = np.asarray(prefix_ids, dtype=np.int64)
     output = []
     for start in range(0, len(indices), CHUNK_SIZE):
         index = indices[start:start+CHUNK_SIZE]
         count = len(index)
-        gc, ac = np.zeros((count, 36)), np.zeros((count, 36))
-        gc_error, ac_error = gc.copy(), ac.copy()
-        hc = np.zeros((count, 36), dtype=np.int64)
-        for slot in range(width):
-            selected = index[:, slot]
+        group = prefix_ids[start:start+CHUNK_SIZE]
+        gc, ac = prefix_gc[group].copy(), prefix_ac[group].copy()
+        gc_error, ac_error = prefix_ge[group].copy(), prefix_ae[group].copy()
+        hc = prefix_hc[group].copy()
+        provider_counts = prefix_support[group].copy()
+        for slot in range(tail_width):
+            selected = suffix[start:start+CHUNK_SIZE, slot]
             # Match CPython3.12's compensated sum, vectorized over all boards
             # and cells. There are at most width iterations, not C*36 loops.
             for total, error, values in ((gc, gc_error, cover[selected] * dps[selected, None]),
@@ -195,15 +230,15 @@ def _summaries(boards, ground, airpath, contacts):
                     (total-added)+values, (values-added)+total)
                 total[:] = added
             hc += cover[selected] * healer[selected, None]
+            provider_counts += supports[selected] & (dps[selected] > 0)[:, None]
         gc += gc_error
         ac += ac_error
         locations = positions[index]
         blockers = blocking[index]
-        # [candidate, querying unit, provider unit], explicitly excluding self.
-        paired = supports[index[:, None, :], locations[:, :, None]]
-        paired &= (index[:, None, :] != index[:, :, None])
-        paired &= (dps[index] > 0)[:, None, :]
-        supported = blockers & paired.any(-1)
+        # Integer support counts allow exact self-exclusion without building
+        # a candidate x querying-unit x provider-unit tensor.
+        own_support = supports[index, locations] & (dps[index] > 0)
+        supported = blockers & ((np.take_along_axis(provider_counts, locations, axis=1)-own_support) > 0)
         block_count = blockers.sum(1)
         damage, healing = np.zeros(count), np.zeros(count, dtype=np.int64)
         damage_error = damage.copy()
@@ -295,7 +330,7 @@ def encode(state, actions, g, catalog, *, route_cache=None):
             raise ValueError('Nonfinite/misshaped route candidate features')
         cache[key] = row
         rows.append(row)
-    summaries = _summaries([board for _, board in pending], ground, airpath, contacts)
+    summaries = _summaries([board for _, board in pending], ground, airpath, contacts, units)
     for (index, _), summary in zip(pending, summaries):
         delta = [float(summary[i]) - before[i] for i in range(6)]
         if not all(math.isfinite(value) for value in delta):

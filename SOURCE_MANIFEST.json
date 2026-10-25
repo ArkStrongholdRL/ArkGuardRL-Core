@@ -3,7 +3,7 @@
   "source_repository": "https://github.com/HarcoChen/ArkGuardRL",
   "source_commit": "356981e2297393218afbd5531d4af763c941796c",
   "working_tree_overlay": true,
-  "note": "Vectorized/batch sources include explicitly recorded uncommitted source hashes; not claimed to be contained in source_commit. Native arkguardrl sources preserved byte-for-byte.",
+  "note": "Extraction source hashes describe the original import. Subsequent modifications are identified by per-file mode and Git history; historical checkpoints retain their original source identity.",
   "upstream_code": {
     "repository": "https://github.com/LittleDrinks/arknights",
     "revision": "e00a2d7e44a004052c88d04d4346989ffb553bb3",
@@ -103,7 +103,7 @@
     "arkguardrl/structured.py": {
       "source": "arkguardrl/structured.py",
       "source_sha256": "59983fcc93232d5d5115cba892384555773a8a3210b30c8fc9970731f9ea6b2c",
-      "mode": "byte-preserved"
+      "mode": "derived after extraction; per-decision reuse of terrain checks, catalog projections and destination indices; unchanged candidate/feature semantics"
     },
     "arkguardrl/learn.py": {
       "source": "arkguardrl/learn.py",
@@ -128,7 +128,7 @@
     "arkguardrl/candidates.py": {
       "source": "arkguardrl/candidates.py",
       "source_sha256": "0ddeefae516ce3bc117a2e056126620b44f6cfe7fa85dbf3c3c317b72fad6780",
-      "mode": "byte-preserved"
+      "mode": "derived after extraction; per-decision reuse of terrain checks, catalog projections and destination indices; unchanged candidate/feature semantics"
     },
     "arkguardrl/static_model.py": {
       "source": "arkguardrl/static_model.py",

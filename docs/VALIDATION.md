@@ -87,3 +87,24 @@ strict reload passed, with CPU model serialization. The active-candidate heads,
 batch replay/KL and route cache all executed successfully. No matched timing
 baseline or updated-policy evaluation was run. Experiment timings and settings
 are in `ArkGuardRL/docs/research/20261025/optimization-single-receipt.json`.
+
+## Incremental route summaries and decision-local reuse (2026-10-25)
+
+- Route summaries reuse each unchanged ordered board prefix's compensated
+  coverage accumulator, then process only moved/swapped suffix units. Integer
+  provider counts replace the quadratic unit-pair support tensor with exact
+  self-exclusion. This preserves original floating-point accumulation order;
+  coverage is not obtained by subtracting rounded totals.
+- Candidate terrain eligibility, sorted cells, structured chess projections and
+  destination indices are reused within a decision. Native candidate/structured
+  sources are now explicitly marked as derived in the extraction manifest.
+- Eight archived public-state diagnostics produced exactly identical candidate
+  order, observation/candidate features, routing IDs and route tensors before and
+  after the change. One authorized complete single-game MPS PPO round then passed
+  live replay/audits and strict result reload with CPU model serialization.
+  All actual action, acceptance, native result and before/after state records
+  exactly matched the preceding same-input run. No updated-policy evaluation ran.
+- The single timing comparison improved collection and total wall time, so the
+  implementation was retained. This is one observation, not stable throughput
+  evidence. Experiment timings are retained in the research repository under
+  `docs/research/20261025/incremental-single-receipt.json`.

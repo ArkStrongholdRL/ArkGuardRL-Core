@@ -321,6 +321,10 @@ def encode_decision(state, actions, catalog, history_snapshot):
     locations = _locations(state)
     occupied = {(r["row"], r["col"]): r for r in state["own"]["board"]}
     encoded, schedules, experts = [], [], []
+    # A source appears in many placement candidates. Own one catalog projection
+    # per definition for this decision instead of deep-copying it per action.
+    chess_records = {}
+    cell_indices = {cell: index+1 for index, cell in enumerate(CELLS)}
     for action in actions:
         description = describe_action(state, action, locations=locations, occupied=occupied)
         kind = description.kind
@@ -335,7 +339,12 @@ def encode_decision(state, actions, catalog, history_snapshot):
         row = p["raw_entities"][subject - 1][0] if subject else {}
         cost = description.cost
         subject_row = row or (p["raw_entities"][source - 1][0] if source else {})
-        rec = catalog.record("chess", subject_row["id"]) if subject_row.get("kind") == "chess" else {}
+        rec = {}
+        if subject_row.get("kind") == "chess":
+            identifier = subject_row['id']
+            if identifier not in chess_records:
+                chess_records[identifier] = catalog.record('chess', identifier)
+            rec = chess_records[identifier]
         counts = p["families"].get(rec.get("baseId", subject_row.get("id")), {})
         needed = rec.get("upgradeNum", 0) or 0
         nums = (scalar(cost, 30), scalar(row.get("coin", 0), 10), scalar(row.get("count", 0), 10),
@@ -343,7 +352,7 @@ def encode_decision(state, actions, catalog, history_snapshot):
                 scalar(needed, 3), scalar(max(0, needed - sum(counts.get(a, 0) for a in ("board", "hand", "temp"))), 3),
                 float(to.get("area") == "hand"), scalar(to.get("idx", -1), 10))
         cell = (to.get("row", action.get("row")), to.get("col", action.get("col")))
-        destination = CELLS.index(cell) + 1 if cell in CELLS else 0
+        destination = cell_indices.get(cell, 0)
         encoded.append((source, target, replaced, subject, destination) + flags(action.get("dir"), DIRECTIONS)
                        + flags(kind, ACTION_TYPES) + flags(description.semantic, MOVE_TYPES) + nums)
         schedule, expert = routing(state, action, description=description)
