@@ -21,6 +21,7 @@ from arkguardrl.trajectory import verify_trajectory
 from .routes import residual as rp
 from .recording import RecordingEnv
 from .io import sha, write
+from .construction import potential as construction_potential
 
 ROLLOUT_SCHEMA = 'arkguardrl-core/live-capture-receipt/v1'
 
@@ -206,6 +207,16 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             if type(result.accepted) is not bool:
                 raise RuntimeError('Selected action was not executed; batch not trained')
             info = reward.step(before, result.observation)
+            construction=ctx.config.get('construction_potential')
+            if construction is not None:
+                before_phi=construction_potential(before,ctx.public,construction)
+                after_phi=construction_potential(result.observation,ctx.public,construction)
+                shaped=after_phi-before_phi
+                info={**info,'schema':ctx.objective_contract.reward_schema,
+                    'base_schema':info['schema'],
+                    'reward':info['reward']+shaped,
+                    'components':{**info['components'],'construction_potential':shaped},
+                    'construction_before':before_phi,'construction_after':after_phi}
             charged = ctx.config['prep_action_cost'] if ctx.cost_arm and chargeable(before, action) else 0.
             objective_reward = info['reward'] - charged
             pending = dict(episode_id=episode_id, decision_index=len(rows),

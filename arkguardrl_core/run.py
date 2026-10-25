@@ -21,8 +21,11 @@ class SamplerConfig:
     full_trace_every: int = 16
     trace_max_bytes: int = 64*1024**2
     prep_action_cost: float = 0.0
+    construction_potential: dict | None = None
 
     def __post_init__(self):
+        from .construction import validate
+        validate(self.construction_potential)
         for name in ('max_decisions', 'max_advances', 'max_episode_bytes', 'full_trace_every', 'trace_max_bytes'):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError('Positive integer sampler bound required: '+name)
@@ -93,8 +96,21 @@ class Run:
         objective = {'base': rewards.metadata(), 'prep_attempt_cost': self.sampler.prep_action_cost,
                      'charge': 'before.phase==PREP and action.t not in (g.ready,g.choice)',
                      'gamma': self.contract.gamma}
+        if self.sampler.construction_potential is not None:
+            cfg=self.sampler.construction_potential
+            rules=self.public.bond_rules()
+            if cfg['bond'] not in rules:
+                raise ValueError('Construction covenant absent from public catalog')
+            for identifier in cfg['anchors']:
+                rec=self.public.record('chess',identifier)
+                if rec.get('isGolden') or cfg['bond'] not in rec.get('bonds',[]):
+                    raise ValueError('Construction anchor must be a normal public covenant member')
+            if self.contract.gamma != 1.:
+                raise ValueError('Construction potential implementation requires native gamma1')
+            objective['construction_potential']=cfg
         cost_schema = 'arkguardrl-core/prep-attempt-cost/'+fingerprint(objective)+'/v1'
-        self.objective_contract = replace(self.contract, reward_schema=cost_schema) if self.cost_arm else self.contract
+        self.objective_contract = (replace(self.contract, reward_schema=cost_schema)
+            if self.cost_arm or self.sampler.construction_potential is not None else self.contract)
         self._sources, self._native_sources = source_hashes(), neural.source_hashes()
         self._last_source_check = -float('inf')
         self._configuration = fingerprint({'sampler': self.config, 'ppo': self.training})
