@@ -15,9 +15,9 @@
 
 Stronghold Protocol 是独立外部引擎，固定提交
 `c9d804f470b8d7422ae04eb66faf671cef21ad52`，app0.3.1。本仓库不内置引擎、数据或素材。
-本次提取没有实现四环境并行采样，也没有修改bridge里的重复observe或观战快照路径。
-这些是接下来在框架侧处理的工作。本文所述优化来自拆分前代码；拆分后没有新跑对局或
-性能/梯度比较，不能把以前的计时当作新仓库实测。
+框架现已支持可配置的多进程采样（默认四个worker）、每worker复用Node，以及bridge
+中间调度步骤的轻量检查。几何信息随决策状态返回，避免每步单独请求。
+外部引擎和观战快照路径保持原样；旧版本的计时不能直接代表当前实现。
 
 ## 安装
 
@@ -62,16 +62,38 @@ python -m arkguardrl_core iterate \
   --expected-data-sha256 VERIFIED_EXTERNAL_DATA_SHA256 \
   --checkpoint /absolute/path/to/core-policy.pt \
   --anchor /absolute/path/to/core-anchor.pt \
-  --seeds 10001 10002 --rng-seed 42 \
+  --seeds 10001 10002 10003 10004 --rng-seed 42 --workers 4 \
   --device mps --batch-size 256 --epochs 2 \
+  --max-buffer-bytes 2147483648 --execution-memory-bytes 1073741824 \
   --max-wall 600 --out artifacts/new-run
 ```
 
 示例种子只是命令形式，不是推荐的正式训练/评估划分。输出目录必须全新；加
-`--collect-only`可只采样。当前采样仍按局串行，actor/anchor在CPU，学习端可选CPU/MPS；
+`--collect-only`可只采样。`--workers 1`也使用同一采样器，按局串行并复用Node。
+actor/anchor在CPU，学习端可选CPU/MPS；
 CUDA代码路径可显式选择但拆分前没有本机硬件验证。设备不可用明确拒绝，不自动回退。
 较大batch可能按候选补齐估计分块，按样本数加权累积，逻辑batch只裁剪/更新一次。
 估计不是内存峰值保证；单状态超限明确停止，不删候选。
+
+每个spawn worker使用一个Torch线程并独占Node、history和反馈流。每轮冻结同一策略，
+父进程按任务顺序收齐完整自然终止对局，再执行PPO；任一局失败则整轮不更新。
+回传的是本轮live行，逐行拆成最多1MiB、有确认和摘要校验的帧，不从历史日志恢复。
+`max-buffer-bytes`约束live捕获和输入准备，每局分配总预算除以本轮局数；
+`execution-memory-bytes`单独限制候选padding执行块，扩大采集预算不会同步放大执行块。
+这些是数据/分配估计预算，不能当作进程RSS硬限制。
+
+可在Python中跨轮保留`arkguardrl_core.parallel.Collector`上下文，多次调用`collect`；
+每次传入新checkpoint、anchor、种子、RNG和递增revision。worker只在输入文件变化时
+重新加载权重，Node跨局复用；每局结束先dispose旧match和scheduler，再建立新游戏。
+CLI每次只运行一轮，退出时清理worker及其Node。
+
+PPO更新前概率/价值核对和更新后KL统计复用准备好的输入，按学习设备批量执行；
+输入准备保留索引、引用、语义事实和预算校验，不再通过完整encoder前向做检查。
+专家头与路线target头只计算有效候选，每个候选只执行对应专家；归一化仍使用候选mask。
+路线特征按局缓存几何、单位覆盖与未变化棋盘的候选结果，仍逐次验证状态绑定，并在
+路线、棋盘或公开效果/装备等上下文变化时失效。报告包含缓存命中、有效候选数量及
+更新前核对、输入准备、设备搬运、优化和更新后统计的分项耗时。已完成一次单局完整
+采集与MPS PPO更新验证；计时记录在研究仓库，尚无同负载旧版本对照。
 
 采样只返回本轮内存里的完整自然终止live行。精简日志是回执，不是完整状态或离线PPO
 训练集；teacher/human数据也不能混进on-policy buffer。保留gamma1、逐局GAE、个人终止
@@ -87,5 +109,5 @@ CUDA代码路径可显式选择但拆分前没有本机硬件验证。设备不�
 `SOURCE_MANIFEST.json`逐文件记录上游源码位置、哈希和是否修改；优化部分来自原工作树
 的未提交代码，已单独记录，不能声称都包含在原HEAD提交中。许可见 [NOTICE](NOTICE.md)。
 
-未新增测试、fixture或测试框架。初次拆分只做源码/安装包/CLI和原权重显式采用检查，
-不启动训练、对局或重复性能诊断。详细迁移边界见 [EXTRACTION](docs/EXTRACTION.md)。
+未新增测试、fixture或测试框架。初次拆分检查与后续获准的运行记录见
+[VALIDATION](docs/VALIDATION.md)，详细迁移边界见 [EXTRACTION](docs/EXTRACTION.md)。

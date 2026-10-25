@@ -193,7 +193,7 @@
     "arkguardrl_core/routes/route_bridge.mjs": {
       "source": "scripts/route_bridge.mjs",
       "source_sha256": "8057ef87a9bc8b0473128e1cb84de0065adcc1bb535bddd8796e5cae4613f2bc",
-      "mode": "byte-preserved"
+      "mode": "derived after extraction; lightweight scheduler boundary checks, decision-bound geometry replies and match release for process reuse"
     },
     "arkguardrl_core/routes/route_teacher.mjs": {
       "source": "scripts/route_teacher.mjs",

@@ -45,6 +45,7 @@ class PPOConfig:
     target_old_kl: float = .02
     max_grad_norm: float = .5
     max_buffer_bytes: int = 1024**3
+    execution_memory_bytes: int = 1024**3
 
     def __post_init__(self):
         if type(self.batch_size) is not int or not 1 <= self.batch_size <= 256:
@@ -53,6 +54,8 @@ class PPOConfig:
             raise ValueError('Positive integer epochs required')
         if type(self.max_buffer_bytes) is not int or self.max_buffer_bytes < 1:
             raise ValueError('Positive integer live-buffer bound required')
+        if type(self.execution_memory_bytes) is not int or self.execution_memory_bytes < 1:
+            raise ValueError('Positive integer padded-execution bound required')
         values = asdict(self)
         if not all(math.isfinite(v) for v in values.values()):
             raise ValueError('Finite PPO settings required')
@@ -115,7 +118,14 @@ class Run:
             raise ValueError('Framework source identity changed during live work')
         now = time.monotonic()
         if now-self._last_scan >= 30:
-            size = sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())
+            size = 0
+            for path in self.root.rglob('*'):
+                try:
+                    if path.is_file():
+                        size += path.stat().st_size
+                except FileNotFoundError:
+                    # A collector may replace a raw trace with its gzip archive.
+                    continue
             if size > self._max_disk:
                 raise RuntimeError('Framework disk byte limit reached')
             self._last_scan = now

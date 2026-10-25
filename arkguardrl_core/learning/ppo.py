@@ -11,7 +11,7 @@ from .. import sampling as worker
 from . import data, network
 from ..device import available, synchronize
 
-EXECUTION_SCHEMA = "arkguardrl-core/live-batch-ppo/v1"
+EXECUTION_SCHEMA = "arkguardrl-core/live-batch-ppo/v2"
 
 
 def tensors_to(value, device):
@@ -48,11 +48,48 @@ def objective(model, packed, beta, config):
 METRICS = ('loss', 'policy_loss', 'value_loss', 'entropy', 'anchor_kl', 'approx_old_kl', 'clip_fraction')
 
 
+def evaluate_prepared(ctx, model, prepared, rows, *, device, verify=False):
+    """Batch replay/KL on the same validated inputs used by the learner."""
+    totals = []
+    with torch.no_grad():
+        for start in range(0, len(prepared), ctx.training['batch_size']):
+            ctx.check()
+            end = start+ctx.training['batch_size']
+            offset = start
+            for chunk in data.split_for_memory(prepared[start:end], ctx.training['execution_memory_bytes']):
+                packed = data.collate(chunk, device, ctx.training['execution_memory_bytes'])
+                logp, value = model.forward_batch(packed)
+                safe = logp.masked_fill(~packed['valid'], 0)
+                worker.neural._finite(safe, 'batch policy replay')
+                worker.neural._finite(value, 'batch value replay')
+                if verify:
+                    cpu_logp, cpu_value = logp.cpu(), value.cpu()
+                    for index, item in enumerate(chunk):
+                        worker.verify_replay(rows[offset+index],
+                            cpu_logp[index, :len(item['candidates'])], cpu_value[index])
+                else:
+                    terms = []
+                    for key in ('old_logps', 'anchor_logps'):
+                        bank = packed[key]
+                        terms.append((bank.exp()*(bank-safe)*packed['valid']).sum(1))
+                    totals.extend(torch.stack(terms, 1).cpu().tolist())
+                offset += len(chunk)
+                del logp, value, safe, packed
+    if verify:
+        return {}
+    return {key: math.fsum(value[index] for value in totals)/len(rows)
+            for index, key in enumerate(('exact_old_kl', 'exact_anchor_kl'))}
+
+
 def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, device="cpu"):
     config = ctx.training
     if not available(device):
         raise ValueError('Requested learner device unavailable: '+device)
-    worker.verify_live(ctx, actor, rows, revision, checkpoint)
+    if not rows:
+        raise ValueError('Complete live rows required for PPO')
+    started = time.monotonic()
+    worker.verify_live_metadata(ctx, rows, revision, checkpoint)
+    metadata_seconds = time.monotonic()-started
     advantages, returns = worker.learn._advantages(ctx.objective_contract, rows, config['gae_lambda'])
     advantages = torch.tensor(advantages, dtype=torch.float32)
     returns = torch.tensor(returns, dtype=torch.float32)
@@ -63,6 +100,7 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
     for index, row in enumerate(rows):
         item = data.prepare(actor, row.inputs())
         item['anchor_logps'] = rows[index].anchor_logps
+        item['old_logps'] = rows[index].old_logps
         item['labels'] = torch.tensor([rows[index].capture['index'], rows[index].capture['old_logp'],
                                       advantages[index], returns[index]], dtype=torch.float32)
         prepared_bytes += sum(v.numel()*v.element_size() for v in item.values())
@@ -70,12 +108,20 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
             raise ValueError('Prepared input bank exceeds live memory budget')
         prepared.append(item)
     preparation_seconds = time.monotonic()-started
+    started = time.monotonic()
     learner = actor if device == 'cpu' else copy.deepcopy(actor).to(device)
     learner_optimizer = optimizer
     if device != 'cpu':
         learner_optimizer = torch.optim.Adam(learner.parameters(), lr=config['learning_rate'])
         learner_optimizer.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+    synchronize(device)
+    device_setup_seconds = time.monotonic()-started
+    started = time.monotonic()
+    evaluate_prepared(ctx, learner, prepared, rows, device=device, verify=True)
+    synchronize(device)
+    live_replay_seconds = time.monotonic()-started
     metrics, early_stop = [], False
+    candidate_positions = padded_positions = 0
     synchronize(device)
     started = time.monotonic()
     for epoch in range(config['epochs']):
@@ -87,10 +133,12 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
             selected = indices[start:start+config['batch_size']]
             learner_optimizer.zero_grad(set_to_none=True)
             selected_inputs = [prepared[i] for i in selected]
-            chunks = data.split_for_memory(selected_inputs, config['max_buffer_bytes'])
+            chunks = data.split_for_memory(selected_inputs, config['execution_memory_bytes'])
             batch_values = []
             for chunk in chunks:
-                packed = data.collate(chunk, device, config['max_buffer_bytes'])
+                packed = data.collate(chunk, device, config['execution_memory_bytes'])
+                candidate_positions += sum(len(item['candidates']) for item in chunk)
+                padded_positions += packed['valid'].numel()
                 loss, values = objective(learner, packed, beta, config)
                 worker.neural._finite(values, 'batch PPO objective/metrics')
                 (loss*(len(chunk)/len(selected))).backward()
@@ -117,16 +165,26 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
     optimization_seconds = time.monotonic()-started
     if not metrics:
         raise RuntimeError('No finite batch optimizer updates')
+    started = time.monotonic()
+    distribution_metrics = evaluate_prepared(ctx, learner, prepared, rows, device=device)
+    synchronize(device)
+    distribution_seconds = time.monotonic()-started
+    started = time.monotonic()
     if device != 'cpu':
         actor.load_state_dict(tensors_to(learner.state_dict(), 'cpu'), strict=True)
         optimizer.load_state_dict(tensors_to(learner_optimizer.state_dict(), 'cpu'))
         del learner_optimizer, learner
+    device_return_seconds = time.monotonic()-started
     return {'updates': len(metrics), 'optimizer_examples': sum(x['batch_rows'] for x in metrics),
         'decisions': len(rows), 'early_stop': early_stop, 'kl_coef': beta,
         'raw_advantage_mean': raw_mean, 'raw_advantage_std': raw_std,
         'preparation_seconds': preparation_seconds, 'optimization_seconds': optimization_seconds,
+        'metadata_verification_seconds': metadata_seconds, 'live_replay_seconds': live_replay_seconds,
+        'distribution_metrics_seconds': distribution_seconds, 'device_setup_seconds': device_setup_seconds,
+        'device_return_seconds': device_return_seconds,
+        'scored_candidate_positions': candidate_positions, 'padded_logit_positions': padded_positions,
         'learner_device': device, 'batch_execution': EXECUTION_SCHEMA,
         'requested_batch_size': config['batch_size'],
         'execution_microbatches': sum(m['execution_microbatches'] for m in metrics),
         'means': {k: math.fsum(x[k] for x in metrics)/len(metrics) for k in metrics[0]},
-        **worker.distribution_metrics(actor, rows)}
+        **distribution_metrics}

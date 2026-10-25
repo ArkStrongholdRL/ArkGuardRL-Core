@@ -173,12 +173,12 @@ class Policy(rp.RoutePolicy):
         nn.init.zeros_(self.target[-1].weight); nn.init.zeros_(self.target[-1].bias)
 
 
-    def row(self, decision, geometry, public):
+    def row(self, decision, geometry, public, *, route_cache=None):
         if self.route_backend == 'reference':
             return super().row(decision, geometry, public)
         from .route_arrays import encode
         tensors = neural.tensorize(decision)
-        obs, actions = encode(decision.state, decision.actions, geometry, public)
+        obs, actions = encode(decision.state, decision.actions, geometry, public, route_cache=route_cache)
         return dict(zip(('obs', 'candidates', 'schedules', 'experts'), tensors)) | {
             'route_obs': obs, 'route_actions': actions}
 

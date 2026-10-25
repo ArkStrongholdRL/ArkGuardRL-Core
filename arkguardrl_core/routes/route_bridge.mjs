@@ -65,9 +65,12 @@ function playerDecisionPending() {
     || (match.phase === 'PREP' && (!ps.ready || !!ps.personalChoice))
     || (match.phase === 'SP_DRAFT' && match.sp?.picks[PLAYER] == null);
 }
-function observe() {
+function assertEngineHealthy() {
   if (!match) throw new Error('Reset required');
   if (match.errorCount || scheduler.errors.length || match.simErrors || match.dispatcher?.errors) throw new Error('Engine failure');
+}
+function observe() {
+  assertEngineHealthy();
   const ps = match.players.get(PLAYER);
   const gameEnded = !!match.ended;
   const own = pick(ps.privateView(), OWN_KEYS);
@@ -83,6 +86,12 @@ function observe() {
     decisionRequired: playerDecisionPending(), clockMs: scheduler.now(), public: visible(pick(match.publicView(), PUBLIC_KEYS)), own: visible(own),
     outcome: gameEnded ? visible(summary) : null,
   };
+}
+function stateReply(extra = {}) {
+  const state = observe();
+  // Geometry belongs to this exact decision revision, not an extra round trip.
+  return { ...extra, state, ...(state.decisionRequired && !state.personalEnded
+    ? { geometry: geometry(match, match.players.get(PLAYER), bot, revision) } : {}) };
 }
 const ALLOWED = new Set(['g.infoReady', 'g.band', 'g.bandFocus', 'g.bandSkip', 'g.buy', 'g.refresh',
   'g.freeze', 'g.levelUp', 'g.sell', 'g.move', 'g.equip', 'g.art', 'g.destroy', 'g.unequip',
@@ -103,12 +112,13 @@ function dispatch(req) {
           seats: [{ seat: 0, playerId: PLAYER, name: 'Agent', isBot: false, connected: true }],
           send() { return true; }, broadcast() {}, onEnd(result) { summary = result; }, log: quiet });
         match.start();
-        return { state: observe() };
+        return stateReply();
       } catch (err) { close(); throw err; }
     }
-    case 'observe': return { state: observe() };
+    case 'observe': return stateReply();
     case 'routeGeometry': {
-      const state=observe(); return {geometry:geometry(match,match.players.get(PLAYER),bot,state.revision)};
+      assertEngineHealthy();
+      return {geometry:geometry(match,match.players.get(PLAYER),bot,revision)};
     }
     case 'teacherTakeover': {
       const ps=match.players.get(PLAYER); const before=observe();
@@ -127,30 +137,36 @@ function dispatch(req) {
       } finally {cap.restore()}
     }
     case 'act': {
-      observe();
+      assertEngineHealthy();
       if (!req.action || !ALLOWED.has(req.action.t)) throw new Error('Unsupported native player intent');
       const error = protocol.validateC2S(req.action);
       if (error) throw new Error(`Invalid intent: ${error}`);
       const result = match.handle(PLAYER, req.action);
       revision++;
-      return { accepted: !!result?.ok, result: visible(result), state: observe() };
+      return stateReply({ accepted: !!result?.ok, result: visible(result) });
     }
     case 'advance': {
-      const before = observe();
+      assertEngineHealthy();
+      const phase = match.phase, round = match.round;
       const steps = req.maxSteps ?? 256;
       if (!Number.isInteger(steps) || steps < 1 || steps > 4096) throw new Error('maxSteps must be 1..4096');
       // Explicit clock progression only outside human decision phases. No invented solo deadlines.
       let executed = 0;
-      if (!before.gameEnded && !before.public.paused && !playerDecisionPending()) {
+      if (!match.ended && !match.paused && !playerDecisionPending()) {
         while (executed < steps && scheduler.nextAt() !== null) {
           scheduler.runNext(); executed++;
-          const now = observe();
-          if (now.personalEnded || now.phase !== before.phase || now.round !== before.round) break;
+          // Preserve per-callback errors and stop boundaries without building
+          // public/private views, deployment cells and filtered state each tick.
+          assertEngineHealthy();
+          const ps = match.players.get(PLAYER);
+          if (match.ended || !ps.alive || !!ps.left
+              || match.phase !== phase || match.round !== round) break;
         }
       }
       if (executed) revision++;
-      return { executed, state: observe() };
+      return stateReply({ executed });
     }
+    case 'release': close(); summary = null; return { released: true };
     case 'close': close(); return { closed: true };
     default: throw new Error('Unknown bridge command');
   }

@@ -109,7 +109,8 @@ def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason
     return record
 
 
-def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directory, log_mode=None):
+def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directory, log_mode=None,
+            session_pool=None):
     """Collect one complete live episode. Never reload PPO rows from artifacts."""
     ctx.check()
     directory = Path(directory)
@@ -130,8 +131,11 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     counts, components = Counter(), Counter()
     rejected, total_reward = 0, 0.0
     started = time.monotonic()
+    from .route_arrays import RouteFeatureCache
+    route_cache = RouteFeatureCache() if model.route_backend == 'array' else None
     trace_name = 'trajectory.jsonl' if log_mode == 'full' else 'receipts.jsonl.gz'
     environment = RecordingEnv(ctx.engine_root, deadline=min(ctx.deadline, started + ctx.config['game_wall']),
+        session_pool=session_pool,
         expected_data_sha256=ctx.contract.data_sha256, trace_path=directory / trace_name,
         log_mode=log_mode, trace_max_bytes=ctx.config['trace_max_bytes'],
         source='ppo-policy', policy_id=f'{ctx.schema}:{policy_sha}:{revision}',
@@ -146,7 +150,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             before = result.observation
             decision = session.decision()
             geometry = environment.geometry()
-            inputs = model.row(decision, geometry, ctx.public)
+            inputs = model.row(decision, geometry, ctx.public, route_cache=route_cache)
             with torch.no_grad():
                 logp, value = model(inputs)
                 distribution = torch.distributions.Categorical(logits=logp)
@@ -235,7 +239,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
         'policy_sha256': policy_sha, 'policy_revision': revision,
         'weights_sha256': state_hash, 'capture_bytes_upper_bound': used_bytes,
         'trajectory_audit': audit, 'log_mode': log_mode,
-        'collection_elapsed': time.monotonic()-started}
+        'collection_elapsed': time.monotonic()-started,
+        'route_cache': dict(route_cache.stats) if route_cache is not None else {}}
     write(directory / 'summary.json', report)
     if log_mode == 'full':
         # Full diagnostics retain independent post-read verification/compression.
@@ -261,7 +266,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     return rows, report
 
 
-def verify_live(ctx, model, rows, revision, checkpoint):
+def verify_live_metadata(ctx, rows, revision, checkpoint):
     policy_sha = sha(checkpoint)
     for row in rows:
         capture = row.capture
@@ -275,13 +280,31 @@ def verify_live(ctx, model, rows, revision, checkpoint):
         expected_cost=ctx.config['prep_action_cost'] if ctx.cost_arm and chargeable(capture['observation'],action) else 0.
         if (row.prep_cost!=expected_cost or row.transition.reward!=row.base_reward-row.prep_cost):
             raise ValueError('Objective reward/cost identity mismatch')
+        for name, value in (('old', row.old_logps), ('anchor', row.anchor_logps)):
+            if (value.device.type != 'cpu' or value.dtype != torch.float32
+                    or value.shape != (len(capture['actions']),)):
+                raise ValueError('Live '+name+' distribution shape/device mismatch')
+            neural._finite(value, 'live '+name+' distribution')
+    ctx.check()
+
+
+def verify_replay(row, logp, value):
+    """Same per-row capture tolerances for scalar and batch replay."""
+    capture = row.capture
+    if (logp.device.type != 'cpu' or logp.shape != row.old_logps.shape
+            or not torch.allclose(logp, row.old_logps, rtol=1e-5, atol=1e-5)
+            or not math.isclose(float(logp[capture['index']]), capture['old_logp'], rel_tol=1e-5, abs_tol=1e-5)
+            or not math.isclose(float(value), capture['value'], rel_tol=1e-5, abs_tol=1e-5)):
+        raise ValueError('Captured policy probability/value replay mismatch')
+
+
+def verify_live(ctx, model, rows, revision, checkpoint):
+    verify_live_metadata(ctx, rows, revision, checkpoint)
+    for row in rows:
         with torch.no_grad():
             logp, value = model(row.inputs())
             logp = logp.log_softmax(0)
-        if (not torch.allclose(logp, row.old_logps, rtol=1e-5, atol=1e-5)
-                or not math.isclose(float(logp[capture['index']]), capture['old_logp'], rel_tol=1e-5, abs_tol=1e-5)
-                or not math.isclose(float(value), capture['value'], rel_tol=1e-5, abs_tol=1e-5)):
-            raise ValueError('Captured policy probability/value replay mismatch')
+        verify_replay(row, logp, value)
     ctx.check()
 
 

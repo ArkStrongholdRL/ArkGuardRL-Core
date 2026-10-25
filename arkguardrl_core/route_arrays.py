@@ -7,14 +7,118 @@ No engine execution or future combat score is used here.
 import math
 import platform
 import sys
+from collections import Counter, OrderedDict
 
 import numpy as np
 import torch
 from arkguardrl.candidates import MAX_CANDIDATES
-from .routes.features import ACTION_DIM, ACTION_FIELDS, CELLS, context, metrics, unit
+from arkguardrl.contracts import canonical, fingerprint
+from .routes.features import ACTION_DIM, ACTION_FIELDS, CELLS, context, metrics, unit, validate_geometry
 
 SCHEMA = 'arkguardrl/route-feature-array-execution/v1'
 CHUNK_SIZE = 128
+
+
+def _observation(paths, ground, airpath, progress, units, gc, ac, hc, before):
+    obs = []
+    for x in CELLS:
+        obs.extend((float(x in ground), float(x in airpath), progress[0].get(x, 0),
+            progress[1].get(x, 0), sum(u['block'] for u in units if u['at'] == x)/8,
+            gc[x]/2000, ac[x]/2000, hc[x]/4))
+    obs.extend((len(paths)/16, *before[:3]))
+    return tuple(obs)
+
+
+class RouteFeatureCache:
+    """Bounded per-episode public-feature cache; never stores neural activations.
+
+    The PublicCatalog is immutable for an episode. Every call still validates
+    the full observation/geometry binding. Economy/history do not enter these
+    geometric features; actions and their source/hand destination do.
+    """
+    def __init__(self, *, max_units=1024, max_actions=MAX_CANDIDATES):
+        if (type(max_units) is not int or not 1 <= max_units <= 4096
+                or type(max_actions) is not int or not 1 <= max_actions <= MAX_CANDIDATES):
+            raise ValueError('Explicit bounded route cache capacities required')
+        self.max_units, self.max_actions = max_units, max_actions
+        self._catalog = None
+        self._scope = self._path_key = self._base_key = None
+        self._units, self._actions = OrderedDict(), OrderedDict()
+        self._path = self._base = None
+        self.stats = Counter()
+
+    def get_unit(self, piece):
+        key = canonical(piece)
+        if key in self._units:
+            self.stats['unit_hits'] += 1
+            self._units.move_to_end(key)
+            return self._units[key]
+        self.stats['unit_misses'] += 1
+        result = unit(self._catalog, piece)
+        self._units[key] = result
+        if len(self._units) > self.max_units:
+            self._units.popitem(last=False)
+        return result
+
+    def begin(self, state, geometry, catalog):
+        validate_geometry(state, geometry)
+        own, public = state['own'], state['public']
+        scope = fingerprint({'data': catalog.data_sha256, 'phase': state['phase'],
+            'own': {k: own.get(k) for k in ('bonds', 'effects', 'loadout', 'ops', 'bandId',
+                'standIns', 'diy', 'diyBanned', 'deployment')},
+            'public': {k: public.get(k) for k in ('stageId', 'setupRevision', 'disabledBonds',
+                'factions', 'bossId', 'bossRound', 'bossPairs', 'combatMode')}})
+        if self._catalog is not catalog or self._scope != scope:
+            self._units.clear()
+            self._base_key = None
+            self._scope, self._catalog = scope, catalog
+        path_key = fingerprint({k: geometry[k] for k in ('schema', 'stageId', 'round', 'field', 'routes')})
+        if self._path_key != path_key:
+            paths = [(row['fly'], [tuple(x) for x in row['tiles']]) for row in geometry['routes']]
+            ground = {x for air, tiles in paths if not air for x in tiles}
+            airpath = {x for air, tiles in paths if air for x in tiles}
+            contacts, progress = {}, [{}, {}]
+            for air, tiles in paths:
+                for index, x in enumerate(tiles):
+                    progress[int(air)][x] = max(progress[int(air)].get(x, 0), index/max(1, len(tiles)-1))
+                    if not air:
+                        contacts.setdefault(x, set()).add(tiles[max(0, index-1)])
+            self._path = paths, ground, airpath, contacts, progress
+            self._path_key = path_key
+            self.stats['path_misses'] += 1
+        else:
+            self.stats['path_hits'] += 1
+        base_key = (scope, path_key, fingerprint(own['board']))
+        if self._base_key != base_key:
+            self._actions.clear()
+            units = [self.get_unit(piece) for piece in own['board'] if piece['kind'] == 'chess']
+            paths, ground, airpath, contacts, progress = self._path
+            gc, ac, hc, blockers, before = metrics(units, ground, airpath, contacts)
+            obs = _observation(paths, ground, airpath, progress, units, gc, ac, hc, before)
+            self._base = (*self._path, units, gc, ac, hc, blockers, before, obs)
+            self._base_key = base_key
+            self.stats['board_misses'] += 1
+        else:
+            self.stats['board_hits'] += 1
+        return self._base
+
+    def action_key(self, state, action, source):
+        to = action.get('to', {})
+        destination = state['own']['hand'][to['idx']] if to.get('area') == 'hand' else None
+        return canonical({'action': action, 'source': source, 'destination': destination})
+
+    def get_action(self, key):
+        if key in self._actions:
+            self.stats['action_hits'] += 1
+            self._actions.move_to_end(key)
+            return list(self._actions[key])
+        self.stats['action_misses'] += 1
+        return None
+
+    def remember_action(self, key, row):
+        self._actions[key] = tuple(row)
+        if len(self._actions) > self.max_actions:
+            self._actions.popitem(last=False)
 
 
 def validate_runtime():
@@ -123,14 +227,18 @@ def _summaries(boards, ground, airpath, contacts):
     return np.concatenate(output)
 
 
-def encode(state, actions, g, catalog):
+def encode(state, actions, g, catalog, *, route_cache=None):
     validate_runtime()
-    paths, ground, airpath, contacts, progress, units = context(state, g, catalog)
-    gc, ac, hc, blockers, before = metrics(units, ground, airpath, contacts)
-    obs = []
-    for x in CELLS:
-        obs.extend((float(x in ground), float(x in airpath), progress[0].get(x, 0), progress[1].get(x, 0), sum((u['block'] for u in units if u['at'] == x)) / 8, gc[x] / 2000, ac[x] / 2000, hc[x] / 4))
-    obs.extend((len(paths) / 16, *before[:3]))
+    if route_cache is None:
+        paths, ground, airpath, contacts, progress, units = context(state, g, catalog)
+        gc, ac, hc, blockers, before = metrics(units, ground, airpath, contacts)
+        obs = _observation(paths, ground, airpath, progress, units, gc, ac, hc, before)
+        make_unit = lambda piece: unit(catalog, piece)
+    else:
+        if not isinstance(route_cache, RouteFeatureCache):
+            raise ValueError('Explicit per-episode RouteFeatureCache required')
+        paths, ground, airpath, contacts, progress, units, gc, ac, hc, blockers, before, obs = route_cache.begin(state, g, catalog)
+        make_unit = route_cache.get_unit
     pieces = {p['uid']: p for area in ('board', 'hand', 'temp') for p in state['own'][area] if p}
     byuid = {u['uid']: u for u in units}
     bycell = {u['at']: u for u in units}
@@ -138,6 +246,7 @@ def encode(state, actions, g, catalog):
     cache = {}
     rows = []
     pending = []
+    remember = []
     for a in actions:
         source = pieces.get(a.get('uid'))
         to = a.get('to', {})
@@ -150,6 +259,14 @@ def encode(state, actions, g, catalog):
             continue
         row = [0.0] * ACTION_DIM
         if source and source['kind'] == 'chess' and (move or remove):
+            persistent_key = route_cache.action_key(state, a, source) if route_cache is not None else None
+            if route_cache is not None:
+                cached = route_cache.get_action(persistent_key)
+                if cached is not None:
+                    cache[key] = cached
+                    rows.append(cached)
+                    continue
+                remember.append((persistent_key, len(rows)))
             old = byuid.get(source['uid'])
             src = old['at'] if old else None
             afterunits = [u for u in units if u['uid'] != source['uid']]
@@ -161,8 +278,8 @@ def encode(state, actions, g, catalog):
                     afterunits = [u for u in afterunits if u['uid'] != occupant['uid']]
                     if old:
                         p = dict(pieces[occupant['uid']], row=src[0], col=src[1])
-                        afterunits.append(unit(catalog, p))
-                actor = unit(catalog, dict(source, row=target[0], col=target[1], dir=a.get('dir', 'RIGHT')))
+                        afterunits.append(make_unit(p))
+                actor = make_unit(dict(source, row=target[0], col=target[1], dir=a.get('dir', 'RIGHT')))
                 afterunits.append(actor)
             elif move and to.get('area') == 'hand' and (state['own']['hand'][to['idx']] is not None):
                 known = False
@@ -184,4 +301,7 @@ def encode(state, actions, g, catalog):
         if not all(math.isfinite(value) for value in delta):
             raise ValueError('Nonfinite array route summary')
         rows[index][20:26] = delta
+    if route_cache is not None:
+        for key, index in remember:
+            route_cache.remember_action(key, rows[index])
     return (torch.tensor(obs, dtype=torch.float32), torch.tensor(rows, dtype=torch.float32).reshape(-1, ACTION_DIM))

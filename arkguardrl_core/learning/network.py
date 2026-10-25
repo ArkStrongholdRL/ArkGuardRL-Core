@@ -22,6 +22,23 @@ def group_lse(values, groups):
     return torch.logsumexp(masked, -1), present
 
 
+def expert_scores(model, inputs, data):
+    """Score each valid candidate once, preserving zero gradients for absent heads.
+
+    Adam must still see zero gradients for an unused expert: changing those to
+    None would skip its momentum update and change the original optimizer rule.
+    """
+    raw = inputs.new_zeros(len(inputs))
+    for expert, head in enumerate((model.base.purchase_head, model.base.placement_head)):
+        indices = data[f'expert_{expert}']
+        if indices.numel():
+            raw = raw.index_copy(0, indices, head(inputs[indices]).squeeze(-1))
+        else:
+            zero = sum(parameter.reshape(-1)[0]*0 for parameter in head.parameters())
+            raw = raw+zero
+    return raw
+
+
 def forward(model, data):
     enc, width = model.base.encoder, model.width
     obs, actions = data['tables'], data['candidates']
@@ -73,11 +90,14 @@ def forward(model, data):
     hidden = torch.cat((global_hidden, control_hidden), -1)
     cells = torch.cat((spatial.new_zeros(batch, 1, 16*width), spatial), 1)
     count_candidates = actions.shape[1]
-    inputs = torch.cat((hidden[:, None, :].expand(-1, count_candidates, -1),
-        entities[state[:, :, None], actions[:, :, :4].long()].flatten(2),
-        cells[state, actions[:, :, 4].long()], actions[:, :, 5:]), -1)
-    raw = torch.where(data['experts'] == 0, model.base.purchase_head(inputs).squeeze(-1),
-                       model.base.placement_head(inputs).squeeze(-1))
+    active = data['active_candidates']
+    owner = data['candidate_state']
+    inputs = torch.cat((hidden[owner],
+        entities[owner[:, None], active[:, :4].long()].flatten(1),
+        cells[owner, active[:, 4].long()], active[:, 5:]), -1)
+    active_raw = expert_scores(model, inputs, data)
+    raw = active_raw.new_zeros(batch*count_candidates).index_copy(
+        0, data['candidate_flat_index'], active_raw).reshape(batch, count_candidates)
     groups, schedules = data['groups'], data['schedules']
     normalizers, existing = group_lse(raw, groups)
     schedule_logp = model.base.scheduler(hidden).masked_fill(~existing, -torch.inf).log_softmax(1)
@@ -86,7 +106,9 @@ def forward(model, data):
     safe = schedule_logp.masked_fill(~existing, 0)
     logp = safe.gather(1, schedules)+raw-normalizers.gather(1, schedules)
     route = model.route_encoder(data['route_obs'])
-    delta = model.target(torch.cat((route[:, None, :].expand(-1, count_candidates, -1), data['route_actions']), -1)).squeeze(-1)
+    active_delta = model.target(torch.cat((route[owner], data['active_route_actions']), -1)).squeeze(-1)
+    delta = active_delta.new_zeros(batch*count_candidates).index_copy(
+        0, data['candidate_flat_index'], active_delta).reshape(batch, count_candidates)
     masses, _ = group_lse(logp, groups)
     new_mass = (masses.masked_fill(~existing, -torch.inf)+model.schedule(route)).log_softmax(1).masked_fill(~existing, 0)
     adjusted = logp-masses.gather(1, schedules)+delta
