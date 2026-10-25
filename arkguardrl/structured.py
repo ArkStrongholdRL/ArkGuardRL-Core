@@ -323,7 +323,7 @@ def encode_decision(state, actions, catalog, history_snapshot):
     encoded, schedules, experts = [], [], []
     # A source appears in many placement candidates. Own one catalog projection
     # per definition for this decision instead of deep-copying it per action.
-    chess_records = {}
+    chess_records, number_templates, flag_templates, route_templates = {}, {}, {}, {}
     cell_indices = {cell: index+1 for index, cell in enumerate(CELLS)}
     for action in actions:
         description = describe_action(state, action, locations=locations, occupied=occupied)
@@ -339,23 +339,32 @@ def encode_decision(state, actions, catalog, history_snapshot):
         row = p["raw_entities"][subject - 1][0] if subject else {}
         cost = description.cost
         subject_row = row or (p["raw_entities"][source - 1][0] if source else {})
-        rec = {}
-        if subject_row.get("kind") == "chess":
-            identifier = subject_row['id']
-            if identifier not in chess_records:
-                chess_records[identifier] = catalog.record('chess', identifier)
-            rec = chess_records[identifier]
-        counts = p["families"].get(rec.get("baseId", subject_row.get("id")), {})
-        needed = rec.get("upgradeNum", 0) or 0
-        nums = (scalar(cost, 30), scalar(row.get("coin", 0), 10), scalar(row.get("count", 0), 10),
-                scalar(row.get("rounds", 0), 10), *(scalar(counts.get(a, 0), 3) for a in ("board", "hand", "temp", "golden")),
-                scalar(needed, 3), scalar(max(0, needed - sum(counts.get(a, 0) for a in ("board", "hand", "temp"))), 3),
-                float(to.get("area") == "hand"), scalar(to.get("idx", -1), 10))
+        number_key = (source, subject, type(cost), cost)
+        if number_key not in number_templates:
+            rec = {}
+            if subject_row.get("kind") == "chess":
+                identifier = subject_row['id']
+                if identifier not in chess_records:
+                    chess_records[identifier] = catalog.record('chess', identifier)
+                rec = chess_records[identifier]
+            counts = p["families"].get(rec.get("baseId", subject_row.get("id")), {})
+            needed = rec.get("upgradeNum", 0) or 0
+            base_numbers = (scalar(cost, 30), scalar(row.get("coin", 0), 10), scalar(row.get("count", 0), 10),
+                    scalar(row.get("rounds", 0), 10), *(scalar(counts.get(a, 0), 3) for a in ("board", "hand", "temp", "golden")),
+                    scalar(needed, 3), scalar(max(0, needed - sum(counts.get(a, 0) for a in ("board", "hand", "temp"))), 3))
+            number_templates[number_key] = base_numbers
+        nums = number_templates[number_key] + (float(to.get("area") == "hand"), scalar(to.get("idx", -1), 10))
         cell = (to.get("row", action.get("row")), to.get("col", action.get("col")))
         destination = cell_indices.get(cell, 0)
-        encoded.append((source, target, replaced, subject, destination) + flags(action.get("dir"), DIRECTIONS)
-                       + flags(kind, ACTION_TYPES) + flags(description.semantic, MOVE_TYPES) + nums)
-        schedule, expert = routing(state, action, description=description)
+        flag_key = (action.get("dir"), kind, description.semantic)
+        if flag_key not in flag_templates:
+            flag_templates[flag_key] = (flags(flag_key[0], DIRECTIONS) + flags(kind, ACTION_TYPES)
+                                        + flags(description.semantic, MOVE_TYPES))
+        encoded.append((source, target, replaced, subject, destination) + flag_templates[flag_key] + nums)
+        route_key = (kind, description.semantic)
+        if route_key not in route_templates:
+            route_templates[route_key] = routing(state, action, description=description)
+        schedule, expert = route_templates[route_key]
         schedules.append(schedule)
         experts.append(expert)
     if len(obs) != WIRE_DIM or any(len(r) != ACTION_DIM for r in encoded):

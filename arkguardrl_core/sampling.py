@@ -112,7 +112,7 @@ def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason
 def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directory, log_mode=None,
             session_pool=None):
     """Collect one complete live episode. Never reload PPO rows from artifacts."""
-    ctx.check()
+    ctx.check(sources=True)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
     torch.manual_seed(rng_seed)
@@ -263,6 +263,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             'full_observations_archived': False, 'offline_ppo_ready': False})
     report['elapsed'] = time.monotonic()-started
     write(directory / 'summary.json', report)
+    ctx.check(sources=True)
     return rows, report
 
 
@@ -285,7 +286,7 @@ def verify_live_metadata(ctx, rows, revision, checkpoint):
                     or value.shape != (len(capture['actions']),)):
                 raise ValueError('Live '+name+' distribution shape/device mismatch')
             neural._finite(value, 'live '+name+' distribution')
-    ctx.check()
+    ctx.check(sources=True)
 
 
 def verify_replay(row, logp, value):
@@ -305,7 +306,7 @@ def verify_live(ctx, model, rows, revision, checkpoint):
             logp, value = model(row.inputs())
             logp = logp.log_softmax(0)
         verify_replay(row, logp, value)
-    ctx.check()
+    ctx.check(sources=True)
 
 
 def distribution_metrics(model, rows):

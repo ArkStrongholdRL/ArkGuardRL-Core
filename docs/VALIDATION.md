@@ -128,3 +128,31 @@ are in `ArkGuardRL/docs/research/20261025/optimization-single-receipt.json`.
   it cannot all be attributed to transport.
 - Per-experiment measurements remain in
   `ArkGuardRL/docs/research/20261025/transport-single-receipt.json`.
+
+
+## Four Python collection hotspots (2026-10-25)
+
+- Candidate support/healing queries reuse decision-local integer coverage tables
+  with exact removal/swap corrections. Unit/action route keys contain only inputs
+  actually read by the public default geometry; state/context binding remains.
+- Structured numeric/category/routing templates are reused within a decision.
+  A bounded content-keyed action-ID LRU retains exact canonical hashes and does
+  not trust mutable object identity or remove capture/receiver validation.
+- Run source hashing is polled at one-second intervals and forced at collection,
+  learning and save boundaries. Budget/config checks remain frequent; strict
+  checkpoint source matching is unchanged. Persistent changes are detected at
+  the next check; this is not continuous filesystem monitoring.
+- All 191 archived decisions matched old candidate order, IDs, structured features,
+  route tensors and routing IDs exactly. These archived diagnostics were not
+  training input. 1000 randomized support/removal/swap comparisons passed, plus
+  action mutation/type/fallback checks and source interval/forced/deadline checks.
+- An initial complete game/PPO run passed but was slower than the old historical
+  timing even in unchanged phases. An adjacent frozen-baseline/optimized pair
+  resolved the concern: both collection and total wall time improved. All three
+  actual 191-action/result/state sequences matched the earlier run; each round
+  completed two updates. Both optimized checkpoints strictly reloaded, with CPU
+  model/optimizer storage. No updated-policy gameplay evaluation was performed.
+- This is one sequential pair on a shared machine, not a throughput guarantee.
+  Measurements and limitations are recorded in the research repository at
+  `docs/research/20261025/hotspots-single-receipt.json` and
+  `docs/research/20261025/HOTSPOTS-OPTIMIZATION.md`.

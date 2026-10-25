@@ -96,6 +96,7 @@ class Run:
         cost_schema = 'arkguardrl-core/prep-attempt-cost/'+fingerprint(objective)+'/v1'
         self.objective_contract = replace(self.contract, reward_schema=cost_schema) if self.cost_arm else self.contract
         self._sources, self._native_sources = source_hashes(), neural.source_hashes()
+        self._last_source_check = -float('inf')
         self._configuration = fingerprint({'sampler': self.config, 'ppo': self.training})
         self._max_disk, self._min_free, self._last_scan = max_disk_bytes, min_free_bytes, -float('inf')
         self.root.mkdir(parents=True, exist_ok=False)
@@ -107,16 +108,20 @@ class Run:
             'resume': 'not implicit; optimizer/RNG and exact source identity required'})
         self.check()
 
-    def check(self):
+    def check(self, *, sources=False):
         if time.monotonic() >= self.deadline:
             raise TimeoutError('Framework run wall budget exhausted')
         if shutil.disk_usage(self.root).free < self._min_free:
             raise RuntimeError('Framework minimum free disk reached')
         if fingerprint({'sampler': self.config, 'ppo': self.training}) != self._configuration:
             raise ValueError('Run configuration changed during live work')
-        if source_hashes() != self._sources or neural.source_hashes() != self._native_sources:
-            raise ValueError('Framework source identity changed during live work')
         now = time.monotonic()
+        # Polling each row keeps budgets responsive. Hash the source closure at
+        # most once per second there, and unconditionally at work boundaries.
+        if sources or now-self._last_source_check >= 1:
+            if source_hashes() != self._sources or neural.source_hashes() != self._native_sources:
+                raise ValueError('Framework source identity changed during live work')
+            self._last_source_check = now
         if now-self._last_scan >= 30:
             size = 0
             for path in self.root.rglob('*'):
@@ -140,7 +145,7 @@ class Run:
         del restored
 
     def save(self, path, model, **metadata):
-        self.check()
+        self.check(sources=True)
         checkpoint.save(path, model, self.contract, {
             'schema': self.schema, 'run_sha256': sha(self.root/'run.json'),
             'objective_contract': self.objective_contract.to_dict(),

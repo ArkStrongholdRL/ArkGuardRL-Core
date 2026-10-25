@@ -165,7 +165,7 @@ class Collector:
             raise ValueError('Unique uint32 game seeds required')
         if type(rng_seed) is not int or not 0 <= rng_seed <= 0xffffffff-len(seeds):
             raise ValueError('Sampling RNG range outside uint32')
-        self.ctx.check()
+        self.ctx.check(sources=True)
         started = time.monotonic()
         policy_sha, anchor_sha = sha(checkpoint), sha(anchor)
         parameters = weights_hash(model)
@@ -289,6 +289,7 @@ class Collector:
                 'raw_transport_bytes': total_raw,
                 'capture_bytes_upper_bound': total_capture,
                 'node_starts': sum(r['node_starts'] for r in reports)}
+            self.ctx.check(sources=True)
             return rows, reports, timing
         except BaseException:
             self.close(force=True)

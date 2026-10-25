@@ -113,7 +113,7 @@
     "arkguardrl/contracts.py": {
       "source": "arkguardrl/contracts.py",
       "source_sha256": "2fa1dca1eec2c48e1fcfde48c829efd0b33f533b7270f555d54a155380d717e6",
-      "mode": "byte-preserved"
+      "mode": "derived"
     },
     "arkguardrl/environment.py": {
       "source": "arkguardrl/environment.py",

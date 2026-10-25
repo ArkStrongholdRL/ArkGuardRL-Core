@@ -12,7 +12,7 @@ from collections import Counter, OrderedDict
 import numpy as np
 import torch
 from arkguardrl.candidates import MAX_CANDIDATES
-from arkguardrl.contracts import canonical, fingerprint
+from arkguardrl.contracts import fingerprint
 from .routes.features import ACTION_DIM, ACTION_FIELDS, CELLS, context, metrics, unit, validate_geometry
 
 SCHEMA = 'arkguardrl/route-feature-array-execution/v1'
@@ -27,6 +27,49 @@ def _observation(paths, ground, airpath, progress, units, gc, ac, hc, before):
             gc[x]/2000, ac[x]/2000, hc[x]/4))
     obs.extend((len(paths)/16, *before[:3]))
     return tuple(obs)
+
+
+def _unit_key(piece):
+    # Public default stats/range depend only on the catalog id; equipment and
+    # live counters are deliberately not inputs to routes.features.unit.
+    return (piece['uid'], piece['id'], piece.get('row'), piece.get('col'), piece.get('dir', 'RIGHT'))
+
+
+class _SupportTable:
+    """Decision-local integer queries with at most two removals and one swap."""
+    def __init__(self, units, ground, contacts, healing):
+        self.ground = ground
+        self.required = {at: frozenset((at, *contacts.get(at, ()))) for at in CELLS}
+        self.covers, self.blocker_totals = {}, {}
+        self.providers = Counter()
+        self.healing = healing
+        self.blockers = Counter(u['at'] for u in units if self.is_blocker(u))
+        for u in units:
+            if u['dps'] > 0:
+                self.providers.update(self.supports(u))
+
+    def is_blocker(self, u):
+        return u['block'] > 0 and u['at'] in self.ground
+
+    def supports(self, u):
+        key = frozenset(u['cover'])
+        if key not in self.covers:
+            self.covers[key] = frozenset(at for at, needed in self.required.items() if needed <= key)
+        return self.covers[key]
+
+    def query(self, actor, removed, added):
+        at = actor['at']
+        covered = self.supports(actor)
+        providers, healers = self.providers[at], self.healing.get(at, 0)
+        if covered not in self.blocker_totals:
+            self.blocker_totals[covered] = sum(self.blockers[x] for x in covered)
+        blockers = self.blocker_totals[covered]
+        for sign, changed in ((-1, removed), (1, added)):
+            for u in changed:
+                providers += sign * (u['dps'] > 0 and at in self.supports(u))
+                healers += sign * (u['heal'] and at in u['cover'])
+                blockers += sign * (self.is_blocker(u) and u['at'] in covered)
+        return float(at in covered), float(providers > 0), min(1, healers / 2), blockers / 8
 
 
 class RouteFeatureCache:
@@ -48,7 +91,7 @@ class RouteFeatureCache:
         self.stats = Counter()
 
     def get_unit(self, piece):
-        key = canonical(piece)
+        key = _unit_key(piece)
         if key in self._units:
             self.stats['unit_hits'] += 1
             self._units.move_to_end(key)
@@ -105,7 +148,10 @@ class RouteFeatureCache:
     def action_key(self, state, action, source):
         to = action.get('to', {})
         destination = state['own']['hand'][to['idx']] if to.get('area') == 'hand' else None
-        return canonical({'action': action, 'source': source, 'destination': destination})
+        # These are precisely the inputs read by encode/unit. Board, catalog,
+        # route and setup identity are already bound by begin().
+        return (action['t'], _unit_key(source), to.get('area'), to.get('row'),
+                to.get('col'), to.get('idx'), action.get('dir', 'RIGHT'), destination is not None)
 
     def get_action(self, key):
         if key in self._actions:
@@ -278,6 +324,7 @@ def encode(state, actions, g, catalog, *, route_cache=None):
     byuid = {u['uid']: u for u in units}
     bycell = {u['at']: u for u in units}
     terrain = {(x['row'], x['col']): x['kind'] for x in state['own']['deployment']['cells']}
+    support_table = _SupportTable(units, ground, contacts, hc)
     cache = {}
     rows = []
     pending = []
@@ -306,26 +353,29 @@ def encode(state, actions, g, catalog, *, route_cache=None):
             src = old['at'] if old else None
             afterunits = [u for u in units if u['uid'] != source['uid']]
             actor = old
+            removed, added = ([old] if old else []), []
             known = True
             if target:
                 occupant = bycell.get(target)
                 if occupant and occupant['uid'] != source['uid']:
                     afterunits = [u for u in afterunits if u['uid'] != occupant['uid']]
+                    removed.append(occupant)
                     if old:
                         p = dict(pieces[occupant['uid']], row=src[0], col=src[1])
-                        afterunits.append(make_unit(p))
+                        swapped = make_unit(p)
+                        afterunits.append(swapped)
+                        added.append(swapped)
                 actor = make_unit(dict(source, row=target[0], col=target[1], dir=a.get('dir', 'RIGHT')))
                 afterunits.append(actor)
             elif move and to.get('area') == 'hand' and (state['own']['hand'][to['idx']] is not None):
                 known = False
             if actor:
                 at = target or actor['at']
-                others = [u for u in afterunits if u['uid'] != actor['uid']]
-                support = any((u['dps'] > 0 and at in u['cover'] and all((x in u['cover'] for x in contacts.get(at, ()))) for u in others))
+                support_features = support_table.query(actor, removed, added)
                 st = actor['stats']
                 after = [0.0] * 6
                 pending.append((len(rows), afterunits))
-                row = [float(known), actor['block'] / 8, float(actor['heal']), float(actor['air']), actor['dps'] / 2000, float(st.get('maxHp', 0)) / 10000, float(st.get('def', 0)) / 1000, float(st.get('res', 0)) / 100, float(at in ground), float(at in airpath), progress[0].get(at, 0), progress[1].get(at, 0), len(actor['cover'] & ground) / max(1, len(ground)), len(actor['cover'] & airpath) / max(1, len(airpath)), float(at in actor['cover'] and all((x in actor['cover'] for x in contacts.get(at, ())))), float(support), min(1, sum((u['heal'] and at in u['cover'] for u in others)) / 2), sum((u['block'] > 0 and u['at'] in ground and (u['at'] in actor['cover']) and all((x in actor['cover'] for x in contacts.get(u['at'], ()))) for u in others)) / 8, gc.get(at, 0) / 2000, ac.get(at, 0) / 2000, *[after[i] - before[i] for i in range(6)], float(src in ground), float(src in airpath), float(terrain.get(at) == 'ranged'), float(at in bycell), float(move), float(remove)]
+                row = [float(known), actor['block'] / 8, float(actor['heal']), float(actor['air']), actor['dps'] / 2000, float(st.get('maxHp', 0)) / 10000, float(st.get('def', 0)) / 1000, float(st.get('res', 0)) / 100, float(at in ground), float(at in airpath), progress[0].get(at, 0), progress[1].get(at, 0), len(actor['cover'] & ground) / max(1, len(ground)), len(actor['cover'] & airpath) / max(1, len(airpath)), *support_features, gc.get(at, 0) / 2000, ac.get(at, 0) / 2000, *[after[i] - before[i] for i in range(6)], float(src in ground), float(src in airpath), float(terrain.get(at) == 'ranged'), float(at in bycell), float(move), float(remove)]
         if len(row) != ACTION_DIM or not all((math.isfinite(x) for x in row)):
             raise ValueError('Nonfinite/misshaped route candidate features')
         cache[key] = row
