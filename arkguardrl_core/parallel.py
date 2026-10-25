@@ -10,15 +10,15 @@ import hashlib
 import multiprocessing as mp
 from multiprocessing.connection import wait
 import os
-import pickle
 import signal
 import time
 import uuid
 
 from .io import sha, write
+from .transport import encode_row, decode_row
 
 FRAME_BYTES = 1024 * 1024
-WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v1'
+WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v2'
 
 
 def _receive(connection, deadline):
@@ -74,14 +74,21 @@ def _worker(connection, ctx):
             pending = deque(rows)
             del rows
             wire_bytes = 0
+            raw_bytes = tensor_bytes = metadata_bytes = 0
+            encode_seconds = 0.0
             for index in range(report['decisions']):
                 row = pending.popleft()
-                payload = pickle.dumps(row, protocol=5)
+                encode_started = time.monotonic()
+                payload, sizes = encode_row(row, ctx.config['max_episode_bytes'])
+                encode_seconds += time.monotonic()-encode_started
+                raw_bytes += sizes['raw_bytes']
+                tensor_bytes += sizes['tensor_bytes']
+                metadata_bytes += sizes['metadata_bytes']
                 del row
                 if len(payload) > ctx.config['max_episode_bytes']:
                     raise MemoryError('Single live row exceeds transport bound')
                 wire_bytes += len(payload)
-                if wire_bytes > ctx.ppo.max_buffer_bytes:
+                if wire_bytes > ctx.ppo.max_buffer_bytes or raw_bytes > ctx.ppo.max_buffer_bytes:
                     raise MemoryError('Worker live transport exceeds buffer bound')
                 digest = hashlib.sha256(payload).hexdigest()
                 for offset in range(0, len(payload), FRAME_BYTES):
@@ -93,6 +100,8 @@ def _worker(connection, ctx):
                         raise ValueError('Live frame acknowledgement mismatch')
                 del payload
             connection.send({'kind': 'done', 'token': token, 'wire_bytes': wire_bytes,
+                             'raw_bytes': raw_bytes, 'tensor_bytes': tensor_bytes,
+                             'metadata_bytes': metadata_bytes, 'encode_seconds': encode_seconds,
                              'transfer_seconds': time.monotonic()-transfer_started})
     except BaseException as exc:
         try:
@@ -172,14 +181,14 @@ class Collector:
                 'weights_sha256': parameters, 'log_mode': log_mode,
                 'directory': str(self.ctx.root/'games'/f'r{revision:04d}-{index:03d}-{seed}')})
         active, results = {}, {}
-        total_wire, total_capture = 0, 0
+        total_wire, total_capture, total_raw = 0, 0, 0
 
         def dispatch(child):
             if pending:
                 task = pending.popleft()
                 active[child['pipe']] = {'child': child, 'task': task, 'rows': [],
                     'report': None, 'buffer': bytearray(), 'row_length': None,
-                    'digest': None, 'wire_bytes': 0}
+                    'digest': None, 'wire_bytes': 0, 'raw_bytes': 0, 'decode_seconds': 0.0}
                 child['pipe'].send(task)
 
         for child in self.children:
@@ -231,7 +240,13 @@ class Collector:
                         if len(state['buffer']) == message['length']:
                             if hashlib.sha256(state['buffer']).hexdigest() != state['digest']:
                                 raise ValueError('Live row transport digest mismatch')
-                            row = pickle.loads(state['buffer'])
+                            decode_started = time.monotonic()
+                            row, raw_bytes = decode_row(state['buffer'], self.ctx.config['max_episode_bytes'])
+                            state['decode_seconds'] += time.monotonic()-decode_started
+                            state['raw_bytes'] += raw_bytes
+                            total_raw += raw_bytes
+                            if total_raw > self.ctx.ppo.max_buffer_bytes:
+                                raise MemoryError('Inflated live transport exceeds buffer budget')
                             transition = row.transition
                             expected_episode = ('games/'
                                 f'{os.path.basename(task["directory"])}/{task["seed"]}/{revision}')
@@ -248,10 +263,13 @@ class Collector:
                     elif kind == 'done':
                         if (state['report'] is None or state['buffer']
                                 or len(state['rows']) != state['report']['decisions']
-                                or state['wire_bytes'] != message['wire_bytes']):
+                                or state['wire_bytes'] != message['wire_bytes']
+                                or state['raw_bytes'] != message['raw_bytes']):
                             raise ValueError('Incomplete live episode transfer')
                         state['report'].update(transfer_seconds=message['transfer_seconds'],
-                                               wire_bytes=message['wire_bytes'])
+                            wire_bytes=message['wire_bytes'], raw_bytes=message['raw_bytes'],
+                            tensor_bytes=message['tensor_bytes'], metadata_bytes=message['metadata_bytes'],
+                            encode_seconds=message['encode_seconds'], decode_seconds=state['decode_seconds'])
                         results[task['index']] = (state['rows'], state['report'])
                         del active[connection]
                         dispatch(state['child'])
@@ -268,6 +286,7 @@ class Collector:
             timing = {'schema': WIRE_SCHEMA, 'workers': self.workers,
                 'collection_seconds': time.monotonic()-started,
                 'worker_startup_seconds': self.startup_seconds, 'wire_bytes': total_wire,
+                'raw_transport_bytes': total_raw,
                 'capture_bytes_upper_bound': total_capture,
                 'node_starts': sum(r['node_starts'] for r in reports)}
             return rows, reports, timing

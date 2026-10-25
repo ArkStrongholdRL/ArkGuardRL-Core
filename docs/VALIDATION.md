@@ -108,3 +108,23 @@ are in `ArkGuardRL/docs/research/20261025/optimization-single-receipt.json`.
   implementation was retained. This is one observation, not stable throughput
   evidence. Experiment timings are retained in the research repository under
   `docs/research/20261025/incremental-single-receipt.json`.
+
+## Lossless live-row transport (2026-10-25)
+
+- Private pipe protocol v2 encodes tensors as contiguous CPU bytes with original
+  dtype/shape, then compresses the entire row at zlib level1. Every metadata field
+  and candidate is retained. SHA256/task/order/frame checks remain; inflated row
+  and combined transport budgets are enforced independently of compressed size.
+  Decompression rejects incomplete/trailing streams. Pickle metadata remains
+  restricted to trusted child pipes, not files or external input.
+- One same-input natural game plus MPS PPO update passed live replay/audits,
+  strict result reload and CPU model serialization. All 191 actual action/native
+  result/before/after-state records matched the preceding run exactly. No
+  updated-policy evaluation or repeated timing sweep ran.
+- Direct codec checks confirmed tensor byte/dtype/shape equality, independent
+  writable output storage and rejection of a truncated compressed stream.
+  Python parsing and diff checks passed. The single run reduced payload bytes
+  and measured transfer time. Total wall time also changed in other phases;
+  it cannot all be attributed to transport.
+- Per-experiment measurements remain in
+  `ArkGuardRL/docs/research/20261025/transport-single-receipt.json`.
