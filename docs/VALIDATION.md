@@ -259,3 +259,22 @@ are in `ArkGuardRL/docs/research/20261025/optimization-single-receipt.json`.
   versus 225.36 ms for a current strict reload plus parameter comparison; this
   isolates binding, not historical end-to-end performance. Full records are at
   `docs/research/20261025/CONCURRENT-COLLECTION.md` in the research repository.
+
+## Public feature contexts and numeric tables (2026-10-25)
+
+- Route layouts own bounded numeric unit/coverage tables keyed by all consumed
+  values; mutable input changes miss the cache, layout changes invalidate it.
+  Board support tables persist only for the exact bound board context. Ordered
+  compensated sums remain; final bounded count divisions are vectorized.
+- Structured movement candidates resolve references/semantics directly, avoiding
+  per-candidate descriptor objects; other actions reuse decision-local descriptors.
+  Catalog identity checks validate the same boundary without copying projections;
+  the public record API continues returning independent copies.
+- All 297 recorded states matched frozen candidate order, structured inputs and
+  route tensors exactly; 5400 randomized delta boards matched, including cache
+  eviction, mutated numeric inputs and wide DPS magnitudes. Invalid deltas/layout
+  reuse were rejected. Archived states were used only for equivalence checks.
+- Alternating feature microbenchmark: 4.09 s to 3.50 s (about 14%); no whole-game
+  speedup inferred from that ratio. Frozen and final complete live game/MPS PPO
+  runs matched 297 actions/states, with four updates each. Detailed receipts are
+  in research `results/runtime-feature-blocks-20261025`.

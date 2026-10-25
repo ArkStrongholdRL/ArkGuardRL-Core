@@ -71,6 +71,52 @@ class _SupportTable:
         return float(at in covered), float(providers > 0), min(1, healers / 2), blockers / 8
 
 
+class _SummaryTables:
+    """Bounded immutable numeric unit projections for one public route layout."""
+    def __init__(self, ground, airpath, contacts, capacity=4096):
+        self.key = self.scope(ground, airpath, contacts)
+        self.cells = {cell: i for i, cell in enumerate(CELLS)}
+        self.ground_mask = np.array([x in ground for x in CELLS])
+        self.air_mask = np.array([x in airpath for x in CELLS])
+        if any(x not in self.cells or any(p not in self.cells for p in previous)
+               for x, previous in contacts.items()):
+            raise ValueError('Contact outside route cell domain')
+        self.required = tuple(frozenset((x, *contacts.get(x, ()))) for x in CELLS)
+        self.ground, self.capacity = frozenset(ground), capacity
+        self.rows, self.coverages = OrderedDict(), OrderedDict()
+        self.hits = self.misses = 0
+
+    @staticmethod
+    def scope(ground, airpath, contacts):
+        return (frozenset(ground), frozenset(airpath),
+                frozenset((x, frozenset(previous)) for x, previous in contacts.items()))
+
+    def row(self, unit):
+        coverage = frozenset(unit['cover'])
+        key = (unit['at'], coverage, unit['dps'], unit['air'], unit['heal'], unit['block'])
+        if key in self.rows:
+            self.hits += 1
+            self.rows.move_to_end(key)
+            return self.rows[key]
+        self.misses += 1
+        if coverage not in self.coverages:
+            cover = np.array([x in coverage for x in CELLS], dtype=bool)
+            support = np.array([needed <= coverage for needed in self.required], dtype=bool)
+            cover.flags.writeable = support.flags.writeable = False
+            self.coverages[coverage] = cover, support
+            if len(self.coverages) > self.capacity:
+                self.coverages.popitem(last=False)
+        cover, support = self.coverages[coverage]
+        self.coverages.move_to_end(coverage)
+        result = (cover, support, self.cells[unit['at']], unit['dps'],
+                  unit['dps'] if unit['air'] else 0., int(unit['heal']),
+                  unit['block'] > 0 and unit['at'] in self.ground)
+        self.rows[key] = result
+        if len(self.rows) > self.capacity:
+            self.rows.popitem(last=False)
+        return result
+
+
 class RouteFeatureCache:
     """Bounded per-episode public-feature cache; never stores neural activations.
 
@@ -87,6 +133,7 @@ class RouteFeatureCache:
         self._scope = self._path_key = self._base_key = None
         self._units, self._actions = OrderedDict(), OrderedDict()
         self._path = self._base = None
+        self._summary_tables = self._support = None
         self.stats = Counter()
 
     def get_unit(self, piece):
@@ -112,6 +159,7 @@ class RouteFeatureCache:
                 'factions', 'bossId', 'bossRound', 'bossPairs', 'combatMode')}})
         if self._catalog is not catalog or self._scope != scope:
             self._units.clear()
+            self._summary_tables = None
             self._base_key = None
             self._scope, self._catalog = scope, catalog
         path_key = fingerprint({k: geometry[k] for k in ('schema', 'stageId', 'round', 'field', 'routes')})
@@ -127,9 +175,12 @@ class RouteFeatureCache:
                         contacts.setdefault(x, set()).add(tiles[max(0, index-1)])
             self._path = paths, ground, airpath, contacts, progress
             self._path_key = path_key
+            self._summary_tables = None
             self.stats['path_misses'] += 1
         else:
             self.stats['path_hits'] += 1
+        if self._summary_tables is None:
+            self._summary_tables = _SummaryTables(*self._path[1:4])
         base_key = (scope, path_key, fingerprint(own['board']))
         if self._base_key != base_key:
             self._actions.clear()
@@ -138,6 +189,7 @@ class RouteFeatureCache:
             gc, ac, hc, blockers, before = metrics(units, ground, airpath, contacts)
             obs = _observation(paths, ground, airpath, progress, units, gc, ac, hc, before)
             self._base = (*self._path, units, gc, ac, hc, blockers, before, obs)
+            self._support = _SupportTable(units, ground, contacts, hc)
             self._base_key = base_key
             self.stats['board_misses'] += 1
         else:
@@ -175,7 +227,7 @@ def validate_runtime():
         raise ValueError('Reference route feature layout changed')
 
 
-def _summaries(changes, ground, airpath, contacts, base_units=()):
+def _summaries(changes, ground, airpath, contacts, base_units=(), *, tables=None):
     """Ordered base subsets plus appended units, with compensated float64 sums.
 
     Each change is (removed base indices, appended units). Candidate generation
@@ -185,7 +237,6 @@ def _summaries(changes, ground, airpath, contacts, base_units=()):
         return np.empty((0, 6), dtype=np.float64)
     if len(changes) > MAX_CANDIDATES or len(base_units) > 128:
         raise ValueError('Array route temporary-domain bound exceeded; no slicing')
-    cells = {cell: i for i, cell in enumerate(CELLS)}
     unique = [None, *base_units]
     identities = {id(u): i for i, u in enumerate(base_units, 1)}
     base_positions = {u['uid']: i for i, u in enumerate(base_units)}
@@ -233,23 +284,14 @@ def _summaries(changes, ground, airpath, contacts, base_units=()):
     air_dps = dps.copy()
     healer = np.zeros(len(unique), dtype=np.int64)
     blocking = np.zeros(len(unique), dtype=bool)
-    ground_mask = np.array([x in ground for x in CELLS])
-    air_mask = np.array([x in airpath for x in CELLS])
-    required = np.eye(36, dtype=bool)
-    for cell, adjacent in contacts.items():
-        for previous in adjacent:
-            required[cells[cell], cells[previous]] = True
-    for i, unit in enumerate(unique[1:], 1):
-        positions[i] = cells[unit['at']]
-        locations = [cells[x] for x in unit['cover'] if x in cells]
-        cover[i, locations] = True
-        dps[i] = unit['dps']
-        air_dps[i] = unit['dps'] if unit['air'] else 0.
-        healer[i] = unit['heal']
-        blocking[i] = unit['block'] > 0 and unit['at'] in ground
-    # Integer coverage of the complete contact requirement; no threshold on a
-    # floating-point subtraction can create a spurious supported blocker.
-    supports = cover.astype(np.int16) @ required.astype(np.int16).T == required.sum(1)
+    tables = tables if tables is not None else _SummaryTables(ground, airpath, contacts)
+    if tables.key != tables.scope(ground, airpath, contacts):
+        raise ValueError('Numeric route tables belong to a different layout')
+    ground_mask, air_mask = tables.ground_mask, tables.air_mask
+    supports = np.zeros_like(cover)
+    for i, u in enumerate(unique[1:], 1):
+        (cover[i], supports[i], positions[i], dps[i], air_dps[i],
+         healer[i], blocking[i]) = tables.row(u)
     # A move/removal retains an ordered subset of the current board, followed
     # by at most the swapped unit and moved unit. Accumulate each retained
     # prefix once; update only its changed suffix for each candidate. Keep the
@@ -314,10 +356,11 @@ def _summaries(changes, ground, airpath, contacts, base_units=()):
         gh = (gc[:, ground_mask] > 0).sum(1)
         ah = (ac[:, air_mask] > 0).sum(1)
         ns = supported.sum(1)
-        output.append(np.array([[int(gh[i]) / max(1, len(ground)),
-            int(ah[i]) / max(1, len(airpath)), int(ns[i]) / max(1, int(block_count[i])),
-            int(block_count[i]) / 8, float(damage[i]) / 2000, int(healing[i]) / 8]
-            for i in range(count)], dtype=np.float64))
+        # Integer counts are at most 128/36; float64 division exactly matches
+        # the reference's scalar int-to-double arithmetic, without per-row lists.
+        output.append(np.column_stack((gh / max(1, len(ground)),
+            ah / max(1, len(airpath)), ns / np.maximum(1, block_count),
+            block_count / 8, damage / 2000, healing / 8)))
     return np.concatenate(output)
 
 
@@ -338,7 +381,8 @@ def encode(state, actions, g, catalog, *, route_cache=None):
     unit_indices = {u['uid']: i for i, u in enumerate(units)}
     bycell = {u['at']: u for u in units}
     terrain = {(x['row'], x['col']): x['kind'] for x in state['own']['deployment']['cells']}
-    support_table = _SupportTable(units, ground, contacts, hc)
+    support_table = (route_cache._support if route_cache is not None
+                     else _SupportTable(units, ground, contacts, hc))
     cache = {}
     actions = tuple(actions)
     if len(actions) > MAX_CANDIDATES:
@@ -390,7 +434,12 @@ def encode(state, actions, g, catalog, *, route_cache=None):
                 pending.append((index, (tuple(unit_indices[u['uid']] for u in removed), appended)))
                 rows[index] = (float(known), actor['block'] / 8, float(actor['heal']), float(actor['air']), actor['dps'] / 2000, float(st.get('maxHp', 0)) / 10000, float(st.get('def', 0)) / 1000, float(st.get('res', 0)) / 100, float(at in ground), float(at in airpath), progress[0].get(at, 0), progress[1].get(at, 0), len(actor['cover'] & ground) / max(1, len(ground)), len(actor['cover'] & airpath) / max(1, len(airpath)), *support_features, gc.get(at, 0) / 2000, ac.get(at, 0) / 2000, *(0.0,) * 6, float(src in ground), float(src in airpath), float(terrain.get(at) == 'ranged'), float(at in bycell), float(move), float(remove))
         cache[key] = index
-    summaries = _summaries([change for _, change in pending], ground, airpath, contacts, units)
+    tables = route_cache._summary_tables if route_cache is not None else None
+    hits, misses = (tables.hits, tables.misses) if tables is not None else (0, 0)
+    summaries = _summaries([change for _, change in pending], ground, airpath, contacts, units, tables=tables)
+    if route_cache is not None:
+        route_cache.stats['numeric_hits'] += tables.hits-hits
+        route_cache.stats['numeric_misses'] += tables.misses-misses
     if pending:
         indices = np.fromiter((index for index, _ in pending), dtype=np.int64, count=len(pending))
         rows[indices, 20:26] = summaries - np.asarray(before, dtype=np.float64)

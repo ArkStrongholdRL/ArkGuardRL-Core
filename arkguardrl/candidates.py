@@ -50,7 +50,7 @@ def public_context(state, catalog):
             uid = _int(piece.get("uid"), "uid", 1)
             if uid in locations:
                 raise UnsupportedPublicState("Duplicate public UID")
-            catalog.record(piece["kind"], piece.get("id"))
+            catalog.validate_identity(piece["kind"], piece.get("id"))
             locations[uid] = (area, index, piece)
             if area == "board":
                 cell = (piece.get("row"), piece.get("col"))
@@ -64,7 +64,7 @@ def public_context(state, catalog):
                 iid = _int(item.get("uid"), "equipped uid", 1)
                 if iid in locations:
                     raise UnsupportedPublicState("Duplicate equipment UID")
-                catalog.record("item", item.get("id"))
+                catalog.validate_identity("item", item.get("id"))
                 locations[iid] = ("equipped", -1, {"kind": "item", **item})
             if piece["kind"] == "token":
                 _int(piece.get("ownerUid"), "token owner", 1)
@@ -95,7 +95,7 @@ def public_context(state, catalog):
             continue
         if offer.get("kind") not in ("chess", "item") or type(offer.get("sold")) is not bool:
             raise UnsupportedPublicState("Unknown shop kind or availability")
-        catalog.record(offer["kind"], offer.get("id"))
+        catalog.validate_identity(offer["kind"], offer.get("id"))
         _int(offer.get("price"), "effective price")
     return locations, occupied, cells
 

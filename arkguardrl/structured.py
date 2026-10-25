@@ -317,8 +317,9 @@ def encode_decision(state, actions, catalog, history_snapshot):
     from .dynamic import pack, OBS_DIM as WIRE_DIM
     obs = pack(p, catalog)
     from .domain import _locations
-    from .actions import describe_action
+    from .actions import describe_action, descriptor
     locations = _locations(state)
+    descriptors = {uid: descriptor(row, area) for uid, (area, _, row) in locations.items()}
     occupied = {(r["row"], r["col"]): r for r in state["own"]["board"]}
     encoded, schedules, experts = [], [], []
     # A source appears in many placement candidates. Own one catalog projection
@@ -326,18 +327,37 @@ def encode_decision(state, actions, catalog, history_snapshot):
     chess_records, number_templates, flag_templates, route_templates = {}, {}, {}, {}
     cell_indices = {cell: index+1 for index, cell in enumerate(CELLS)}
     for action in actions:
-        description = describe_action(state, action, locations=locations, occupied=occupied)
-        kind = description.kind
-        source = p["uid_refs"].get((description.source or {}).get("uid"), 0)
-        target = p["uid_refs"].get((description.target or {}).get("uid"), 0)
-        replaced = p["uid_refs"].get((description.replaced or {}).get("uid"), 0)
-        to = description.destination
+        kind = action['t'][2:]
+        to = action.get('to', {})
+        location = locations.get(action.get('uid'))
+        if kind == 'move' and location is not None and to.get('area') in ('board', 'hand'):
+            # Movement features only need references and a semantic class. Avoid
+            # constructing three descriptor dictionaries and a dataclass per cell.
+            source = p['uid_refs'].get(action['uid'], 0)
+            if to['area'] == 'board':
+                occupant = occupied.get((to['row'], to['col']))
+                semantic = (('board_swap' if occupant and occupant['uid'] != action['uid'] else 'reposition')
+                            if location[0] == 'board' else ('reserve_replace' if occupant else 'deploy'))
+            else:
+                index = to['idx']
+                hand = state['own']['hand']
+                occupant = hand[index] if 0 <= index < len(hand) else None
+                semantic = 'withdraw' if location[0] == 'board' else 'reserve_move'
+            target = p['uid_refs'].get((occupant or {}).get('uid'), 0)
+            replaced = p['uid_refs'].get(action.get('replaceUid'), 0)
+            cost = 0
+            description = None
+        else:
+            description = describe_action(state, action, locations=locations, occupied=occupied, descriptors=descriptors)
+            source = p['uid_refs'].get((description.source or {}).get('uid'), 0)
+            target = p['uid_refs'].get((description.target or {}).get('uid'), 0)
+            replaced = p['uid_refs'].get((description.replaced or {}).get('uid'), 0)
+            to, cost, semantic = description.destination, description.cost, description.semantic
         subject = (p["shop_refs"].get(action.get("slot"), 0) if kind == "buy" else
                    p["offer_refs"].get(action.get("idx"), 0) if kind == "reward" else
                    p["choice_refs"].get(action.get("idx"), 0) if kind == "choice" else
                    p["band_refs"].get(action.get("bandId"), 0) if kind == "band" else 0)
         row = p["raw_entities"][subject - 1][0] if subject else {}
-        cost = description.cost
         subject_row = row or (p["raw_entities"][source - 1][0] if source else {})
         number_key = (source, subject, type(cost), cost)
         if number_key not in number_templates:
@@ -356,12 +376,12 @@ def encode_decision(state, actions, catalog, history_snapshot):
         nums = number_templates[number_key] + (float(to.get("area") == "hand"), scalar(to.get("idx", -1), 10))
         cell = (to.get("row", action.get("row")), to.get("col", action.get("col")))
         destination = cell_indices.get(cell, 0)
-        flag_key = (action.get("dir"), kind, description.semantic)
+        flag_key = (action.get("dir"), kind, semantic)
         if flag_key not in flag_templates:
             flag_templates[flag_key] = (flags(flag_key[0], DIRECTIONS) + flags(kind, ACTION_TYPES)
-                                        + flags(description.semantic, MOVE_TYPES))
+                                        + flags(semantic, MOVE_TYPES))
         encoded.append((source, target, replaced, subject, destination) + flag_templates[flag_key] + nums)
-        route_key = (kind, description.semantic)
+        route_key = (kind, semantic)
         if route_key not in route_templates:
             route_templates[route_key] = routing(state, action, description=description)
         schedule, expert = route_templates[route_key]

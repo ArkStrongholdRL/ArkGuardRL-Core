@@ -22,11 +22,13 @@ class ActionDescription:
     cost: float
 
 
-def describe_action(state, action, *, locations=None, occupied=None):
+def describe_action(state, action, *, locations=None, occupied=None, descriptors=None):
     locations = _locations(state) if locations is None else locations
     occupied = ({(p["row"], p["col"]): p for p in state["own"]["board"]}
                 if occupied is None else occupied)
     def find(uid):
+        if descriptors is not None:
+            return descriptors.get(uid)
         value = locations.get(uid)
         return descriptor(value[2], value[0]) if value else None
     kind = action["t"][2:]
@@ -50,10 +52,11 @@ def describe_action(state, action, *, locations=None, occupied=None):
     to = action.get("to", {}) if kind == "move" else {key: action[key] for key in ("row", "col") if key in action}
     if kind == "move" and to.get("area") == "board":
         row = occupied.get((to["row"], to["col"]))
-        target = descriptor(row, "board")
+        target = find(row["uid"]) if descriptors is not None and row is not None else descriptor(row, "board")
     elif kind == "move" and to.get("area") == "hand":
         hand, index = state["own"]["hand"], to["idx"]
-        target = descriptor(hand[index], "hand") if 0 <= index < len(hand) else None
+        row = hand[index] if 0 <= index < len(hand) else None
+        target = find(row["uid"]) if descriptors is not None and row is not None else descriptor(row, "hand")
     semantic = classify(state, action, locations, occupied) if kind != "move" or source else "move"
     cost = (shop["upgradePrice"] if kind == "levelUp" else
             (0 if shop["freeRefreshes"] > 0 else shop["refreshPrice"]) if kind == "refresh" else subject.get("price", 0))

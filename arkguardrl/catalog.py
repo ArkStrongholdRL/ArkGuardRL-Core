@@ -130,13 +130,20 @@ class PublicCatalog:
             self._definition_bank = compile_definitions(self)
         return self._definition_bank
 
-    def record(self, kind, identifier):
+    def _record(self, kind, identifier):
         row = self._views.get(kind, {}).get(identifier)
         if not isinstance(row, dict):
             raise UnsupportedPublicState(f"Unknown public {kind} identity: {identifier!r}")
         if kind == "chess" and row.get("isDiy"):
             raise UnsupportedPublicState("Custom DIY records require a separate catalog contract")
-        return deepcopy(row)
+        return row
+
+    def validate_identity(self, kind, identifier):
+        """Check the public definition boundary without copying its projection."""
+        self._record(kind, identifier)
+
+    def record(self, kind, identifier):
+        return deepcopy(self._record(kind, identifier))
 
     def semantic_facts(self, kind, identifier):
         try:
