@@ -156,3 +156,29 @@ are in `ArkGuardRL/docs/research/20261025/optimization-single-receipt.json`.
   Measurements and limitations are recorded in the research repository at
   `docs/research/20261025/hotspots-single-receipt.json` and
   `docs/research/20261025/HOTSPOTS-OPTIMIZATION.md`.
+
+
+## Decision snapshots and route deltas (2026-10-25)
+
+- State validation returns its freshly generated canonical bytes. Capture cloning,
+  observation identity and geometry binding reuse those bytes within the current
+  call; there is no persistent mutable-state digest cache or validation bypass.
+  Decisions retain immutable history bytes from feature encoding, with the prior
+  capture path retained for manually constructed decisions lacking those bytes.
+- Route summaries consume removed base indices and ordered appended units. They
+  assemble retained indices once per removal group without rebuilding/scanning
+  complete per-candidate Python boards. UID/index/capacity guards and compensated
+  accumulation order remain intact.
+- All 191 archived decision outputs matched exactly. 10400 randomized delta/full
+  board summaries matched exactly, including empty boards, re-appended base
+  objects and wide DPS magnitudes. Invalid deltas, capture ownership isolation,
+  history fallback compatibility and state-mutation rejection checks passed.
+- A matched frozen-old/new full-game MPS PPO pair completed with identical 191
+  action/result/state sequences and two updates each. Initial weights matched;
+  the new result strictly reloaded with CPU model/optimizer storage. Archived
+  diagnostics were never used for training; no updated-policy game was played.
+- Total and collection wall time improved, but unchanged optimization/compression
+  phases also sped up; the full reduction cannot be attributed to this patch.
+  An alternating same-process capture microbenchmark also improved, with exact
+  non-time output equality. Measurements and limitations are in the research
+  repository's `docs/research/20261025/snapshots-deltas-receipt.json`.

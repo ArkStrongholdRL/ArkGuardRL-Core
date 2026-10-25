@@ -156,10 +156,11 @@ class PublicProgress:
         return receipt
 
     def snapshot(self, state):
-        if self.state is None or fingerprint(self.state) != fingerprint(state):
+        observation_id = fingerprint(state)
+        if self.state is None or fingerprint(self.state) != observation_id:
             raise ValueError("Progress is not bound to this exact public observation")
         current = owned(state)
-        return {"schema": PROGRESS_SCHEMA, "observation_id": fingerprint(state),
+        return {"schema": PROGRESS_SCHEMA, "observation_id": observation_id,
                 "stream_id": self.stream_id, "sequence": self.sequence, "round": state["round"],
                 "spent": self.spent, "spent_known": self.spent_known,
                 "refreshes": self.refreshes, "refreshes_known": self.refreshes_known,

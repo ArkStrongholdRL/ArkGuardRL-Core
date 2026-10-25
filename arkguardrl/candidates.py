@@ -6,10 +6,10 @@ history/routing research originated in retained GPL-3.0 experiments/rl and
 experiments/expert_policy. All contracts below are new and incompatible.
 """
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .catalog import UnsupportedPublicState
-from .contracts import action_id, decision_id, fingerprint
+from .contracts import action_id, canonical, decision_id, fingerprint
 from .feedback import PROGRESS_SCHEMA, EXECUTION_SCHEMA
 from .features import DIRECTIONS, FEATURE_SCHEMA, PHASES, encode_decision
 
@@ -207,6 +207,7 @@ class Decision:
     candidate_schema: str = CANDIDATE_SCHEMA
     feature_schema: str = FEATURE_SCHEMA
     history_schema: str = HISTORY_SCHEMA
+    history_json: bytes | None = field(default=None, repr=False, compare=False)
 
 
 def build_decision(state, catalog, history):
@@ -342,5 +343,9 @@ def build_decision(state, catalog, history):
             raise CandidateBlocked("Unsupported actionable native phase")
         if not actions:
             raise CandidateBlocked("History/public domain exhausted; no fallback wait or forced Ready")
-    observation, features, schedules, experts = encode_decision(state, actions, catalog, history.snapshot(state))
-    return Decision(deepcopy(state), observation, features, tuple(actions), schedules, experts, state["personalEnded"])
+    snapshot = history.snapshot(state)
+    observation, features, schedules, experts = encode_decision(state, actions, catalog, snapshot)
+    # Retain the exact history used for the feature tensors, independently of
+    # subsequent history advancement. Bytes cannot alias mutable progress.
+    return Decision(deepcopy(state), observation, features, tuple(actions), schedules, experts,
+                    state["personalEnded"], history_json=canonical(snapshot))

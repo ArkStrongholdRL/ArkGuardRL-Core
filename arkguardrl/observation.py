@@ -5,6 +5,7 @@ SCHEMA = "arkguardrl/native-session-v2"
 
 
 def validate_state(state):
+    """Validate the live mapping and return its canonical bytes for this call."""
     if not isinstance(state, dict) or state.get("schema") != SCHEMA:
         raise ValueError("Unsupported native observation schema")
     for name in ("gameEnded", "personalEnded", "decisionRequired"):
@@ -37,4 +38,4 @@ def validate_state(state):
             if any("seed" in k.lower() or "rng" in k.lower() or "hiddenbossid" in k.lower() for k in value):
                 raise ValueError("Forbidden hidden identity in observation")
             stack.extend(value.values())
-    canonical(state)
+    return canonical(state)

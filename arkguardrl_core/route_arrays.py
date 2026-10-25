@@ -176,30 +176,58 @@ def validate_runtime():
         raise ValueError('Reference route feature layout changed')
 
 
-def _summaries(boards, ground, airpath, contacts, base_units=()):
-    """Float64 with CPython3.12 compensated sum; arrays span candidates.
+def _summaries(changes, ground, airpath, contacts, base_units=()):
+    """Ordered base subsets plus appended units, with compensated float64 sums.
 
-    Per-call banks contain only objects from this exact decision. No state cache
-    persists between observations, nor are trainable neural activations cached.
+    Each change is (removed base indices, appended units). Candidate generation
+    already knows this delta; do not rebuild and rediscover complete boards.
     """
-    if not boards:
+    if not changes:
         return np.empty((0, 6), dtype=np.float64)
-    if len(boards) > MAX_CANDIDATES or any(len(board) > 128 for board in boards):
+    if len(changes) > MAX_CANDIDATES or len(base_units) > 128:
         raise ValueError('Array route temporary-domain bound exceeded; no slicing')
     cells = {cell: i for i, cell in enumerate(CELLS)}
-    unique = [None]
-    identities = {}
-    width = max(1, max(map(len, boards)))
-    indices = np.zeros((len(boards), width), dtype=np.int64)
-    for i, board in enumerate(boards):
-        if len({u['uid'] for u in board}) != len(board):
+    unique = [None, *base_units]
+    identities = {id(u): i for i, u in enumerate(base_units, 1)}
+    base_positions = {u['uid']: i for i, u in enumerate(base_units)}
+    if len(base_positions) != len(base_units):
+        raise ValueError('Duplicate board UID')
+    prefixes, prefix_ids, tails = {}, [], []
+    for removed, added in changes:
+        if (len(removed) > 2 or len(added) > 2 or len(set(removed)) != len(removed)
+                or any(type(i) is not int or not 0 <= i < len(base_units) for i in removed)):
+            raise ValueError('Invalid bounded route board delta')
+        removed = tuple(sorted(removed))
+        if removed not in prefixes:
+            prefixes[removed] = (len(prefixes), tuple(i+1 for i in range(len(base_units)) if i not in removed))
+        prefix_ids.append(prefixes[removed][0])
+        if (len({u['uid'] for u in added}) != len(added)
+                or any(u['uid'] in base_positions and base_positions[u['uid']] not in removed for u in added)):
             raise ValueError('Duplicate board UID')
-        for j, unit in enumerate(board):
-            key = id(unit)
+        tail = []
+        for u in added:
+            key = id(u)
             if key not in identities:
                 identities[key] = len(unique)
-                unique.append(unit)
-            indices[i, j] = identities[key]
+                unique.append(u)
+            tail.append(identities[key])
+        tails.append(tail)
+    lengths = np.array([len(prefix) for _, prefix in prefixes.values()], dtype=np.int64)
+    prefix_ids = np.asarray(prefix_ids, dtype=np.int64)
+    width = max(1, max(int(lengths[g])+len(tail) for g, tail in zip(prefix_ids, tails)))
+    if width > 128:
+        raise ValueError('Array route temporary-domain bound exceeded; no slicing')
+    prefix_indices = np.zeros((len(prefixes), width), dtype=np.int64)
+    for group, prefix in prefixes.values():
+        prefix_indices[group, :len(prefix)] = prefix
+    indices = prefix_indices[prefix_ids]
+    tail_width = max(map(len, tails), default=0)
+    suffix = np.zeros((len(changes), tail_width), dtype=np.int64)
+    for i, tail in enumerate(tails):
+        suffix[i, :len(tail)] = tail
+    for slot in range(tail_width):
+        valid = suffix[:, slot] != 0
+        indices[np.flatnonzero(valid), lengths[prefix_ids[valid]]+slot] = suffix[valid, slot]
     cover = np.zeros((len(unique), 36), dtype=bool)
     positions = np.zeros(len(unique), dtype=np.int64)
     dps = np.zeros(len(unique), dtype=np.float64)
@@ -227,21 +255,12 @@ def _summaries(boards, ground, airpath, contacts, base_units=()):
     # by at most the swapped unit and moved unit. Accumulate each retained
     # prefix once; update only its changed suffix for each candidate. Keep the
     # compensated accumulator, not a rounded total, to preserve sum order.
-    base_ids = {id(value) for value in base_units}
-    prefixes, prefix_ids, tails = {}, [], []
-    for board, index in zip(boards, indices):
-        split = next((i for i, value in enumerate(board) if id(value) not in base_ids), len(board))
-        key = tuple(index[:split])
-        if key not in prefixes:
-            prefixes[key] = len(prefixes)
-        prefix_ids.append(prefixes[key])
-        tails.append(index[split:len(board)])
     prefix_gc = np.zeros((len(prefixes), 36))
     prefix_ac = prefix_gc.copy()
     prefix_ge, prefix_ae = prefix_gc.copy(), prefix_gc.copy()
     prefix_hc = np.zeros((len(prefixes), 36), dtype=np.int64)
     prefix_support = np.zeros((len(prefixes), 36), dtype=np.int16)
-    for prefix, group in prefixes.items():
+    for group, prefix in prefixes.values():
         for selected in prefix:
             for total, error, values in (
                     (prefix_gc[group], prefix_ge[group], cover[selected]*dps[selected]),
@@ -251,11 +270,6 @@ def _summaries(boards, ground, airpath, contacts, base_units=()):
                 total[:] = added
             prefix_hc[group] += cover[selected]*healer[selected]
             prefix_support[group] += supports[selected] & (dps[selected] > 0)
-    tail_width = max(map(len, tails), default=0)
-    suffix = np.zeros((len(boards), tail_width), dtype=np.int64)
-    for i, tail in enumerate(tails):
-        suffix[i, :len(tail)] = tail
-    prefix_ids = np.asarray(prefix_ids, dtype=np.int64)
     output = []
     for start in range(0, len(indices), CHUNK_SIZE):
         index = indices[start:start+CHUNK_SIZE]
@@ -322,6 +336,7 @@ def encode(state, actions, g, catalog, *, route_cache=None):
         make_unit = route_cache.get_unit
     pieces = {p['uid']: p for area in ('board', 'hand', 'temp') for p in state['own'][area] if p}
     byuid = {u['uid']: u for u in units}
+    unit_indices = {u['uid']: i for i, u in enumerate(units)}
     bycell = {u['at']: u for u in units}
     terrain = {(x['row'], x['col']): x['kind'] for x in state['own']['deployment']['cells']}
     support_table = _SupportTable(units, ground, contacts, hc)
@@ -351,22 +366,18 @@ def encode(state, actions, g, catalog, *, route_cache=None):
                 remember.append((persistent_key, len(rows)))
             old = byuid.get(source['uid'])
             src = old['at'] if old else None
-            afterunits = [u for u in units if u['uid'] != source['uid']]
             actor = old
             removed, added = ([old] if old else []), []
             known = True
             if target:
                 occupant = bycell.get(target)
                 if occupant and occupant['uid'] != source['uid']:
-                    afterunits = [u for u in afterunits if u['uid'] != occupant['uid']]
                     removed.append(occupant)
                     if old:
                         p = dict(pieces[occupant['uid']], row=src[0], col=src[1])
                         swapped = make_unit(p)
-                        afterunits.append(swapped)
                         added.append(swapped)
                 actor = make_unit(dict(source, row=target[0], col=target[1], dir=a.get('dir', 'RIGHT')))
-                afterunits.append(actor)
             elif move and to.get('area') == 'hand' and (state['own']['hand'][to['idx']] is not None):
                 known = False
             if actor:
@@ -374,13 +385,14 @@ def encode(state, actions, g, catalog, *, route_cache=None):
                 support_features = support_table.query(actor, removed, added)
                 st = actor['stats']
                 after = [0.0] * 6
-                pending.append((len(rows), afterunits))
+                appended = (*added, actor) if target else ()
+                pending.append((len(rows), (tuple(unit_indices[u['uid']] for u in removed), appended)))
                 row = [float(known), actor['block'] / 8, float(actor['heal']), float(actor['air']), actor['dps'] / 2000, float(st.get('maxHp', 0)) / 10000, float(st.get('def', 0)) / 1000, float(st.get('res', 0)) / 100, float(at in ground), float(at in airpath), progress[0].get(at, 0), progress[1].get(at, 0), len(actor['cover'] & ground) / max(1, len(ground)), len(actor['cover'] & airpath) / max(1, len(airpath)), *support_features, gc.get(at, 0) / 2000, ac.get(at, 0) / 2000, *[after[i] - before[i] for i in range(6)], float(src in ground), float(src in airpath), float(terrain.get(at) == 'ranged'), float(at in bycell), float(move), float(remove)]
         if len(row) != ACTION_DIM or not all((math.isfinite(x) for x in row)):
             raise ValueError('Nonfinite/misshaped route candidate features')
         cache[key] = row
         rows.append(row)
-    summaries = _summaries([board for _, board in pending], ground, airpath, contacts, units)
+    summaries = _summaries([change for _, change in pending], ground, airpath, contacts, units)
     for (index, _), summary in zip(pending, summaries):
         delta = [float(summary[i]) - before[i] for i in range(6)]
         if not all(math.isfinite(value) for value in delta):

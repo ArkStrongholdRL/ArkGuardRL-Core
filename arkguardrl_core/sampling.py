@@ -96,8 +96,9 @@ def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason
     Trainable hidden activations are not cached across optimizer updates.
     """
     actions = json.loads(canonical(list(decision.actions)))
-    record = {'observation': json.loads(canonical(decision.state)),
-        'history': json.loads(canonical(history.snapshot(decision.state))),
+    record = {'observation': decision.state,
+        'history': (json.loads(decision.history_json) if decision.history_json is not None
+                    else json.loads(canonical(history.snapshot(decision.state)))),
         'actions': actions, 'action_ids': [action_id(a) for a in actions],
         **{k: inputs[k].detach() for k in ('obs', 'candidates', 'schedules', 'experts')},
         'index': index, 'reason': reason, 'episode_id': episode_id,
@@ -105,7 +106,10 @@ def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason
         'old_logp': old_logp, 'value': value}
     if any(record[k].device.type != 'cpu' for k in ('obs', 'candidates', 'schedules', 'experts')):
         raise ValueError('CPU capture tensors required')
-    learn._validate_record(record, on_policy=True)
+    observation_bytes = learn._validate_record(record, on_policy=True)
+    # Validation serializes this exact live mapping once. Decode those bytes to
+    # isolate capture from the caller's mutable decision, without re-encoding.
+    record['observation'] = json.loads(observation_bytes)
     return record
 
 
@@ -271,10 +275,10 @@ def verify_live_metadata(ctx, rows, revision, checkpoint):
     policy_sha = sha(checkpoint)
     for row in rows:
         capture = row.capture
-        learn._validate_record(capture, on_policy=True)
+        observation_bytes = learn._validate_record(capture, on_policy=True)
         if (capture['policy_revision'] != revision or row.policy_sha != policy_sha
                 or capture['action_ids'][capture['index']] != row.transition.candidate.action_id
-                or row.geometry['observation_id'] != fingerprint(capture['observation'])
+                or row.geometry['observation_id'] != hashlib.sha256(observation_bytes).hexdigest()
                 or row.transition.contract_id != ctx.objective_contract.contract_id):
             raise ValueError('Stale/mismatched live row')
         action=capture['actions'][capture['index']]

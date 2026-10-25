@@ -38,7 +38,7 @@
     "arkguardrl/observation.py": {
       "source": "arkguardrl/observation.py",
       "source_sha256": "222ee1b38549fcf6b302d20b3a13beb56604cd53a885ac45e6aa672f83ca446c",
-      "mode": "byte-preserved"
+      "mode": "derived"
     },
     "arkguardrl/neural.py": {
       "source": "arkguardrl/neural.py",
@@ -63,7 +63,7 @@
     "arkguardrl/feedback.py": {
       "source": "arkguardrl/feedback.py",
       "source_sha256": "672eee3ac7aaaa244a74dd186dbbc80dd2d6a303c6e9e67d02b71e1e635c8ebf",
-      "mode": "byte-preserved"
+      "mode": "derived"
     },
     "arkguardrl/semantics.py": {
       "source": "arkguardrl/semantics.py",
@@ -108,7 +108,7 @@
     "arkguardrl/learn.py": {
       "source": "arkguardrl/learn.py",
       "source_sha256": "bba88f879e729d8a4d70ffd5b8e3ca8812ec59652d060541e5551ea368a87ef0",
-      "mode": "byte-preserved"
+      "mode": "derived"
     },
     "arkguardrl/contracts.py": {
       "source": "arkguardrl/contracts.py",

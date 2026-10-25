@@ -190,7 +190,7 @@ def _validate_record(row, *, on_policy=False):
         required |= {"policy_revision", "old_logp", "value"}
     if not isinstance(row, dict) or set(row) != required:
         raise ValueError("Exact native captured-decision fields required")
-    validate_state(row["observation"])
+    observation_bytes = validate_state(row["observation"])
     if row["observation"]["personalEnded"] or not row["observation"]["decisionRequired"]:
         raise ValueError("Captured policy row must precede an active native decision")
     tensors = (row["obs"], row["candidates"], row["schedules"], row["experts"])
@@ -212,7 +212,7 @@ def _validate_record(row, *, on_policy=False):
     canonical(row["history"])
     history = row["history"]
     if (not isinstance(history, dict) or history.get("schema") != _modules()[0].HISTORY_SCHEMA
-            or history.get("progress", {}).get("observation_id") != fingerprint(row["observation"])):
+            or history.get("progress", {}).get("observation_id") != hashlib.sha256(observation_bytes).hexdigest()):
         raise ValueError("Captured history/progress differs from its native observation")
     if on_policy:
         if type(row["policy_revision"]) is not int or row["policy_revision"] < 0:
@@ -220,6 +220,8 @@ def _validate_record(row, *, on_policy=False):
         if any(type(row[key]) not in (int, float) or not math.isfinite(row[key])
                for key in ("old_logp", "value")) or row["old_logp"] > 1e-5:
             raise ValueError("Finite sampled log probability/value required")
+
+    return observation_bytes
 
 
 def _episode_report(episode_id, seed, state, *, steps, rejected, status, reason, start,
