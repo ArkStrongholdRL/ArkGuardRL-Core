@@ -12,7 +12,7 @@ from .models import Policy, SCHEMA
 from .routes import residual
 
 
-def identity(contract, width, route_backend, specialist=None):
+def identity(contract, width, route_backend, specialist=None, planner=None):
     result = {'schema': SCHEMA, 'input_contract': residual.contract(contract),
         'width': width, 'route_backend': route_backend,
         'architecture': 'native-v7-width; compact semantic facts; route residual; same parameter shapes',
@@ -26,6 +26,12 @@ def identity(contract, width, route_backend, specialist=None):
             from .prep_history import description
             result['input_contract']={**result['input_contract'],
                 'prep_history':description(specialist['prep_history'])}
+    if planner is not None:
+        if specialist is not None:raise ValueError('Separate planner and specialist identities cannot be mixed')
+        from .active_growth import description
+        result['planner']=dict(planner)
+        result['input_contract']={**result['input_contract'],'plan_context':description(planner)}
+        result['architecture']='BC-initialized open decision layers; independent economy/placement scorers; action-led public memory; no covenant gate or bounded residual'
     return result
 
 
@@ -42,7 +48,7 @@ def restore_verified_state(model, state):
 
 
 def save(path, model, contract, metadata):
-    ident = identity(contract, model.width, model.route_backend, getattr(model, 'specialist_config', None))
+    ident = identity(contract, model.width, model.route_backend, getattr(model, 'specialist_config', None), getattr(model, 'planner_config', None))
     neural.save_payload(path, {'schema': SCHEMA, 'identity': ident,
         'identity_sha256': fingerprint(ident), 'definitions': model.base.definitions.bank,
         'metadata': metadata, 'state_dict': {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}})
@@ -57,10 +63,13 @@ def load(path, contract):
     if payload.get('schema') != SCHEMA:
         raise ValueError('Extracted core checkpoint required; adopt verified legacy weights explicitly')
     declared = payload['identity']
-    ident = identity(contract, declared['width'], declared['route_backend'], declared.get('specialist'))
+    ident = identity(contract, declared['width'], declared['route_backend'], declared.get('specialist'), declared.get('planner'))
     if declared != ident or payload['identity_sha256'] != fingerprint(ident):
         raise ValueError('Core input/source/model identity mismatch')
-    if 'specialist' in declared:
+    if 'planner' in declared:
+        from .active_growth import ActiveGrowthPolicy
+        model=ActiveGrowthPolicy(contract,payload['definitions'],declared['width'],declared['route_backend'],declared['planner'])
+    elif 'specialist' in declared:
         from .specialist import SpecialistPolicy, CONTEXT_SCHEMA,HISTORY_CONTEXT_SCHEMA
         if declared['specialist']['schema'] in (CONTEXT_SCHEMA,HISTORY_CONTEXT_SCHEMA):
             from .entity_context import EntityContextPolicy
@@ -85,7 +94,7 @@ def verify_bound(model, path, contract):
     receipt = getattr(model, '_core_load_receipt', None)
     current = (str(Path(path).resolve()), sha(path),
                fingerprint(identity(contract, model.width, model.route_backend,
-                                    getattr(model, 'specialist_config', None))), weights_hash(model))
+                                    getattr(model, 'specialist_config', None), getattr(model, 'planner_config', None))), weights_hash(model))
     if receipt is None:
         restored, _ = load(path, contract)
         if restored._core_load_receipt != current:

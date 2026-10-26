@@ -79,10 +79,14 @@ class LiveRow:
     prep_cost: float
     prep_history: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float32))
 
+    plan_context: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
+    battle_count: int = 0
+
     def inputs(self):
         result = {k: self.capture[k] for k in ('obs', 'candidates', 'schedules', 'experts')} | {
             'route_obs': self.route_obs, 'route_actions': self.route_actions}
         if self.prep_history.numel(): result['prep_history'] = self.prep_history
+        if self.plan_context.numel():result['plan_context']=self.plan_context
         return result
 
     def evidence(self):
@@ -91,7 +95,7 @@ class LiveRow:
                 'geometry': self.geometry, 'old_logps': self.old_logps,
                 'anchor_logps': self.anchor_logps, 'policy_sha256': self.policy_sha,
                 'base_reward': self.base_reward, 'prep_cost': self.prep_cost,
-                'prep_history': self.prep_history}
+                'prep_history': self.prep_history,'plan_context':self.plan_context,'battle_count':self.battle_count}
 
 
 def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason,
@@ -145,6 +149,10 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     if history_config and ready_cost and history_config['loss_config'] != ready_cost.config:
         raise ValueError('PREP history projection differs from reward contract')
     history_tracker = ReadyCost(history_config['loss_config']) if history_config else None
+    planner_config=getattr(model,'planner_config',None)
+    if planner_config!=getattr(anchor,'planner_config',None):raise ValueError('Actor/anchor plan identities differ')
+    from .active_growth import PlanMemory
+    plan_memory=PlanMemory(planner_config,ctx.public) if planner_config else None
     counts, components = Counter(), Counter()
     rejected, total_reward = 0, 0.0
     started = time.monotonic()
@@ -174,6 +182,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             if history_tracker is not None:
                 from .prep_history import tensor_from_tracker
                 inputs['prep_history'] = tensor_from_tracker(history_tracker, before)
+            if plan_memory is not None:inputs['plan_context']=plan_memory.tensor(before)
             phase_times['feature_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             with torch.no_grad():
@@ -202,7 +211,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             size = (learn._record_bytes(capture) + 32 * ctx.contract.feature_dim
                     + 2 * sum(x.numel() * x.element_size() for x in
                               (inputs['route_obs'], inputs['route_actions'], old_logps, anchor_logps,
-                               inputs.get('prep_history', torch.empty(0))))
+                               inputs.get('prep_history', torch.empty(0)), inputs.get('plan_context',torch.empty(0))))
                     + 2 * len(json.dumps(geometry)))
             used_bytes += size
             if used_bytes > ctx.config['max_episode_bytes']:
@@ -215,10 +224,14 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 'geometrySha256': fingerprint(geometry), 'selectedIndex': index,
                 'selectedLogProbability': old_logp, 'policyRevision': revision,
                 'policySha256': policy_sha,
-                'prepHistorySha256': tensor_sha(inputs['prep_history']) if history_config else None})
+                'prepHistorySha256': tensor_sha(inputs['prep_history']) if history_config else None,
+                'planContextSha256':tensor_sha(inputs['plan_context']) if plan_memory else None})
             phase_times['capture_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
+            settlements_before=environment.settlement_count
             result = session.step(action)
+            battle_count=environment.settlement_count-settlements_before
+            if plan_memory is not None:plan_memory.note(before,action,result.accepted)
             phase_times['environment_seconds'] += time.monotonic()-phase_started
             behavior.update(canonical((action, result.accepted, fingerprint(before), fingerprint(result.observation))))
             if type(result.accepted) is not bool:
@@ -250,12 +263,18 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             if result.terminated or result.truncated:
                 # Incomplete episodes are rejected below. Preserve their true tail
                 # estimate in diagnostics, never invent a terminal for a cutoff.
-                next_value = 0. if result.terminated else learn._bootstrap(model.base, session, 'cpu')
+                if result.terminated:next_value=0.
+                elif plan_memory is not None:
+                    with torch.no_grad():
+                        successor=torch.tensor(session.observation_features(),dtype=torch.float32)
+                        next_value=float(model.bootstrap_value(successor,plan_memory.tensor(result.observation)))
+                else:next_value=learn._bootstrap(model.base,session,'cpu')
                 transition = Transition.from_step(ctx.objective_contract, **pending, next_value=next_value)
                 pending = None
             rows.append(LiveRow(capture, transition, inputs['route_obs'].detach().clone(),
                 inputs['route_actions'].detach().clone(), geometry, old_logps, anchor_logps, policy_sha, info['reward'], charged,
-                inputs.get('prep_history', torch.empty(0, dtype=torch.float32)).detach().clone()))
+                inputs.get('prep_history', torch.empty(0, dtype=torch.float32)).detach().clone(),
+                inputs.get('plan_context',torch.empty(0,dtype=torch.float32)).detach().clone(),battle_count))
             if on_row is not None and rows[-1].transition is not None:
                 on_row(rows[-1])
             environment._record({'kind': 'policy-sample', 'experiment': ctx.schema,
@@ -264,7 +283,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 'selectedActionId': candidate.action_id, 'selectedIndex': index,
                 'oldLogProbability': old_logp, 'value': value, 'nextValue': next_value,
                 'nextValuePending': next_value is None,
-                'reward': info, 'objectiveReward': objective_reward, 'prepCost': charged,
+                'reward': info, 'objectiveReward': objective_reward, 'prepCost': charged,'settlements':battle_count,
                 'objectiveContractId': ctx.objective_contract.contract_id, 'candidateCount': len(decision.actions)})
             counts[action['t']] += 1
             rejected += int(not result.accepted)
@@ -299,7 +318,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
         'collection_elapsed': time.monotonic()-started,
         'route_cache': dict(route_cache.stats) if route_cache is not None else {},
         'sampling_rng': 'per-episode-cpu-generator/v1', 'behavior_sha256': behavior.hexdigest(),
-        'phases': dict(phase_times)}
+        'phases': dict(phase_times),'settlements':sum(r.battle_count for r in rows),
+        'plan_events':plan_memory.events if plan_memory else [],
+        'plan_modes':dict(Counter(int(r.plan_context[1:5].argmax()) for r in rows)) if plan_memory else {}}
     write(directory / 'summary.json', report)
     if log_mode == 'full':
         # Full diagnostics retain independent post-read verification/compression.
@@ -362,6 +383,8 @@ def verify_live(ctx, model, rows, revision, checkpoint):
     verify_live_metadata(ctx, rows, revision, checkpoint)
     from .prep_history import verify_rows
     verify_rows(model, rows)
+    from .active_growth import verify_rows as verify_plan_rows
+    verify_plan_rows(model,rows,ctx.public)
     for row in rows:
         with torch.no_grad():
             logp, value = model(row.inputs())

@@ -92,7 +92,13 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
     from ..prep_history import verify_rows
     verify_rows(actor, rows)
     metadata_seconds = time.monotonic()-started
-    advantages, returns = worker.learn._advantages(ctx.objective_contract, rows, config['gae_lambda'])
+    from ..active_growth import verify_rows as verify_plan_rows
+    verify_plan_rows(actor,rows,ctx.public)
+    if config['gae_clock']=='settlement':
+        from ..battle_credit import advantages as credit
+        advantages,returns=credit(ctx.objective_contract,rows,config['gae_lambda'])
+    else:
+        advantages, returns = worker.learn._advantages(ctx.objective_contract, rows, config['gae_lambda'])
     advantages = torch.tensor(advantages, dtype=torch.float32)
     returns = torch.tensor(returns, dtype=torch.float32)
     raw_mean, raw_std = float(advantages.mean()), float(advantages.std(unbiased=False))
@@ -190,7 +196,8 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
         'device_return_seconds': device_return_seconds,
         'scored_candidate_positions': candidate_positions, 'padded_logit_positions': padded_positions,
         'learner_device': device, 'batch_execution': EXECUTION_SCHEMA,
-        'requested_batch_size': config['batch_size'],
+        'requested_batch_size': config['batch_size'], 'gae_clock':config['gae_clock'],
+        'settlements':sum(r.battle_count for r in rows),
         'execution_microbatches': sum(m['execution_microbatches'] for m in metrics),
         'means': {k: math.fsum(x[k] for x in metrics)/len(metrics) for k in metrics[0]},
         **distribution_metrics}

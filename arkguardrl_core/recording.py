@@ -65,6 +65,7 @@ class RecordingEnv(RouteEnv):
         self.rounds, self.moves = {}, 0
         self.receipt_count = 0
         self.closed_status = None
+        self.settlement_count = 0
 
     def reset(self, *, seed=1, difficulty='ABYSS'):
         if self.writer is not None or self._state is not None or not self._opened:
@@ -83,6 +84,8 @@ class RecordingEnv(RouteEnv):
     def _record(self, record):
         if self.writer is None:
             raise RuntimeError('Recording requires an initialized header')
+        if ('after' in record and record['before']['phase']!='SETTLE' and record['after']['phase']=='SETTLE'):
+            self.settlement_count+=1
         if self.log_mode == 'full':
             # Full mode retains the independent native post-read verifier.
             self.writer.append(record)

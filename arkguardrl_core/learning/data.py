@@ -72,6 +72,10 @@ def prepare(model, row, *, copy_inputs=True):
     if any(value.device.type != 'cpu' for value in row.values()):
         raise ValueError('Preparation requires owned CPU inputs')
     neural.validate_tensors(*(row[k] for k in ('obs', 'candidates', 'schedules', 'experts')))
+    if hasattr(model,'planner_config'):
+        from ..active_growth import validate_tensor as validate_plan
+        validate_plan(row.get('plan_context'))
+    elif 'plan_context' in row:raise ValueError('Unexpected plan input')
     history_config = getattr(model, 'specialist_config', {}).get('prep_history')
     if history_config is not None:
         from ..prep_history import validate_tensor
@@ -132,6 +136,9 @@ def collate(rows, device='cpu', max_bytes=1024**3):
     if estimate > max_bytes:
         raise ValueError('Padded batch exceeds declared memory budget; no candidate truncation')
     result = {k: torch.stack([r[k] for r in rows]) for k in ('tables', 'control', 'route_obs')}
+    if any('plan_context' in r for r in rows):
+        if not all('plan_context' in r for r in rows):raise ValueError('Mixed plan input contracts')
+        result['plan_context']=torch.stack([r['plan_context'] for r in rows])
     if any('prep_history' in r for r in rows):
         if not all('prep_history' in r for r in rows):
             raise ValueError('Mixed PREP history contracts in batch')

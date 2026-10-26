@@ -44,6 +44,7 @@ class PPOConfig:
     epochs: int = 2
     learning_rate: float = 3e-5
     gae_lambda: float = .95
+    gae_clock: str = 'decision'
     clip: float = .1
     entropy_coef: float = .001
     value_coef: float = .5
@@ -62,7 +63,8 @@ class PPOConfig:
             raise ValueError('Positive integer live-buffer bound required')
         if type(self.execution_memory_bytes) is not int or self.execution_memory_bytes < 1:
             raise ValueError('Positive integer padded-execution bound required')
-        values = asdict(self)
+        if self.gae_clock not in ('decision','settlement'):raise ValueError('Explicit GAE clock required')
+        values = {k:v for k,v in asdict(self).items() if k!='gae_clock'}
         if not all(math.isfinite(v) for v in values.values()):
             raise ValueError('Finite PPO settings required')
         if not 0 <= self.gae_lambda <= 1 or not 0 < self.clip < 1:

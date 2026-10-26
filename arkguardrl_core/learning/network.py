@@ -117,6 +117,9 @@ def forward(model, data):
     result = result.masked_fill(~data['valid'], -torch.inf)
     # Match the collector/PPO's additional per-state normalization exactly in meaning.
     value = model.base.critic(hidden).squeeze(-1)
+    if hasattr(model, 'adjust_planning'):
+        return model.adjust_planning(result.log_softmax(1),value,obs,actions,data['route_actions'],
+            data['schedules'],data['experts'],data['valid'],data.get('plan_context'))
     if hasattr(model, 'adjust_context'):
         return model.adjust_context(result.log_softmax(1), value, obs, control, actions,
             data['route_actions'], data['valid'], data['facts'], data['fact_state'], data.get('prep_history'))

@@ -248,6 +248,18 @@
     "docs/PREP-HISTORY.md": {
       "source": null,
       "mode": "new reusable public PREP history input; GPL-3.0-or-later; no upstream assets"
+    },
+    "arkguardrl_core/active_growth.py": {
+      "source": null,
+      "mode": "new reusable explicit action-led plan input and settlement-credit extension; GPL-3.0-or-later"
+    },
+    "arkguardrl_core/battle_credit.py": {
+      "source": null,
+      "mode": "new reusable explicit action-led plan input and settlement-credit extension; GPL-3.0-or-later"
+    },
+    "docs/ACTIVE-GROWTH.md": {
+      "source": null,
+      "mode": "new reusable explicit action-led plan input and settlement-credit extension; GPL-3.0-or-later"
     }
   },
   "release_files": {
@@ -286,18 +298,18 @@
     "arkguardrl/trajectory.py": "29a3080b8ebdef3842af586e1e7ad087e1bd4652b2c82839c2a063c852fd45a2",
     "arkguardrl_core/__init__.py": "2ade8a4c0bc82f061c591c912af15d81e4fcccc7da006c4a51ac8d3d608c5fe8",
     "arkguardrl_core/__main__.py": "f38fd2f2c920c29c828645e87ed64743d567aaaef7fba7a15d2c7d7f8094f91f",
-    "arkguardrl_core/checkpoint.py": "97c4b9f3ba531fa9be5eadf59af8dbb139777e31d7497be07ff7d2bcff64c91e",
+    "arkguardrl_core/checkpoint.py": "41c72be366c5d6569961e108d6f61694de01c3d9f3fc2c8eeb38af390277e604",
     "arkguardrl_core/cli.py": "6b59144b9f7f9e34b2fb6af3cee6498bb8671e2957488936c2e4cdfb00107dd5",
     "arkguardrl_core/device.py": "a2d2514ab73e1a48e922410592fca5565fdeb4e12b6a292146b2c3c049e8f997",
     "arkguardrl_core/environment.py": "344e78d9cce53b6a58ac91e2071a336684cbcecf7b721123ae6b59be96ba0cf2",
     "arkguardrl_core/identity.py": "4843e87577e123ddc577fea18bb09b0bfeb66221ec9aadd66b623b76e22c1ada",
     "arkguardrl_core/io.py": "764fc99b16fc56f69e29b40ad0892951439c372195775245f86189852c646009",
     "arkguardrl_core/learning/__init__.py": "281a1b5b56634fd5e9fe3257293e28fff7bf5c14b42179022a61e52397f0e104",
-    "arkguardrl_core/learning/data.py": "e6021afeee497b0b0f32dc04ff5538fdbc865d46d5b742d737d3a4d5509cb70b",
-    "arkguardrl_core/learning/network.py": "5192431155d1a97dc2c91e702e8787a68261af720ced1155709038420013b13d",
-    "arkguardrl_core/learning/ppo.py": "538673dc784de16216a16f1c533368133f0677621008bd747eaccd6b40aede2b",
+    "arkguardrl_core/learning/data.py": "68f37f03ab8e8a3522a1a070c9ca450f7304b2839004867d4cf921b153424969",
+    "arkguardrl_core/learning/network.py": "3e9761967f24b13ac24f3b264af914715f6c70a009255f60d9e3afe3a85c9784",
+    "arkguardrl_core/learning/ppo.py": "141a524445e8f4f73dc1dcd029dcb452cb04d01a70110ccd697559a7ecb0facb",
     "arkguardrl_core/models.py": "39ef137e633530deedd5847dbb9a7cdc618a98bfd5b1a96e073454d486f25902",
-    "arkguardrl_core/recording.py": "f034122d5db7d1b6c03566d26d9abb185547a19fd82ebfe68a809bb7ad2bd409",
+    "arkguardrl_core/recording.py": "43653ab580afb5523e338d16423000a9191e658381fee2fe69cf73f3252d66ff",
     "arkguardrl_core/route_arrays.py": "ed4207a0ff19c77f7f530f6f5f3f972a936c3fd3820f344e2f058701d25395cc",
     "arkguardrl_core/routes/__init__.py": "c77929b6032e6177d4876402768073cadc909da474626c2d5189d9226ab749ef",
     "arkguardrl_core/routes/features.py": "93e2e0063c1961164fa9377adbb7d758991d20cdc227f9ac3c32a82e9372f633",
@@ -305,21 +317,24 @@
     "arkguardrl_core/routes/route_bridge.mjs": "96bd76716918631e4538d211c660e49092aaf4d8fc45928cf2f988f8e1b6eeff",
     "arkguardrl_core/routes/route_teacher.mjs": "cf9cec6eb728945bebd02a09dcb096897bf169aa6a7dff6bb8a69124bc2d56b6",
     "arkguardrl_core/routes/session.py": "ca14a1dc47603ee9d3460df78d2c4f8274ac110405fea35a0e512ac6ba58f6fe",
-    "arkguardrl_core/run.py": "fd8659ce57723ba1fc457a7bb35d944859d445ed0b5a4ca55c7c557c61938fb4",
-    "arkguardrl_core/sampling.py": "ad907e3e13f5ce6a80245dbebafefbf80bcc5d5cd32e0361cac451a250b68797",
+    "arkguardrl_core/run.py": "5cc136cfd14f5e5ccce0b69a3555f7aefc6f9ad708425d78c626c6cd8e1ac679",
+    "arkguardrl_core/sampling.py": "c5fa9a0616f07a23d695ce8a669fa4723da1dc3778d2df25fb25d98ebcb6fb88",
     "docs/EXTRACTION.md": "bc557ed0c95b72d7cb466bbda5b57c3e921eaf7f3fdf1048e25f3a36f0d40bd4",
     "pyproject.toml": "fe581b13aaaed37851a8431ba45bce7d08bc0b6255b1341e84b5c3002ccc4c36",
     "docs/VALIDATION.md": "fc14ccea01f7d069f46e43a279892174e4b2c2572d67d9d41ad26d2fdd7580be",
     "arkguardrl_core/ready_cost.py": "fa8b36252c8c1ad0de06be2df212f71ed051cf81aeefeadcdc715a0decbdb79e",
-    "arkguardrl_core/columnar.py": "0abe0588f29247aad10e6b76192a11c92f9d53fc3868466e69da809eaf32715d",
-    "arkguardrl_core/transport.py": "ec0ee0fc10bb79cc53a642c62f270ae9ea3a5eb8edd17d359848242918727996",
+    "arkguardrl_core/columnar.py": "382e999a4f23b3903bd906b229ed57feba0c049820e3ab1e7c48b97a619264e5",
+    "arkguardrl_core/transport.py": "1748f44b23f99af947de7b251048897de350c6761fcf49ae5b3352f994fcb578",
     "arkguardrl_core/construction.py": "607ec8c103043f79627b1ec901ecf118153530e5c49fd3775cd681f7d54840c7",
     "arkguardrl_core/specialist.py": "c53742691b0fc42b4a6ff6199bb838419c6272bf0e02d92cbd262d870456f01a",
     "arkguardrl_core/inference.py": "ce7b22a6676b85b8565c17db28ece37c35390b2d1e100cdda8a2ce325298455a",
     "arkguardrl_core/prep_history.py": "c018883f4d08532167ef9b67aa45a1c10b22f02d177f7abce924c72cdbcc5161",
     "arkguardrl_core/streaming.py": "a9e121b1ba66df1e1e81bf6f9588acc77e4ef582d7a3a096cc978f49f4258903",
-    "arkguardrl_core/parallel.py": "2eb2b8da5c0d2f46298b117a3314592ee7e1aa4407a9002a08a9be11a2a75ade",
+    "arkguardrl_core/parallel.py": "3440033c7b08c04d23aa3de000dee54bfcde90d3b2cb1d68dea1ef9237d6b946",
     "arkguardrl_core/entity_context.py": "bd843b43b9e01961ae7a22ae62f8b9919106604d0d4eb622373954d4049766c7",
-    "docs/PREP-HISTORY.md": "c606e858bd3c8a66997c9cc67a91e3a5fd3f0fe5f1c24a1aa9207b067dfea6e7"
+    "docs/PREP-HISTORY.md": "c606e858bd3c8a66997c9cc67a91e3a5fd3f0fe5f1c24a1aa9207b067dfea6e7",
+    "arkguardrl_core/active_growth.py": "4aad269894c7fd52e6f40280a90c93cf58053835016868919661cc3915763885",
+    "arkguardrl_core/battle_credit.py": "8f826cdda8907180b7e1f595975cd8c456f069eb3470ea6fca970ed1aeb85e05",
+    "docs/ACTIVE-GROWTH.md": "928ec4a987cde832225aff4ba7a7ef95133206f281ba40521824bbc2e5a326a8"
   }
 }
