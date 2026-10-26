@@ -25,6 +25,8 @@ def validate(config):
         from .goal_relations import validate as validate_relations
         validate_relations(config['relations'])
         if not config.get('options',{}).get('enabled'):raise ValueError('Goal relations require active strategic options')
+        from .strategic_options import is_search
+        if is_search(config.get('options')):raise ValueError('Search roles cannot use legacy target relations')
     if 'options' in config:
         from .strategic_options import validate as validate_options
         validate_options(config['options'])
@@ -194,9 +196,9 @@ class ActiveGrowthPolicy(Policy):
             validate_recovery(recovery)
             context=context+self.recovery_projection(recovery)
         if hasattr(self,'option_projection'):
-            from .strategic_options import validate_tensor as validate_option
-            validate_option(option)
-            context=context+self.option_projection(torch.cat((self.base.encoder.identity(option[...,0].long()),option[...,1:]),-1))
+            from .strategic_options import validate_context,context_features
+            validate_context(self,option)
+            context=context+self.option_projection(context_features(self,option))
         return self.base.value(obs)+self.plan_value(context).squeeze(-1)
 
     def forward(self,row):
@@ -223,14 +225,18 @@ class ActiveGrowthPolicy(Policy):
             validate_recovery(recovery,batch)
             context=context+self.recovery_projection(recovery)
         if hasattr(self,'option_projection'):
-            from .strategic_options import validate_tensor as validate_option
-            validate_option(option,batch)
-            context=context+self.option_projection(torch.cat((self.base.encoder.identity(option[...,0].long()),option[...,1:]),-1))
+            from .strategic_options import validate_context,context_features
+            validate_context(self,option,batch)
+            context=context+self.option_projection(context_features(self,option))
         inputs=torch.cat((identity,actions[:,:,5:],routes,context[:,None].expand(-1,count,-1)),-1)
         delta=torch.where(experts==0,self.plan_economy(inputs).squeeze(-1),self.plan_placement(inputs).squeeze(-1))
         relation_schedule=0.
         if hasattr(self,'goal_schedule'):
             from .goal_relations import adjustments
+            relation_delta,relation_schedule=adjustments(self,relations,experts,valid)
+            delta=delta+relation_delta
+        if hasattr(self,'search_schedule'):
+            from .search_options import adjustments
             relation_delta,relation_schedule=adjustments(self,relations,experts,valid)
             delta=delta+relation_delta
         groups=(schedules[:,None,:]==torch.arange(len(SCHEDULES),device=tables.device)[None,:,None])&valid[:,None,:]

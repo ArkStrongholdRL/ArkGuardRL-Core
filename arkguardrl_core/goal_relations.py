@@ -102,6 +102,14 @@ def adjustments(model,relations,experts,valid):
 
 
 def verify_rows(model,rows,public):
+    from .strategic_options import is_search
+    if is_search(getattr(model,'planner_config',{}).get('options')):
+        # The parent replay verifies role facts together with requested offer,
+        # receipt lineage and event memory; these cannot be inferred from the
+        # flat legacy target context alone.
+        from .search_options import validate_relations
+        for row in rows:validate_relations(row.goal_relations,len(row.capture['actions']))
+        return
     enabled='relations' in getattr(model,'planner_config',{})
     for row in rows:
         if not enabled:

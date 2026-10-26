@@ -10,7 +10,7 @@ import zlib
 import torch
 from .transport import CAPTURE_TENSORS, ROW_TENSORS, DTYPES
 
-SCHEMA = 'arkguardrl-core/live-columnar-zlib/v6'
+SCHEMA = 'arkguardrl-core/live-columnar-zlib/v7'
 MAX_ROWS = 32
 KEYS = {f'{prefix}.{name}' for prefix, names in
         (('capture', CAPTURE_TENSORS), ('row', ROW_TENSORS)) for name in names}

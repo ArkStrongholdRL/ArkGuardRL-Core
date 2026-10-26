@@ -27,7 +27,38 @@ MENU_FIELDS = ('target_catalog_index','idle','pair','level_then_merge','growth',
 STATE_DIM = layout.GLOBAL_DIM + (layout.MECH_START-layout.BOND_START) + route_features.OBS_DIM + 8 + DIM
 
 
+def is_search(config):
+    return isinstance(config,dict) and config.get('schema')=='arkguardrl-core/search-and-adapt-options/v1'
+
+
+def backend(config):
+    if is_search(config):
+        from . import search_options
+        return search_options
+    import sys
+    return sys.modules[__name__]
+
+
+def make_memory(config,planner_config,public):
+    if is_search(config):
+        from .search_options import SearchMemory
+        return SearchMemory(config,planner_config,public)
+    return OptionMemory(config,planner_config,public)
+
+
+def validate_context(model,value,batch=None):
+    return backend(model.planner_config['options']).validate_tensor(value,batch)
+
+
+def context_features(model,value):
+    if is_search(model.planner_config['options']):
+        from .search_options import context_features as search_features
+        return search_features(model,value)
+    return torch.cat((model.base.encoder.identity(value[...,0].long()),value[...,1:]),-1)
+
+
 def validate(config):
+    if is_search(config):return backend(config).validate(config)
     if not isinstance(config,dict) or set(config) != {'schema','enabled','durations','net_debit_limits'}:
         raise ValueError('Explicit strategic option contract required')
     if config['schema'] != SCHEMA or type(config['enabled']) is not bool or config['durations'] != [1,2] or config['net_debit_limits'] != [12,24]:
@@ -153,6 +184,7 @@ class OptionMemory:
 
 
 def state_features(model,inputs,previous):
+    if is_search(model.planner_config['options']):return backend(model.planner_config['options']).state_features(model,inputs,previous)
     validate_tensor(previous)
     obs=model.base.definitions.expand(inputs['obs'])
     result=torch.cat((obs[:layout.GLOBAL_DIM],obs[layout.BOND_START:layout.MECH_START],
@@ -162,6 +194,7 @@ def state_features(model,inputs,previous):
 
 
 def attach(model):
+    if is_search(model.planner_config['options']):return backend(model.planner_config['options']).attach(model)
     context_dim=24*model.width+11
     model.option_projection=nn.Linear(context_dim,context_dim,bias=False)
     nn.init.zeros_(model.option_projection.weight)
@@ -175,6 +208,7 @@ def attach(model):
 
 
 def distribution(model,state,menu):
+    if is_search(model.planner_config['options']):return backend(model.planner_config['options']).distribution(model,state,menu)
     if state.shape!=(STATE_DIM,) or menu.ndim!=2 or menu.shape[1]!=MENU_DIM:
         raise ValueError('Option distribution input mismatch')
     hidden=model.option_state(state)
@@ -189,6 +223,7 @@ def distribution(model,state,menu):
 
 def verify_rows(model,rows,public,probabilities=False):
     config=getattr(model,'planner_config',{}).get('options')
+    if is_search(config):return backend(config).verify_rows(model,rows,public,probabilities)
     memory=None;episode=None;seen=set();index=0;choices=0
     from types import SimpleNamespace
     for row in rows:

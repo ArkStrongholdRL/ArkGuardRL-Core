@@ -81,10 +81,14 @@ def prepare(model, row, *, copy_inputs=True):
         validate_recovery(row.get('recovery_context'))
     elif 'recovery_context' in row:raise ValueError('Unexpected recovery input')
     if 'options' in getattr(model,'planner_config',{}):
-        from ..strategic_options import validate_tensor as validate_option
-        validate_option(row.get('option_context'))
+        from ..strategic_options import validate_context
+        validate_context(model,row.get('option_context'))
     elif 'option_context' in row:raise ValueError('Unexpected strategic option input')
-    if 'relations' in getattr(model,'planner_config',{}):
+    from ..strategic_options import is_search
+    if is_search(getattr(model,'planner_config',{}).get('options')):
+        from ..search_options import validate_relations
+        validate_relations(row.get('goal_relations'),len(row['candidates']))
+    elif 'relations' in getattr(model,'planner_config',{}):
         from ..goal_relations import validate_tensor as validate_relations
         validate_relations(row.get('goal_relations'),len(row['candidates']))
     elif 'goal_relations' in row:raise ValueError('Unexpected goal relations')

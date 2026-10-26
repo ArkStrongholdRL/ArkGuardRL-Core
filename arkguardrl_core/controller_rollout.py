@@ -21,7 +21,7 @@ from arkguardrl_core.ready_cost import ReadyCost
 from arkguardrl_core.recording import RecordingEnv
 from arkguardrl_core.route_arrays import RouteFeatureCache
 from arkguardrl_core.sampling import archive_case, weights_hash
-from arkguardrl_core.strategic_options import OptionMemory, distribution, state_features
+from arkguardrl_core.strategic_options import make_memory, distribution, state_features
 from arkguardrl_core.io import write
 
 
@@ -37,7 +37,7 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
     cfg = model.planner_config
     memory = PlanMemory(cfg, public)
     recovery = RecoveryMemory()
-    options = OptionMemory(cfg['options'], cfg, public)
+    options = make_memory(cfg['options'], cfg, public)
     history_config = getattr(model, 'specialist_config', {}).get('prep_history')
     tracker = ReadyCost(history_config['loss_config']) if history_config else None
     cache = RouteFeatureCache()
@@ -102,6 +102,9 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
                 environment._record(dict(kind='diagnostic-option', decisionIndex=decisions,
                     menu=menu, sampled=sampled, selected=selected, native_logps=logp.tolist()))
             inputs['option_context'] = options.tensor(before)
+            if cfg['options'].get('schema') == 'arkguardrl-core/search-and-adapt-options/v1':
+                from arkguardrl_core.search_options import relations
+                inputs['goal_relations'] = relations(before, decision.actions, public, inputs['option_context'], options.requested_offer)
             with torch.no_grad():
                 logp, _ = model(inputs)
                 logits = torch.distributions.Categorical(logits=logp)

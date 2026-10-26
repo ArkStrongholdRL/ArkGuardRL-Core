@@ -37,11 +37,20 @@ def identity(contract, width, route_backend, specialist=None, planner=None):
                 support='pre-inference candidate subset; empty intents removed by native hierarchical normalization',
                 entropy='true joint entropy',batch_math='CPU state-local float32; original replay tolerance',technical_failure='no training admission, never death')
         if 'options' in planner:
-            from .strategic_options import SCHEMA as OPTION_SCHEMA,FIELDS as OPTION_FIELDS,MENU_FIELDS
-            result['input_contract']['strategic_options']=dict(schema=OPTION_SCHEMA,fields=OPTION_FIELDS,menu_fields=MENU_FIELDS,
-                probability='conditional native actor and separate pre-choice option actor',
-                credit='separate live SMDP PPO, native reward sums, gamma1 and settlement lambda',
-                objective='factorized clipped objectives; not joint-clipped PPO')
+            from .strategic_options import is_search
+            if is_search(planner['options']):
+                from .search_options import description as describe_search
+                result['input_contract']['strategic_options']=describe_search(planner['options'])
+                result['input_contract']['strategic_options'].update(
+                    probability='native conditional on actual parent/stage choice; separate pre-choice critic',
+                    credit='unchanged live gamma1 SMDP reward sum; lambda per actual settlement',
+                    objective='factorized clipped objectives; not joint-clipped PPO')
+            else:
+                from .strategic_options import SCHEMA as OPTION_SCHEMA,FIELDS as OPTION_FIELDS,MENU_FIELDS
+                result['input_contract']['strategic_options']=dict(schema=OPTION_SCHEMA,fields=OPTION_FIELDS,menu_fields=MENU_FIELDS,
+                    probability='conditional native actor and separate pre-choice option actor',
+                    credit='separate live SMDP PPO, native reward sums, gamma1 and settlement lambda',
+                    objective='factorized clipped objectives; not joint-clipped PPO')
         if 'relations' in planner:
             from .goal_relations import SCHEMA as RELATION_SCHEMA,FIELDS as RELATION_FIELDS
             result['input_contract']['goal_relations']=dict(schema=RELATION_SCHEMA,fields=RELATION_FIELDS,
@@ -49,6 +58,8 @@ def identity(contract, width, route_backend, specialist=None, planner=None):
                 control='learned separate economy/placement residuals and scheduler; no masks or reward changes',
                 selector='frozen original option encoder, actor, scheduler and pre-choice critic')
         result['architecture']='BC-initialized open decision layers; independent economy/placement scorers; action-led public memory; no covenant gate or bounded residual'
+        if 'options' in planner and is_search(planner['options']):
+            result['architecture']+='; learned search/adapt parent, replaceable assets, actual offer/use handoffs and distinct role relations'
     return result
 
 

@@ -168,8 +168,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     plan_memory=PlanMemory(planner_config,ctx.public) if planner_config else None
     from .capacity_recovery import RecoveryMemory, RecoveryFailure
     recovery_memory=RecoveryMemory() if planner_config and 'recovery' in planner_config else None
-    from .strategic_options import OptionMemory,distribution as option_distribution,state_features as option_state
-    option_memory=OptionMemory(planner_config['options'],planner_config,ctx.public) if planner_config and 'options' in planner_config else None
+    from .strategic_options import make_memory,distribution as option_distribution,state_features as option_state,is_search
+    option_memory=make_memory(planner_config['options'],planner_config,ctx.public) if planner_config and 'options' in planner_config else None
     option_rng=torch.Generator(device='cpu').manual_seed(rng_seed+1000000000)
     counts, components = Counter(), Counter()
     rejected, total_reward = 0, 0.0
@@ -230,6 +230,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             if planner_config and 'relations' in planner_config:
                 from .goal_relations import encode as encode_relations
                 inputs['goal_relations']=encode_relations(before,decision.actions,ctx.public,inputs['option_context'])
+            if planner_config and is_search(planner_config.get('options')):
+                from .search_options import relations as search_relations
+                inputs['goal_relations']=search_relations(before,decision.actions,ctx.public,inputs['option_context'],option_memory.requested_offer)
             phase_times['feature_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             with torch.no_grad():
