@@ -119,7 +119,7 @@ def forward(model, data):
     value = model.base.critic(hidden).squeeze(-1)
     if hasattr(model, 'adjust_planning'):
         return model.adjust_planning(result.log_softmax(1),value,obs,actions,data['route_actions'],
-            data['schedules'],data['experts'],data['valid'],data.get('plan_context'))
+            data['schedules'],data['experts'],data['valid'],data.get('plan_context'),data.get('recovery_context'))
     if hasattr(model, 'adjust_context'):
         return model.adjust_context(result.log_softmax(1), value, obs, control, actions,
             data['route_actions'], data['valid'], data['facts'], data['fact_state'], data.get('prep_history'))
@@ -130,6 +130,9 @@ def forward(model, data):
 
 
 def entropy(logp, data):
+    if 'recovery_context' in data:
+        safe = logp.masked_fill(~data['valid'], 0)
+        return -(logp.exp()*safe).sum(1)
     groups = data['groups']
     masses, existing = group_lse(logp, groups)
     safe = logp.masked_fill(~data['valid'], 0)

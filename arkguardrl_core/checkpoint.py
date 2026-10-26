@@ -31,6 +31,11 @@ def identity(contract, width, route_backend, specialist=None, planner=None):
         from .active_growth import description
         result['planner']=dict(planner)
         result['input_contract']={**result['input_contract'],'plan_context':description(planner)}
+        if 'recovery' in planner:
+            from .capacity_recovery import SCHEMA as RECOVERY_SCHEMA, FIELDS
+            result['input_contract']['recovery']=dict(schema=RECOVERY_SCHEMA,fields=FIELDS,
+                support='pre-inference candidate subset; empty intents removed by native hierarchical normalization',
+                entropy='true joint entropy',technical_failure='no training admission, never death')
         result['architecture']='BC-initialized open decision layers; independent economy/placement scorers; action-led public memory; no covenant gate or bounded residual'
     return result
 

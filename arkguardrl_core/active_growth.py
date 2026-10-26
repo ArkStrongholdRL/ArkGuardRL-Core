@@ -19,8 +19,11 @@ FIELDS=('target_catalog_index','idle','pair','level_then_merge','growth',
 
 
 def validate(config):
-    if not isinstance(config,dict) or set(config)!={'schema','band_index','growth_anchors','max_plan_rounds','hidden'}:
+    if not isinstance(config,dict) or set(config)-{'recovery'}!={'schema','band_index','growth_anchors','max_plan_rounds','hidden'}:
         raise ValueError('Explicit action-led plan policy config required')
+    if 'recovery' in config:
+        from .capacity_recovery import CONFIG
+        if config['recovery'] != CONFIG:raise ValueError('Unknown finite recovery contract')
     if config['schema']!=SCHEMA or config['hidden']!=64 or config['max_plan_rounds']!=3:
         raise ValueError('Known bounded action-led plan representation required')
     if type(config['band_index']) is not int or not 0<config['band_index']<layout.ENTITY_VOCAB:
@@ -130,6 +133,10 @@ class ActiveGrowthPolicy(Policy):
         for module in (self.base.encoder.combine,self.base.purchase_head,self.base.placement_head,self.base.scheduler,self.base.critic):
             module.requires_grad_(True)
         context_dim=24*width+DIM-1
+        if 'recovery' in config:
+            from .capacity_recovery import DIM as RECOVERY_DIM
+            self.recovery_projection=nn.Linear(RECOVERY_DIM,context_dim,bias=False)
+            nn.init.zeros_(self.recovery_projection.weight)
         candidate_dim=4*24*width+layout.ACTION_DIM-5+32+context_dim
         def head(n):return nn.Sequential(nn.Linear(n,64),nn.Tanh(),nn.Linear(64,1))
         self.plan_economy=head(candidate_dim);self.plan_placement=head(candidate_dim)
@@ -138,9 +145,13 @@ class ActiveGrowthPolicy(Policy):
             nn.init.zeros_(module[-1].weight);nn.init.zeros_(module[-1].bias)
         nn.init.zeros_(self.plan_schedule.weight);nn.init.zeros_(self.plan_schedule.bias)
 
-    def bootstrap_value(self,obs,plan):
+    def bootstrap_value(self,obs,plan,recovery=None):
         validate_tensor(plan)
         context=torch.cat((self.base.encoder.identity(plan[0].long()),plan[1:]),-1)
+        if hasattr(self,'recovery_projection'):
+            from .capacity_recovery import validate_tensor as validate_recovery
+            validate_recovery(recovery)
+            context=context+self.recovery_projection(recovery)
         return self.base.value(obs)+self.plan_value(context).squeeze(-1)
 
     def forward(self,row):
@@ -148,10 +159,11 @@ class ActiveGrowthPolicy(Policy):
         obs=self.base.definitions.expand(row['obs'])
         adjusted,values=self.adjust_planning(logp[None],value.reshape(1),obs[None],
             row['candidates'][None],row['route_actions'][None],row['schedules'][None],row['experts'][None],
-            torch.ones_like(logp,dtype=torch.bool)[None],row.get('plan_context',None)[None] if 'plan_context' in row else None)
+            torch.ones_like(logp,dtype=torch.bool)[None],row.get('plan_context',None)[None] if 'plan_context' in row else None,
+            row['recovery_context'][None] if 'recovery_context' in row else None)
         return adjusted[0],values[0]
 
-    def adjust_planning(self,logp,value,tables,actions,routes,schedules,experts,valid,plan):
+    def adjust_planning(self,logp,value,tables,actions,routes,schedules,experts,valid,plan,recovery=None):
         batch,count=valid.shape;validate_tensor(plan,batch)
         entities=tables[:,layout.ENTITY_START:layout.BOND_START].reshape(batch,layout.MAX_ENTITIES,layout.ENTITY_DIM)
         bank=torch.cat((entities.new_zeros(batch,1,layout.ENTITY_DIM),entities),1)
@@ -159,6 +171,10 @@ class ActiveGrowthPolicy(Policy):
         referred=bank[owner,actions[:,:,:4].long()]
         identity=self.base.encoder.identity(referred[:,:,:,1].long()).flatten(2)
         context=torch.cat((self.base.encoder.identity(plan[:,0].long()),plan[:,1:]),-1)
+        if hasattr(self,'recovery_projection'):
+            from .capacity_recovery import validate_tensor as validate_recovery
+            validate_recovery(recovery,batch)
+            context=context+self.recovery_projection(recovery)
         inputs=torch.cat((identity,actions[:,:,5:],routes,context[:,None].expand(-1,count,-1)),-1)
         delta=torch.where(experts==0,self.plan_economy(inputs).squeeze(-1),self.plan_placement(inputs).squeeze(-1))
         groups=(schedules[:,None,:]==torch.arange(len(SCHEDULES),device=tables.device)[None,:,None])&valid[:,None,:]

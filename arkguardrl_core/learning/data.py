@@ -76,6 +76,10 @@ def prepare(model, row, *, copy_inputs=True):
         from ..active_growth import validate_tensor as validate_plan
         validate_plan(row.get('plan_context'))
     elif 'plan_context' in row:raise ValueError('Unexpected plan input')
+    if 'recovery' in getattr(model,'planner_config',{}):
+        from ..capacity_recovery import validate_tensor as validate_recovery
+        validate_recovery(row.get('recovery_context'))
+    elif 'recovery_context' in row:raise ValueError('Unexpected recovery input')
     history_config = getattr(model, 'specialist_config', {}).get('prep_history')
     if history_config is not None:
         from ..prep_history import validate_tensor
@@ -139,6 +143,9 @@ def collate(rows, device='cpu', max_bytes=1024**3):
     if any('plan_context' in r for r in rows):
         if not all('plan_context' in r for r in rows):raise ValueError('Mixed plan input contracts')
         result['plan_context']=torch.stack([r['plan_context'] for r in rows])
+    if any('recovery_context' in r for r in rows):
+        if not all('recovery_context' in r for r in rows):raise ValueError('Mixed recovery contracts')
+        result['recovery_context']=torch.stack([r['recovery_context'] for r in rows])
     if any('prep_history' in r for r in rows):
         if not all('prep_history' in r for r in rows):
             raise ValueError('Mixed PREP history contracts in batch')

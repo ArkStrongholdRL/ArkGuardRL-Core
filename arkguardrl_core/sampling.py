@@ -82,11 +82,15 @@ class LiveRow:
     plan_context: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
     battle_count: int = 0
 
+    recovery_context: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
+    recovery_domain: dict | None = None
+
     def inputs(self):
         result = {k: self.capture[k] for k in ('obs', 'candidates', 'schedules', 'experts')} | {
             'route_obs': self.route_obs, 'route_actions': self.route_actions}
         if self.prep_history.numel(): result['prep_history'] = self.prep_history
         if self.plan_context.numel():result['plan_context']=self.plan_context
+        if self.recovery_context.numel():result['recovery_context']=self.recovery_context
         return result
 
     def evidence(self):
@@ -95,7 +99,8 @@ class LiveRow:
                 'geometry': self.geometry, 'old_logps': self.old_logps,
                 'anchor_logps': self.anchor_logps, 'policy_sha256': self.policy_sha,
                 'base_reward': self.base_reward, 'prep_cost': self.prep_cost,
-                'prep_history': self.prep_history,'plan_context':self.plan_context,'battle_count':self.battle_count}
+                'prep_history': self.prep_history,'plan_context':self.plan_context,'battle_count':self.battle_count,
+                'recovery_context':self.recovery_context,'recovery_domain':self.recovery_domain}
 
 
 def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason,
@@ -153,6 +158,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     if planner_config!=getattr(anchor,'planner_config',None):raise ValueError('Actor/anchor plan identities differ')
     from .active_growth import PlanMemory
     plan_memory=PlanMemory(planner_config,ctx.public) if planner_config else None
+    from .capacity_recovery import RecoveryMemory, RecoveryFailure
+    recovery_memory=RecoveryMemory() if planner_config and 'recovery' in planner_config else None
     counts, components = Counter(), Counter()
     rejected, total_reward = 0, 0.0
     started = time.monotonic()
@@ -177,12 +184,23 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             phase_started = time.monotonic()
             before = result.observation
             decision = session.decision()
+            recovery_domain=None
+            if recovery_memory is not None:
+                recovery_domain=dict(history_json=decision.history_json,actions=list(decision.actions),
+                    features=list(decision.candidate_features),schedules=list(decision.schedule_ids),experts=list(decision.expert_ids))
+                try:
+                    decision=recovery_memory.constrain(decision,ctx.public)
+                except RecoveryFailure as error:
+                    environment._record(dict(kind='capacity-recovery-failure',reason=str(error),
+                        context=recovery_memory.snapshot(),technical_truncation=True,personal_termination=False))
+                    raise
             geometry = environment.geometry()
             inputs = model.row(decision, geometry, ctx.public, route_cache=route_cache)
             if history_tracker is not None:
                 from .prep_history import tensor_from_tracker
                 inputs['prep_history'] = tensor_from_tracker(history_tracker, before)
             if plan_memory is not None:inputs['plan_context']=plan_memory.tensor(before)
+            if recovery_memory is not None:inputs['recovery_context']=recovery_memory.tensor()
             phase_times['feature_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             with torch.no_grad():
@@ -230,6 +248,16 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             phase_started = time.monotonic()
             settlements_before=environment.settlement_count
             result = session.step(action)
+            if recovery_memory is not None:
+                recovery_domain['successor']=result.observation
+                try:
+                    recovery_memory.note(before,action,result)
+                except RecoveryFailure as error:
+                    environment._record(dict(kind='capacity-recovery-failure',reason=str(error),
+                        context=recovery_memory.snapshot(),technical_truncation=True,personal_termination=False))
+                    raise
+                environment._record(dict(kind='capacity-recovery',context=recovery_memory.snapshot(),
+                    inputSha256=tensor_sha(inputs['recovery_context']),allowedActionIds=capture['action_ids']))
             battle_count=environment.settlement_count-settlements_before
             if plan_memory is not None:plan_memory.note(before,action,result.accepted)
             phase_times['environment_seconds'] += time.monotonic()-phase_started
@@ -267,14 +295,15 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 elif plan_memory is not None:
                     with torch.no_grad():
                         successor=torch.tensor(session.observation_features(),dtype=torch.float32)
-                        next_value=float(model.bootstrap_value(successor,plan_memory.tensor(result.observation)))
+                        next_value=float(model.bootstrap_value(successor,plan_memory.tensor(result.observation),recovery_memory.tensor()) if recovery_memory else model.bootstrap_value(successor,plan_memory.tensor(result.observation)))
                 else:next_value=learn._bootstrap(model.base,session,'cpu')
                 transition = Transition.from_step(ctx.objective_contract, **pending, next_value=next_value)
                 pending = None
             rows.append(LiveRow(capture, transition, inputs['route_obs'].detach().clone(),
                 inputs['route_actions'].detach().clone(), geometry, old_logps, anchor_logps, policy_sha, info['reward'], charged,
                 inputs.get('prep_history', torch.empty(0, dtype=torch.float32)).detach().clone(),
-                inputs.get('plan_context',torch.empty(0,dtype=torch.float32)).detach().clone(),battle_count))
+                inputs.get('plan_context',torch.empty(0,dtype=torch.float32)).detach().clone(),battle_count,
+                inputs.get('recovery_context',torch.empty(0,dtype=torch.float32)).detach().clone(),recovery_domain))
             if on_row is not None and rows[-1].transition is not None:
                 on_row(rows[-1])
             environment._record({'kind': 'policy-sample', 'experiment': ctx.schema,
@@ -320,7 +349,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
         'sampling_rng': 'per-episode-cpu-generator/v1', 'behavior_sha256': behavior.hexdigest(),
         'phases': dict(phase_times),'settlements':sum(r.battle_count for r in rows),
         'plan_events':plan_memory.events if plan_memory else [],
-        'plan_modes':dict(Counter(int(r.plan_context[1:5].argmax()) for r in rows)) if plan_memory else {}}
+        'plan_modes':dict(Counter(int(r.plan_context[1:5].argmax()) for r in rows)) if plan_memory else {},
+        'capacity_recovery':recovery_memory.events if recovery_memory else []}
     write(directory / 'summary.json', report)
     if log_mode == 'full':
         # Full diagnostics retain independent post-read verification/compression.
@@ -385,6 +415,8 @@ def verify_live(ctx, model, rows, revision, checkpoint):
     verify_rows(model, rows)
     from .active_growth import verify_rows as verify_plan_rows
     verify_plan_rows(model,rows,ctx.public)
+    from .capacity_recovery import verify_rows as verify_recovery_rows
+    verify_recovery_rows(model,rows,ctx.public)
     for row in rows:
         with torch.no_grad():
             logp, value = model(row.inputs())
