@@ -37,7 +37,8 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
     memory = PlanMemory(cfg, public)
     recovery = RecoveryMemory()
     options = OptionMemory(cfg['options'], cfg, public)
-    tracker = ReadyCost(model.specialist_config['prep_history']['loss_config'])
+    history_config = getattr(model, 'specialist_config', {}).get('prep_history')
+    tracker = ReadyCost(history_config['loss_config']) if history_config else None
     cache = RouteFeatureCache()
     objective = rewards.NativeProgressCore()
     total_reward = 0.
@@ -58,7 +59,8 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
             before = result.observation
             decision = recovery.constrain(session.decision(), public)
             inputs = model.row(decision, environment.geometry(), public, route_cache=cache)
-            inputs['prep_history'] = tensor_from_tracker(tracker, before)
+            if tracker is not None:
+                inputs['prep_history'] = tensor_from_tracker(tracker, before)
             inputs['plan_context'] = memory.tensor(before)
             inputs['recovery_context'] = recovery.tensor()
             previous = options.tensor(before)
