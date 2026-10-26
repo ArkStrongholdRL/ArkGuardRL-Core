@@ -49,3 +49,10 @@ relations and recorded behavior probabilities before learning.
 New selector/projection modules require explicit adoption and new initialization;
 old checkpoints and sealed source hashes are never rewritten. No tests,
 fixtures, engine/data modifications or claim of improved play are included.
+
+Native recovery v2 also covers the reproduced PREP64 single-temp-item case:
+the sole supported sequence is destroying that exact temp item then accepted
+Ready, at most two attempts. Ordinary unequipped single-chess recovery retains
+its three-attempt support. No equipped/multiple-piece scope, sale ranking,
+economic preferences or post-sampling overrides are added. Tensor layout stays
+8-wide; the explicit config/schema and provenance distinguish the new domain.

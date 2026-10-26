@@ -1,4 +1,4 @@
-"""GPL-3.0 bounded PREP64 single-chess overflow execution contract.
+"""GPL-3.0 bounded PREP64 single-piece overflow execution contract.
 
 This restricts otherwise game-legal swaps. No prices, ranks, covenant labels,
 rewards, native engine probes or scripted post-sampling overrides are used.
@@ -10,11 +10,11 @@ import torch
 from arkguardrl.candidates import PREP_ACTION_LIMIT, public_context, terrain_allows
 from arkguardrl.contracts import action_id
 
-SCHEMA = 'arkguardrl-core/prep64-single-chess-finite-recovery/v1'
+SCHEMA = 'arkguardrl-core/prep64-single-piece-finite-recovery/v2'
 DIM = 8
 FIELDS = ('active', 'open', 'finish', 'ready', 'remaining_div3',
           'root_uid', 'owed_uid', 'swapped')
-CONFIG = dict(schema=SCHEMA, attempts=3, scope='single-unequipped-temp-chess')
+CONFIG = dict(schema=SCHEMA, attempts=3, scope='single-unequipped-temp-chess-or-single-temp-item')
 
 
 class RecoveryFailure(RuntimeError):
@@ -38,11 +38,12 @@ class RecoveryMemory:
         self.swapped = False
         self.rejected = set()
         self.events = []
+        self.kind = None
 
     def snapshot(self):
         return dict(schema=SCHEMA, round=self.round, stage=self.stage,
                     remaining=self.remaining, root_uid=self.root, owed_uid=self.owed,
-                    swapped=self.swapped, rejected=sorted(self.rejected))
+                    swapped=self.swapped, rejected=sorted(self.rejected),kind=self.kind)
 
     def tensor(self):
         return torch.tensor([float(self.stage != 'idle'), float(self.stage == 'open'),
@@ -59,6 +60,7 @@ class RecoveryMemory:
             self.root = self.owed = 0
             self.swapped = False
             self.rejected.clear()
+            self.kind = None
         own = state['own']
         used = json.loads(decision.history_json)['used']
         temp = [p for p in own['temp'] if p]
@@ -68,9 +70,12 @@ class RecoveryMemory:
             # canReady=false alone is not evidence of a capacity obligation.
             if not temp or own.get('personalChoice'):
                 return decision
-            if own['canReady'] or len(temp) != 1 or temp[0]['kind'] != 'chess' or temp[0]['items']:
+            if (own['canReady'] or len(temp) != 1 or temp[0]['kind'] not in ('chess','item')
+                    or temp[0]['kind']=='chess' and temp[0]['items']):
                 raise RecoveryFailure('Unsupported PREP64 overflow obligation')
             self.stage = 'open'
+            self.kind = temp[0]['kind']
+            self.remaining = 2 if self.kind == 'item' else 3
             self.root = self.owed = temp[0]['uid']
             self.events.append(dict(event='start', **self.snapshot()))
         if self.remaining <= 0:
@@ -82,6 +87,8 @@ class RecoveryMemory:
                 continue
             if self.stage == 'ready':
                 keep = action['t'] == 'g.ready' and own['canReady'] and not temp
+            elif self.kind == 'item':
+                keep = action['t'] == 'g.destroy' and action['uid'] == self.owed
             elif action['t'] == 'g.sell':
                 area, _, piece = locations[action['uid']]
                 keep = piece['kind'] == 'chess' and not piece['items'] and (
@@ -125,6 +132,8 @@ class RecoveryMemory:
         else:
             expected = self.owed
             if action['t'] == 'g.sell' and action['uid'] == self.owed:
+                expected = 0
+            elif action['t'] == 'g.destroy' and self.kind == 'item' and action['uid'] == self.owed:
                 expected = 0
             elif action['t'] == 'g.move':
                 to = action['to']
