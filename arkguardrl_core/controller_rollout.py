@@ -7,6 +7,7 @@ Controller hooks receive public state, actual candidates and conditional logits.
 import hashlib
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 import torch
 from arkguardrl import rewards
@@ -45,6 +46,8 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
     behavior = hashlib.sha256()
     decisions = bands = rejected = 0
     ready = []
+    item_exit = None
+    item_exits = []
     environment = RecordingEnv(engine, expected_data_sha256=data_sha256,
         deadline=time.monotonic() + wall, max_decisions=max_decisions,
         max_advances=max_advances, trace_path=directory / 'trajectory.jsonl',
@@ -57,7 +60,27 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
         boss_round = result.observation['public']['bossRound']
         while not (result.terminated or result.truncated):
             before = result.observation
-            decision = recovery.constrain(session.decision(), public)
+            native = session.decision()
+            temp = [p for p in before['own']['temp'] if p]
+            item_step = False
+            if (item_exit is None and before['phase'] == 'PREP' and session.history.prep_used >= 64
+                    and not before['own']['canReady'] and len(temp) == 1 and temp[0]['kind'] == 'item'
+                    and not before['own'].get('personalChoice')):
+                item_exit = dict(uid=temp[0]['uid'], round=before['round'], remaining=2, stage='destroy')
+            if item_exit is not None:
+                item_step = True
+                if item_exit['remaining'] <= 0 or item_exit['round'] != before['round']:
+                    raise RuntimeError('Single-temp-item exit exceeded finite contract')
+                allowed = [i for i,a in enumerate(native.actions) if
+                    (item_exit['stage'] == 'destroy' and a['t'] == 'g.destroy' and a['uid'] == item_exit['uid']) or
+                    (item_exit['stage'] == 'ready' and a['t'] == 'g.ready' and a.get('ready') and not temp and before['own']['canReady'])]
+                if len(allowed) != 1:
+                    raise RuntimeError('Single-temp-item exit lacks exact native candidate')
+                i = allowed[0]
+                decision = replace(native, actions=(native.actions[i],), candidate_features=(native.candidate_features[i],),
+                    schedule_ids=(native.schedule_ids[i],), expert_ids=(native.expert_ids[i],))
+            else:
+                decision = recovery.constrain(native, public)
             inputs = model.row(decision, environment.geometry(), public, route_cache=cache)
             if tracker is not None:
                 inputs['prep_history'] = tensor_from_tracker(tracker, before)
@@ -83,7 +106,8 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
                 logp, _ = model(inputs)
                 logits = torch.distributions.Categorical(logits=logp)
                 sampled = int(torch.multinomial(logits.probs, 1, generator=native_rng))
-            selected = controller.action(before, decision.actions, logp, sampled, recovery.stage)
+            selected = controller.action(before, decision.actions, logp, sampled,
+                'single-temp-item-exit' if item_step else recovery.stage)
             if not 0 <= selected < len(decision.actions):
                 raise ValueError('Controller action outside actual candidate domain')
             action = decision.actions[selected]
@@ -95,7 +119,19 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
                 ready.append(dict(round=before['round'], hp=before['own']['lp'],
                     board=before['own']['board'], bonds=before['own']['bonds']))
             result = session.step(action)
-            recovery.note(before, action, result)
+            if item_step:
+                item_exit['remaining'] -= 1
+                if not result.accepted:
+                    raise RuntimeError('Single-temp-item exit candidate rejected')
+                item_exits.append(dict(before=dict(item_exit),action=action,accepted=result.accepted))
+                if item_exit['stage'] == 'destroy':
+                    if any(p for p in result.observation['own']['temp']) or not result.observation['own']['canReady']:
+                        raise RuntimeError('Destroy did not clear exact temp-item obligation')
+                    item_exit['stage'] = 'ready'
+                else:
+                    item_exit = None
+            else:
+                recovery.note(before, action, result)
             memory.note(before, action, result.accepted)
             options.note(before, action, result)
             controller.note(before, action, result)
@@ -123,7 +159,8 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
         final_hp=final['own']['lp'], decisions=decisions, rejections=rejected,
         behavior_sha256=behavior.hexdigest(), model_weights_sha256=original_weights,
         controller=controller.snapshot(), events=controller.events, fork=controller.fork,
-        ready=ready, trajectory_audit=audit, on_policy_admissible=False, updates=0)
+        ready=ready, single_temp_item_exits=item_exits,
+        trajectory_audit=audit, on_policy_admissible=False, updates=0)
     archive_case(directory)
     write(directory / 'summary.json', report)
     return report
