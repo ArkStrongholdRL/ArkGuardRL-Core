@@ -253,6 +253,8 @@ def parameters(model):
 
 
 def update(ctx,model,optimizer,rows,revision,path,rng,epochs=2,batch_size=32):
+    if model.planner_config.get('relations',{}).get('freeze_selector'):
+        return dict(choices=0,updates=0,frozen=True)
     from .sampling import verify_live_metadata
     verify_live_metadata(ctx,rows,revision,path)
     verify_rows(model,rows,ctx.public,probabilities=True)

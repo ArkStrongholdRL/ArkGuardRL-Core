@@ -88,6 +88,8 @@ class LiveRow:
     option_context: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
     option_event: dict | None = None
 
+    goal_relations: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
+
     def inputs(self):
         result = {k: self.capture[k] for k in ('obs', 'candidates', 'schedules', 'experts')} | {
             'route_obs': self.route_obs, 'route_actions': self.route_actions}
@@ -95,6 +97,7 @@ class LiveRow:
         if self.plan_context.numel():result['plan_context']=self.plan_context
         if self.recovery_context.numel():result['recovery_context']=self.recovery_context
         if self.option_context.numel():result['option_context']=self.option_context
+        if self.goal_relations.numel():result['goal_relations']=self.goal_relations
         return result
 
     def evidence(self):
@@ -105,7 +108,7 @@ class LiveRow:
                 'base_reward': self.base_reward, 'prep_cost': self.prep_cost,
                 'prep_history': self.prep_history,'plan_context':self.plan_context,'battle_count':self.battle_count,
                 'recovery_context':self.recovery_context,'recovery_domain':self.recovery_domain,
-                'option_context':self.option_context,'option_event':self.option_event}
+                'option_context':self.option_context,'option_event':self.option_event,'goal_relations':self.goal_relations}
 
 
 def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason,
@@ -224,6 +227,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                         value=float(option_value),index=option_index)
                     option_memory.choose(menu[option_index],before)
                 inputs['option_context']=option_memory.tensor(before)
+            if planner_config and 'relations' in planner_config:
+                from .goal_relations import encode as encode_relations
+                inputs['goal_relations']=encode_relations(before,decision.actions,ctx.public,inputs['option_context'])
             phase_times['feature_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             with torch.no_grad():
@@ -255,7 +261,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                                inputs.get('prep_history', torch.empty(0)), inputs.get('plan_context',torch.empty(0))))
                     + 2 * len(json.dumps(geometry))
                     + (2*len(canonical(option_event)) if option_event is not None else 0)
-                    + 2*inputs.get('option_context',torch.empty(0)).numel()*4)
+                    + 2*inputs.get('option_context',torch.empty(0)).numel()*4
+                    + 2*inputs.get('goal_relations',torch.empty(0)).numel()*4)
             used_bytes += size
             if used_bytes > ctx.config['max_episode_bytes']:
                 raise MemoryError('Live episode capture bound exceeded; batch not trained')
@@ -268,7 +275,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 'selectedLogProbability': old_logp, 'policyRevision': revision,
                 'policySha256': policy_sha,
                 'prepHistorySha256': tensor_sha(inputs['prep_history']) if history_config else None,
-                'planContextSha256':tensor_sha(inputs['plan_context']) if plan_memory else None})
+                'planContextSha256':tensor_sha(inputs['plan_context']) if plan_memory else None,
+                'goalRelationsSha256':tensor_sha(inputs['goal_relations']) if 'goal_relations' in inputs else None})
             phase_times['capture_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             settlements_before=environment.settlement_count
@@ -330,7 +338,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 inputs.get('prep_history', torch.empty(0, dtype=torch.float32)).detach().clone(),
                 inputs.get('plan_context',torch.empty(0,dtype=torch.float32)).detach().clone(),battle_count,
                 inputs.get('recovery_context',torch.empty(0,dtype=torch.float32)).detach().clone(),recovery_domain,
-                inputs.get('option_context',torch.empty(0,dtype=torch.float32)).detach().clone(),option_event))
+                inputs.get('option_context',torch.empty(0,dtype=torch.float32)).detach().clone(),option_event,
+                inputs.get('goal_relations',torch.empty(0,dtype=torch.float32)).detach().clone()))
             if option_event is not None:
                 environment._record(dict(kind='strategic-option-choice',decisionIndex=len(rows)-1,
                     event=option_event,optionContext=inputs['option_context'].tolist(),
@@ -454,6 +463,8 @@ def verify_live(ctx, model, rows, revision, checkpoint):
     verify_recovery_rows(model,rows,ctx.public)
     from .strategic_options import verify_rows as verify_option_rows
     verify_option_rows(model,rows,ctx.public,probabilities=True)
+    from .goal_relations import verify_rows as verify_relations
+    verify_relations(model,rows,ctx.public)
     for row in rows:
         with torch.no_grad():
             logp, value = model(row.inputs())

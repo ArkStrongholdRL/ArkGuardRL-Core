@@ -42,6 +42,12 @@ def identity(contract, width, route_backend, specialist=None, planner=None):
                 probability='conditional native actor and separate pre-choice option actor',
                 credit='separate live SMDP PPO, native reward sums, gamma1 and settlement lambda',
                 objective='factorized clipped objectives; not joint-clipped PPO')
+        if 'relations' in planner:
+            from .goal_relations import SCHEMA as RELATION_SCHEMA,FIELDS as RELATION_FIELDS
+            result['input_contract']['goal_relations']=dict(schema=RELATION_SCHEMA,fields=RELATION_FIELDS,
+                source='public current state, exact candidate support and actual sampled option',
+                control='learned separate economy/placement residuals and scheduler; no masks or reward changes',
+                selector='frozen original option encoder, actor, scheduler and pre-choice critic')
         result['architecture']='BC-initialized open decision layers; independent economy/placement scorers; action-led public memory; no covenant gate or bounded residual'
     return result
 

@@ -19,8 +19,12 @@ FIELDS=('target_catalog_index','idle','pair','level_then_merge','growth',
 
 
 def validate(config):
-    if not isinstance(config,dict) or set(config)-{'recovery','options'}!={'schema','band_index','growth_anchors','max_plan_rounds','hidden'}:
+    if not isinstance(config,dict) or set(config)-{'recovery','options','relations'}!={'schema','band_index','growth_anchors','max_plan_rounds','hidden'}:
         raise ValueError('Explicit action-led plan policy config required')
+    if 'relations' in config:
+        from .goal_relations import validate as validate_relations
+        validate_relations(config['relations'])
+        if not config.get('options',{}).get('enabled'):raise ValueError('Goal relations require active strategic options')
     if 'options' in config:
         from .strategic_options import validate as validate_options
         validate_options(config['options'])
@@ -151,6 +155,9 @@ class ActiveGrowthPolicy(Policy):
         if 'options' in config:
             from .strategic_options import attach
             attach(self)
+        if 'relations' in config:
+            from .goal_relations import attach as attach_relations
+            attach_relations(self,config['relations'])
 
     def forward_batch(self, packed):
         if 'recovery' not in self.planner_config:
@@ -171,6 +178,7 @@ class ActiveGrowthPolicy(Policy):
             row.update({key:packed[key][i][valid] for key in
                         ('candidates','route_actions','schedules','experts')})
             if 'option_context' in packed:row['option_context']=packed['option_context'][i]
+            if 'goal_relations' in packed:row['goal_relations']=packed['goal_relations'][i][valid]
             row['facts'] = packed['facts'][packed['fact_state'] == i]
             single = data.collate([row], max_bytes=2**63-1)
             logp, value = network.forward(self, single)
@@ -198,10 +206,11 @@ class ActiveGrowthPolicy(Policy):
             row['candidates'][None],row['route_actions'][None],row['schedules'][None],row['experts'][None],
             torch.ones_like(logp,dtype=torch.bool)[None],row.get('plan_context',None)[None] if 'plan_context' in row else None,
             row['recovery_context'][None] if 'recovery_context' in row else None,
-            row['option_context'][None] if 'option_context' in row else None)
+            row['option_context'][None] if 'option_context' in row else None,
+            row['goal_relations'][None] if 'goal_relations' in row else None)
         return adjusted[0],values[0]
 
-    def adjust_planning(self,logp,value,tables,actions,routes,schedules,experts,valid,plan,recovery=None,option=None):
+    def adjust_planning(self,logp,value,tables,actions,routes,schedules,experts,valid,plan,recovery=None,option=None,relations=None):
         batch,count=valid.shape;validate_tensor(plan,batch)
         entities=tables[:,layout.ENTITY_START:layout.BOND_START].reshape(batch,layout.MAX_ENTITIES,layout.ENTITY_DIM)
         bank=torch.cat((entities.new_zeros(batch,1,layout.ENTITY_DIM),entities),1)
@@ -219,11 +228,16 @@ class ActiveGrowthPolicy(Policy):
             context=context+self.option_projection(torch.cat((self.base.encoder.identity(option[...,0].long()),option[...,1:]),-1))
         inputs=torch.cat((identity,actions[:,:,5:],routes,context[:,None].expand(-1,count,-1)),-1)
         delta=torch.where(experts==0,self.plan_economy(inputs).squeeze(-1),self.plan_placement(inputs).squeeze(-1))
+        relation_schedule=0.
+        if hasattr(self,'goal_schedule'):
+            from .goal_relations import adjustments
+            relation_delta,relation_schedule=adjustments(self,relations,experts,valid)
+            delta=delta+relation_delta
         groups=(schedules[:,None,:]==torch.arange(len(SCHEDULES),device=tables.device)[None,:,None])&valid[:,None,:]
         from .learning.network import group_lse
         masses,exists=group_lse(logp,groups)
         masses=masses.masked_fill(~exists,-torch.inf)
-        new_mass=(masses+self.plan_schedule(context)).log_softmax(1).masked_fill(~exists,0)
+        new_mass=(masses+self.plan_schedule(context)+relation_schedule).log_softmax(1).masked_fill(~exists,0)
         safe=masses.masked_fill(~exists,0)
         raw=logp-safe.gather(1,schedules)+delta
         norms,_=group_lse(raw,groups)

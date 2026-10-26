@@ -84,6 +84,10 @@ def prepare(model, row, *, copy_inputs=True):
         from ..strategic_options import validate_tensor as validate_option
         validate_option(row.get('option_context'))
     elif 'option_context' in row:raise ValueError('Unexpected strategic option input')
+    if 'relations' in getattr(model,'planner_config',{}):
+        from ..goal_relations import validate_tensor as validate_relations
+        validate_relations(row.get('goal_relations'),len(row['candidates']))
+    elif 'goal_relations' in row:raise ValueError('Unexpected goal relations')
     history_config = getattr(model, 'specialist_config', {}).get('prep_history')
     if history_config is not None:
         from ..prep_history import validate_tensor
@@ -170,7 +174,11 @@ def collate(rows, device='cpu', max_bytes=1024**3):
                 bank[i, :len(row[key])] = row[key]
             result[key] = bank
     valid = torch.zeros(batch, count, dtype=torch.bool)
-    for key in ('candidates', 'route_actions', 'schedules', 'experts'):
+    candidate_fields=('candidates', 'route_actions', 'schedules', 'experts')
+    if any('goal_relations' in r for r in rows):
+        if not all('goal_relations' in r for r in rows):raise ValueError('Mixed relation contracts')
+        candidate_fields+=('goal_relations',)
+    for key in candidate_fields:
         example = rows[0][key]
         value = example.new_zeros((batch, count, *example.shape[1:]))
         for i, row in enumerate(rows):
