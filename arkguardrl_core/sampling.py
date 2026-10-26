@@ -85,12 +85,16 @@ class LiveRow:
     recovery_context: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
     recovery_domain: dict | None = None
 
+    option_context: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
+    option_event: dict | None = None
+
     def inputs(self):
         result = {k: self.capture[k] for k in ('obs', 'candidates', 'schedules', 'experts')} | {
             'route_obs': self.route_obs, 'route_actions': self.route_actions}
         if self.prep_history.numel(): result['prep_history'] = self.prep_history
         if self.plan_context.numel():result['plan_context']=self.plan_context
         if self.recovery_context.numel():result['recovery_context']=self.recovery_context
+        if self.option_context.numel():result['option_context']=self.option_context
         return result
 
     def evidence(self):
@@ -100,7 +104,8 @@ class LiveRow:
                 'anchor_logps': self.anchor_logps, 'policy_sha256': self.policy_sha,
                 'base_reward': self.base_reward, 'prep_cost': self.prep_cost,
                 'prep_history': self.prep_history,'plan_context':self.plan_context,'battle_count':self.battle_count,
-                'recovery_context':self.recovery_context,'recovery_domain':self.recovery_domain}
+                'recovery_context':self.recovery_context,'recovery_domain':self.recovery_domain,
+                'option_context':self.option_context,'option_event':self.option_event}
 
 
 def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason,
@@ -160,6 +165,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     plan_memory=PlanMemory(planner_config,ctx.public) if planner_config else None
     from .capacity_recovery import RecoveryMemory, RecoveryFailure
     recovery_memory=RecoveryMemory() if planner_config and 'recovery' in planner_config else None
+    from .strategic_options import OptionMemory,distribution as option_distribution,state_features as option_state
+    option_memory=OptionMemory(planner_config['options'],planner_config,ctx.public) if planner_config and 'options' in planner_config else None
+    option_rng=torch.Generator(device='cpu').manual_seed(rng_seed+1000000000)
     counts, components = Counter(), Counter()
     rejected, total_reward = 0, 0.0
     started = time.monotonic()
@@ -201,6 +209,21 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 inputs['prep_history'] = tensor_from_tracker(history_tracker, before)
             if plan_memory is not None:inputs['plan_context']=plan_memory.tensor(before)
             if recovery_memory is not None:inputs['recovery_context']=recovery_memory.tensor()
+            option_event=None
+            if option_memory is not None:
+                previous=option_memory.tensor(before)
+                menu=option_memory.menu(before,session.history.prep_used)
+                if menu is not None:
+                    if inference is not None:raise ValueError('Strategic selector currently uses local CPU inference')
+                    raw=option_state(model,inputs,previous)
+                    menu_tensor=option_memory.menu_tensor(menu,before)
+                    with torch.no_grad():option_logp,option_value=option_distribution(model,raw,menu_tensor)
+                    option_index=int(torch.multinomial(option_logp.exp(),1,generator=option_rng))
+                    option_event=dict(schema=planner_config['options']['schema'],menu=menu,menu_tensor=menu_tensor.tolist(),
+                        previous_context=previous.tolist(),state=raw.tolist(),old_logps=option_logp.tolist(),
+                        value=float(option_value),index=option_index)
+                    option_memory.choose(menu[option_index],before)
+                inputs['option_context']=option_memory.tensor(before)
             phase_times['feature_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             with torch.no_grad():
@@ -230,7 +253,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                     + 2 * sum(x.numel() * x.element_size() for x in
                               (inputs['route_obs'], inputs['route_actions'], old_logps, anchor_logps,
                                inputs.get('prep_history', torch.empty(0)), inputs.get('plan_context',torch.empty(0))))
-                    + 2 * len(json.dumps(geometry)))
+                    + 2 * len(json.dumps(geometry))
+                    + (2*len(canonical(option_event)) if option_event is not None else 0)
+                    + 2*inputs.get('option_context',torch.empty(0)).numel()*4)
             used_bytes += size
             if used_bytes > ctx.config['max_episode_bytes']:
                 raise MemoryError('Live episode capture bound exceeded; batch not trained')
@@ -260,6 +285,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                     inputSha256=tensor_sha(inputs['recovery_context']),allowedActionIds=capture['action_ids']))
             battle_count=environment.settlement_count-settlements_before
             if plan_memory is not None:plan_memory.note(before,action,result.accepted)
+            if option_memory is not None:option_memory.note(before,action,result)
             phase_times['environment_seconds'] += time.monotonic()-phase_started
             behavior.update(canonical((action, result.accepted, fingerprint(before), fingerprint(result.observation))))
             if type(result.accepted) is not bool:
@@ -295,7 +321,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 elif plan_memory is not None:
                     with torch.no_grad():
                         successor=torch.tensor(session.observation_features(),dtype=torch.float32)
-                        next_value=float(model.bootstrap_value(successor,plan_memory.tensor(result.observation),recovery_memory.tensor()) if recovery_memory else model.bootstrap_value(successor,plan_memory.tensor(result.observation)))
+                        next_value=float(model.bootstrap_value(successor,plan_memory.tensor(result.observation),recovery_memory.tensor(),option_memory.tensor(result.observation)) if option_memory else model.bootstrap_value(successor,plan_memory.tensor(result.observation),recovery_memory.tensor()) if recovery_memory else model.bootstrap_value(successor,plan_memory.tensor(result.observation)))
                 else:next_value=learn._bootstrap(model.base,session,'cpu')
                 transition = Transition.from_step(ctx.objective_contract, **pending, next_value=next_value)
                 pending = None
@@ -303,7 +329,14 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 inputs['route_actions'].detach().clone(), geometry, old_logps, anchor_logps, policy_sha, info['reward'], charged,
                 inputs.get('prep_history', torch.empty(0, dtype=torch.float32)).detach().clone(),
                 inputs.get('plan_context',torch.empty(0,dtype=torch.float32)).detach().clone(),battle_count,
-                inputs.get('recovery_context',torch.empty(0,dtype=torch.float32)).detach().clone(),recovery_domain))
+                inputs.get('recovery_context',torch.empty(0,dtype=torch.float32)).detach().clone(),recovery_domain,
+                inputs.get('option_context',torch.empty(0,dtype=torch.float32)).detach().clone(),option_event))
+            if option_event is not None:
+                environment._record(dict(kind='strategic-option-choice',decisionIndex=len(rows)-1,
+                    event=option_event,optionContext=inputs['option_context'].tolist(),
+                    selectedLogProbability=option_event['old_logps'][option_event['index']],
+                    jointLogProbability=old_logp+option_event['old_logps'][option_event['index']],
+                    nativeLogProbability=old_logp))
             if on_row is not None and rows[-1].transition is not None:
                 on_row(rows[-1])
             environment._record({'kind': 'policy-sample', 'experiment': ctx.schema,
@@ -350,7 +383,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
         'phases': dict(phase_times),'settlements':sum(r.battle_count for r in rows),
         'plan_events':plan_memory.events if plan_memory else [],
         'plan_modes':dict(Counter(int(r.plan_context[1:5].argmax()) for r in rows)) if plan_memory else {},
-        'capacity_recovery':recovery_memory.events if recovery_memory else []}
+        'capacity_recovery':recovery_memory.events if recovery_memory else [],
+        'strategic_options':option_memory.events if option_memory else [],
+        'option_choices':sum(r.option_event is not None for r in rows)}
     write(directory / 'summary.json', report)
     if log_mode == 'full':
         # Full diagnostics retain independent post-read verification/compression.
@@ -417,6 +452,8 @@ def verify_live(ctx, model, rows, revision, checkpoint):
     verify_plan_rows(model,rows,ctx.public)
     from .capacity_recovery import verify_rows as verify_recovery_rows
     verify_recovery_rows(model,rows,ctx.public)
+    from .strategic_options import verify_rows as verify_option_rows
+    verify_option_rows(model,rows,ctx.public,probabilities=True)
     for row in rows:
         with torch.no_grad():
             logp, value = model(row.inputs())

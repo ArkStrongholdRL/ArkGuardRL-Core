@@ -80,6 +80,10 @@ def prepare(model, row, *, copy_inputs=True):
         from ..capacity_recovery import validate_tensor as validate_recovery
         validate_recovery(row.get('recovery_context'))
     elif 'recovery_context' in row:raise ValueError('Unexpected recovery input')
+    if 'options' in getattr(model,'planner_config',{}):
+        from ..strategic_options import validate_tensor as validate_option
+        validate_option(row.get('option_context'))
+    elif 'option_context' in row:raise ValueError('Unexpected strategic option input')
     history_config = getattr(model, 'specialist_config', {}).get('prep_history')
     if history_config is not None:
         from ..prep_history import validate_tensor
@@ -143,6 +147,9 @@ def collate(rows, device='cpu', max_bytes=1024**3):
     if any('plan_context' in r for r in rows):
         if not all('plan_context' in r for r in rows):raise ValueError('Mixed plan input contracts')
         result['plan_context']=torch.stack([r['plan_context'] for r in rows])
+    if any('option_context' in r for r in rows):
+        if not all('option_context' in r for r in rows):raise ValueError('Mixed option contracts')
+        result['option_context']=torch.stack([r['option_context'] for r in rows])
     if any('recovery_context' in r for r in rows):
         if not all('recovery_context' in r for r in rows):raise ValueError('Mixed recovery contracts')
         result['recovery_context']=torch.stack([r['recovery_context'] for r in rows])

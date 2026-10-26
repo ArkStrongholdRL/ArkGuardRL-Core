@@ -96,6 +96,8 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
     verify_plan_rows(actor,rows,ctx.public)
     from ..capacity_recovery import verify_rows as verify_recovery_rows
     verify_recovery_rows(actor,rows,ctx.public)
+    from ..strategic_options import verify_rows as verify_option_rows
+    verify_option_rows(actor,rows,ctx.public)
     if config['gae_clock']=='settlement':
         from ..battle_credit import advantages as credit
         advantages,returns=credit(ctx.objective_contract,rows,config['gae_lambda'])

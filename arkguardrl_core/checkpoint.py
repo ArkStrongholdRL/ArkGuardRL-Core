@@ -36,6 +36,12 @@ def identity(contract, width, route_backend, specialist=None, planner=None):
             result['input_contract']['recovery']=dict(schema=RECOVERY_SCHEMA,fields=FIELDS,
                 support='pre-inference candidate subset; empty intents removed by native hierarchical normalization',
                 entropy='true joint entropy',batch_math='CPU state-local float32; original replay tolerance',technical_failure='no training admission, never death')
+        if 'options' in planner:
+            from .strategic_options import SCHEMA as OPTION_SCHEMA,FIELDS as OPTION_FIELDS,MENU_FIELDS
+            result['input_contract']['strategic_options']=dict(schema=OPTION_SCHEMA,fields=OPTION_FIELDS,menu_fields=MENU_FIELDS,
+                probability='conditional native actor and separate pre-choice option actor',
+                credit='separate live SMDP PPO, native reward sums, gamma1 and settlement lambda',
+                objective='factorized clipped objectives; not joint-clipped PPO')
         result['architecture']='BC-initialized open decision layers; independent economy/placement scorers; action-led public memory; no covenant gate or bounded residual'
     return result
 

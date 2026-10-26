@@ -19,8 +19,12 @@ FIELDS=('target_catalog_index','idle','pair','level_then_merge','growth',
 
 
 def validate(config):
-    if not isinstance(config,dict) or set(config)-{'recovery'}!={'schema','band_index','growth_anchors','max_plan_rounds','hidden'}:
+    if not isinstance(config,dict) or set(config)-{'recovery','options'}!={'schema','band_index','growth_anchors','max_plan_rounds','hidden'}:
         raise ValueError('Explicit action-led plan policy config required')
+    if 'options' in config:
+        from .strategic_options import validate as validate_options
+        validate_options(config['options'])
+        if 'recovery' not in config:raise ValueError('Strategic options require finite recovery')
     if 'recovery' in config:
         from .capacity_recovery import CONFIG
         if config['recovery'] != CONFIG:raise ValueError('Unknown finite recovery contract')
@@ -144,6 +148,9 @@ class ActiveGrowthPolicy(Policy):
         for module in (self.plan_economy,self.plan_placement,self.plan_value):
             nn.init.zeros_(module[-1].weight);nn.init.zeros_(module[-1].bias)
         nn.init.zeros_(self.plan_schedule.weight);nn.init.zeros_(self.plan_schedule.bias)
+        if 'options' in config:
+            from .strategic_options import attach
+            attach(self)
 
     def forward_batch(self, packed):
         if 'recovery' not in self.planner_config:
@@ -163,6 +170,7 @@ class ActiveGrowthPolicy(Policy):
                    'plan_context','recovery_context')}
             row.update({key:packed[key][i][valid] for key in
                         ('candidates','route_actions','schedules','experts')})
+            if 'option_context' in packed:row['option_context']=packed['option_context'][i]
             row['facts'] = packed['facts'][packed['fact_state'] == i]
             single = data.collate([row], max_bytes=2**63-1)
             logp, value = network.forward(self, single)
@@ -170,13 +178,17 @@ class ActiveGrowthPolicy(Policy):
             values.append(value[0])
         return torch.stack(results), torch.stack(values)
 
-    def bootstrap_value(self,obs,plan,recovery=None):
+    def bootstrap_value(self,obs,plan,recovery=None,option=None):
         validate_tensor(plan)
         context=torch.cat((self.base.encoder.identity(plan[0].long()),plan[1:]),-1)
         if hasattr(self,'recovery_projection'):
             from .capacity_recovery import validate_tensor as validate_recovery
             validate_recovery(recovery)
             context=context+self.recovery_projection(recovery)
+        if hasattr(self,'option_projection'):
+            from .strategic_options import validate_tensor as validate_option
+            validate_option(option)
+            context=context+self.option_projection(torch.cat((self.base.encoder.identity(option[...,0].long()),option[...,1:]),-1))
         return self.base.value(obs)+self.plan_value(context).squeeze(-1)
 
     def forward(self,row):
@@ -185,10 +197,11 @@ class ActiveGrowthPolicy(Policy):
         adjusted,values=self.adjust_planning(logp[None],value.reshape(1),obs[None],
             row['candidates'][None],row['route_actions'][None],row['schedules'][None],row['experts'][None],
             torch.ones_like(logp,dtype=torch.bool)[None],row.get('plan_context',None)[None] if 'plan_context' in row else None,
-            row['recovery_context'][None] if 'recovery_context' in row else None)
+            row['recovery_context'][None] if 'recovery_context' in row else None,
+            row['option_context'][None] if 'option_context' in row else None)
         return adjusted[0],values[0]
 
-    def adjust_planning(self,logp,value,tables,actions,routes,schedules,experts,valid,plan,recovery=None):
+    def adjust_planning(self,logp,value,tables,actions,routes,schedules,experts,valid,plan,recovery=None,option=None):
         batch,count=valid.shape;validate_tensor(plan,batch)
         entities=tables[:,layout.ENTITY_START:layout.BOND_START].reshape(batch,layout.MAX_ENTITIES,layout.ENTITY_DIM)
         bank=torch.cat((entities.new_zeros(batch,1,layout.ENTITY_DIM),entities),1)
@@ -200,6 +213,10 @@ class ActiveGrowthPolicy(Policy):
             from .capacity_recovery import validate_tensor as validate_recovery
             validate_recovery(recovery,batch)
             context=context+self.recovery_projection(recovery)
+        if hasattr(self,'option_projection'):
+            from .strategic_options import validate_tensor as validate_option
+            validate_option(option,batch)
+            context=context+self.option_projection(torch.cat((self.base.encoder.identity(option[...,0].long()),option[...,1:]),-1))
         inputs=torch.cat((identity,actions[:,:,5:],routes,context[:,None].expand(-1,count,-1)),-1)
         delta=torch.where(experts==0,self.plan_economy(inputs).squeeze(-1),self.plan_placement(inputs).squeeze(-1))
         groups=(schedules[:,None,:]==torch.arange(len(SCHEDULES),device=tables.device)[None,:,None])&valid[:,None,:]
