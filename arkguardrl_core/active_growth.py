@@ -145,6 +145,31 @@ class ActiveGrowthPolicy(Policy):
             nn.init.zeros_(module[-1].weight);nn.init.zeros_(module[-1].bias)
         nn.init.zeros_(self.plan_schedule.weight);nn.init.zeros_(self.plan_schedule.bias)
 
+    def forward_batch(self, packed):
+        if 'recovery' not in self.planner_config:
+            return super().forward_batch(packed)
+        # This opt-in contract uses state-local float32 math. A live diagnostic
+        # found old multi-state GEMMs outside the unchanged replay tolerance.
+        # Keep the optimizer minibatch/gradient reduction intact; only learned
+        # execution is split. No widening of probability tolerances.
+        from .learning import data, network
+        if packed['tables'].device.type != 'cpu':
+            raise ValueError('Finite recovery currently requires CPU state-local execution')
+        results, values = [], []
+        width = packed['valid'].shape[1]
+        for i in range(len(packed['tables'])):
+            valid = packed['valid'][i]
+            row = {key:packed[key][i] for key in ('tables','control','route_obs',
+                   'plan_context','recovery_context')}
+            row.update({key:packed[key][i][valid] for key in
+                        ('candidates','route_actions','schedules','experts')})
+            row['facts'] = packed['facts'][packed['fact_state'] == i]
+            single = data.collate([row], max_bytes=2**63-1)
+            logp, value = network.forward(self, single)
+            results.append(torch.nn.functional.pad(logp[0], (0,width-int(valid.sum())), value=-torch.inf))
+            values.append(value[0])
+        return torch.stack(results), torch.stack(values)
+
     def bootstrap_value(self,obs,plan,recovery=None):
         validate_tensor(plan)
         context=torch.cat((self.base.encoder.identity(plan[0].long()),plan[1:]),-1)

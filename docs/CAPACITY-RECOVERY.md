@@ -45,3 +45,12 @@ Verification independently folds native attempt history from the full episode,
 rebuilds the native domain, and replays the recovery state and candidate subset.
 CPU input transport schemas advance to row/columnar v4 and worker v7. Artifact
 receipts and scripted prefix diagnostics are not on-policy training datasets.
+
+The zero-training acceptance run found a pre-existing original B float32
+multi-state GEMM replay mismatch (one row beyond the unchanged 1e-5 absolute/
+relative criterion at batch sizes 256, 64 and 16; single-state execution passed).
+The new opt-in policy consequently executes each state separately in
+`forward_batch`, then stacks results with original padding. PPO minibatch size,
+mean loss, gradients and optimizer step boundaries are unchanged. CPU is the
+explicit supported execution device for this first contract. No tolerance was
+relaxed, no parameters retrained, and old policy classes retain their math.
