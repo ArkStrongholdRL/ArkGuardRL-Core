@@ -98,8 +98,21 @@ def verify_row(model, row, memory, probabilities):
     if not 0 <= raw_index < len(expected): raise ValueError('Raw selected index outside support')
     mapped = int((expected == 2).nonzero()[0]) if expected[raw_index] > 0 else raw_index
     if mapped != row.capture['index']: raise ValueError('Post-sample action binding mismatch')
-    if probabilities:
-        with torch.no_grad(): raw, _ = model.forward_raw(row.inputs())
-        if not math.isclose(float(raw[raw_index]), actual['raw_selected_logp'], abs_tol=1e-5, rel_tol=1e-5): raise ValueError('Raw actor probability replay mismatch')
-        effective = pushforward(raw, expected).log_softmax(0)
-        if not torch.allclose(effective, row.old_logps, atol=1e-5, rtol=1e-5): raise ValueError('Effective executed probability mismatch')
+
+
+def verify_behavior(model, row):
+    """Only call while the native actor still equals the sampled checkpoint.
+
+    Upper PPO runs after native PPO and verifies its own unchanged selector;
+    binding scope/mapping remains verifiable there, native behavior does not.
+    """
+    if 'binding' not in model.planner_config:
+        return
+    raw_index = row.binding_receipt['raw_selected_index']
+    with torch.no_grad():
+        raw, _ = model.forward_raw(row.inputs())
+    if not math.isclose(float(raw[raw_index]), row.binding_receipt['raw_selected_logp'], abs_tol=1e-5, rel_tol=1e-5):
+        raise ValueError('Raw actor probability replay mismatch')
+    effective = pushforward(raw, row.reward_binding).log_softmax(0)
+    if not torch.allclose(effective, row.old_logps, atol=1e-5, rtol=1e-5):
+        raise ValueError('Effective executed probability mismatch')

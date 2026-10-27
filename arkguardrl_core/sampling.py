@@ -496,6 +496,8 @@ def verify_live(ctx, model, rows, revision, checkpoint):
     from .goal_relations import verify_rows as verify_relations
     verify_relations(model,rows,ctx.public)
     for row in rows:
+        from .offer_binding import verify_behavior
+        verify_behavior(model,row)
         with torch.no_grad():
             logp, value = model(row.inputs())
             logp = logp.log_softmax(0)
