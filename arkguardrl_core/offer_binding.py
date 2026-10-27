@@ -106,7 +106,7 @@ def verify_behavior(model, row):
     Upper PPO runs after native PPO and verifies its own unchanged selector;
     binding scope/mapping remains verifiable there, native behavior does not.
     """
-    if 'binding' not in model.planner_config:
+    if 'binding' not in getattr(model, 'planner_config', {}):
         return
     raw_index = row.binding_receipt['raw_selected_index']
     with torch.no_grad():
