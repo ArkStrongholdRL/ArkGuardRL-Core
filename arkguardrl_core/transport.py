@@ -11,9 +11,9 @@ import zlib
 
 import torch
 
-SCHEMA = 'arkguardrl-core/live-row-zlib/v7'
+SCHEMA = 'arkguardrl-core/live-row-zlib/v8'
 CAPTURE_TENSORS = ('obs', 'candidates', 'schedules', 'experts')
-ROW_TENSORS = ('route_obs', 'route_actions', 'old_logps', 'anchor_logps', 'prep_history', 'plan_context', 'recovery_context', 'option_context', 'goal_relations')
+ROW_TENSORS = ('route_obs', 'route_actions', 'old_logps', 'anchor_logps', 'prep_history', 'plan_context', 'recovery_context', 'option_context', 'goal_relations', 'reward_binding')
 DTYPES = {'float32': torch.float32, 'int64': torch.int64}
 
 

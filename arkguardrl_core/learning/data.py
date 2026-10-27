@@ -92,6 +92,10 @@ def prepare(model, row, *, copy_inputs=True):
         from ..goal_relations import validate_tensor as validate_relations
         validate_relations(row.get('goal_relations'),len(row['candidates']))
     elif 'goal_relations' in row:raise ValueError('Unexpected goal relations')
+    if 'binding' in getattr(model,'planner_config',{}):
+        from ..offer_binding import validate_tensor as validate_binding
+        validate_binding(row.get('reward_binding'),len(row['candidates']))
+    elif 'reward_binding' in row:raise ValueError('Unexpected binding input')
     history_config = getattr(model, 'specialist_config', {}).get('prep_history')
     if history_config is not None:
         from ..prep_history import validate_tensor
@@ -182,6 +186,9 @@ def collate(rows, device='cpu', max_bytes=1024**3):
     if any('goal_relations' in r for r in rows):
         if not all('goal_relations' in r for r in rows):raise ValueError('Mixed relation contracts')
         candidate_fields+=('goal_relations',)
+    if any('reward_binding' in r for r in rows):
+        if not all('reward_binding' in r for r in rows):raise ValueError('Mixed binding contracts')
+        candidate_fields+=('reward_binding',)
     for key in candidate_fields:
         example = rows[0][key]
         value = example.new_zeros((batch, count, *example.shape[1:]))

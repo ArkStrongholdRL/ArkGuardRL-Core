@@ -19,7 +19,7 @@ from .io import sha, write
 from .transport import decode_row
 
 FRAME_BYTES = 1024 * 1024
-WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v10'
+WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v11'
 
 
 def _receive(connection, deadline):
@@ -279,7 +279,7 @@ class Collector:
                                 or message['index'] != state['next_inference']
                                 or message['index'] >= self.ctx.config['max_decisions']):
                             raise ValueError('Unexpected or reordered inference request')
-                        expected_inputs = ({'goal_relations'} if 'relations' in getattr(model,'planner_config',{}) or getattr(model,'planner_config',{}).get('options',{}).get('schema')=='arkguardrl-core/search-and-adapt-options/v1' else set()) | ({'option_context'} if 'options' in getattr(model,'planner_config',{}) else set()) | ({'recovery_context'} if 'recovery' in getattr(model,'planner_config',{}) else set()) | ({'plan_context'} if hasattr(model,'planner_config') else set()) | INPUTS | ({'prep_history'} if getattr(model, 'specialist_config', {}).get('prep_history') else set())
+                        expected_inputs = ({'reward_binding'} if 'binding' in getattr(model,'planner_config',{}) else set()) | ({'goal_relations'} if 'relations' in getattr(model,'planner_config',{}) or getattr(model,'planner_config',{}).get('options',{}).get('schema')=='arkguardrl-core/search-and-adapt-options/v1' else set()) | ({'option_context'} if 'options' in getattr(model,'planner_config',{}) else set()) | ({'recovery_context'} if 'recovery' in getattr(model,'planner_config',{}) else set()) | ({'plan_context'} if hasattr(model,'planner_config') else set()) | INPUTS | ({'prep_history'} if getattr(model, 'specialist_config', {}).get('prep_history') else set())
                         row = unpack_tensors(message['packet'], expected_inputs, self.ctx.config['max_episode_bytes'])
                         state['inference_pending'] = True
                         requests.append((connection, state, message['index'], row))

@@ -90,6 +90,9 @@ class LiveRow:
 
     goal_relations: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
 
+    reward_binding: torch.Tensor = field(default_factory=lambda: torch.empty(0,dtype=torch.float32))
+    binding_receipt: dict | None = None
+
     def inputs(self):
         result = {k: self.capture[k] for k in ('obs', 'candidates', 'schedules', 'experts')} | {
             'route_obs': self.route_obs, 'route_actions': self.route_actions}
@@ -98,6 +101,7 @@ class LiveRow:
         if self.recovery_context.numel():result['recovery_context']=self.recovery_context
         if self.option_context.numel():result['option_context']=self.option_context
         if self.goal_relations.numel():result['goal_relations']=self.goal_relations
+        if self.reward_binding.numel():result['reward_binding']=self.reward_binding
         return result
 
     def evidence(self):
@@ -108,7 +112,8 @@ class LiveRow:
                 'base_reward': self.base_reward, 'prep_cost': self.prep_cost,
                 'prep_history': self.prep_history,'plan_context':self.plan_context,'battle_count':self.battle_count,
                 'recovery_context':self.recovery_context,'recovery_domain':self.recovery_domain,
-                'option_context':self.option_context,'option_event':self.option_event,'goal_relations':self.goal_relations}
+                'option_context':self.option_context,'option_event':self.option_event,'goal_relations':self.goal_relations,
+                'reward_binding':self.reward_binding,'binding_receipt':self.binding_receipt}
 
 
 def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason,
@@ -214,6 +219,7 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             if recovery_memory is not None:inputs['recovery_context']=recovery_memory.tensor()
             option_event=None
             if option_memory is not None:
+                if is_search(planner_config['options']):option_memory.stream_id=session.history.progress['stream_id']
                 previous=option_memory.tensor(before)
                 menu=option_memory.menu(before,session.history.prep_used)
                 if menu is not None:
@@ -233,17 +239,32 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             if planner_config and is_search(planner_config.get('options')):
                 from .search_options import relations as search_relations
                 inputs['goal_relations']=search_relations(before,decision.actions,ctx.public,inputs['option_context'],option_memory.requested_offer)
+            binding_receipt=None
+            if planner_config and 'binding' in planner_config:
+                from .offer_binding import encode as encode_binding
+                inputs['reward_binding'],binding_receipt=encode_binding(planner_config['binding'],before,decision.actions,option_memory,session.history.progress['stream_id'])
             phase_times['feature_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             with torch.no_grad():
-                if inference is None:
+                if binding_receipt is not None:
+                    if inference is not None:raise ValueError('Binding sampling requires local raw-policy inference')
+                    from .offer_binding import decode,pushforward
+                    raw_logp,value=model.forward_raw(inputs)
+                    raw_index,index=decode(raw_logp,inputs['reward_binding'],generator=rng)
+                    logp=pushforward(raw_logp,inputs['reward_binding'])
+                    binding_receipt.update(raw_selected_index=raw_index,raw_selected_logp=float(raw_logp[raw_index]),
+                        mapped=index!=raw_index,raw_reward_selected=decision.actions[raw_index]['t']=='g.reward')
+                    anchor_logps=anchor(inputs)[0].log_softmax(0).detach().cpu().clone()
+                elif inference is None:
                     logp, value = model(inputs)
                     anchor_logps = anchor(inputs)[0].log_softmax(0).detach().cpu().clone()
                 else:
                     logp, value, anchor_logps = inference(inputs, len(rows))
                 distribution = torch.distributions.Categorical(logits=logp)
-                chosen = torch.multinomial(distribution.probs, 1, generator=rng).squeeze(0)
-                index, old_logp, value = int(chosen), float(distribution.log_prob(chosen)), float(value)
+                if binding_receipt is None:
+                    chosen = torch.multinomial(distribution.probs, 1, generator=rng).squeeze(0)
+                    index=int(chosen)
+                old_logp,value=float(distribution.log_prob(torch.tensor(index))),float(value)
                 old_logps = distribution.logits.detach().cpu().clone()
             phase_times['inference_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
@@ -265,11 +286,16 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                     + 2 * len(json.dumps(geometry))
                     + (2*len(canonical(option_event)) if option_event is not None else 0)
                     + 2*inputs.get('option_context',torch.empty(0)).numel()*4
-                    + 2*inputs.get('goal_relations',torch.empty(0)).numel()*4)
+                    + 2*inputs.get('goal_relations',torch.empty(0)).numel()*4
+                    + 2*inputs.get('reward_binding',torch.empty(0)).numel()*4
+                    + (2*len(canonical(binding_receipt)) if binding_receipt else 0))
             used_bytes += size
             if used_bytes > ctx.config['max_episode_bytes']:
                 raise MemoryError('Live episode capture bound exceeded; batch not trained')
             action = decision.actions[index]
+            if binding_receipt is not None:
+                environment._record(dict(kind='offer-binding',decisionIndex=len(rows),receipt=binding_receipt,
+                    mapSha256=tensor_sha(inputs['reward_binding']),executedIndex=index,effectiveLogProbability=old_logp))
             candidate = Candidate.from_native(ctx.objective_contract, before, action,
                 tuple(decision.observation_features) + tuple(decision.candidate_features[index]))
             environment._record({'kind': 'route-input', 'schema': rp.SCHEMA,
@@ -342,7 +368,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 inputs.get('plan_context',torch.empty(0,dtype=torch.float32)).detach().clone(),battle_count,
                 inputs.get('recovery_context',torch.empty(0,dtype=torch.float32)).detach().clone(),recovery_domain,
                 inputs.get('option_context',torch.empty(0,dtype=torch.float32)).detach().clone(),option_event,
-                inputs.get('goal_relations',torch.empty(0,dtype=torch.float32)).detach().clone()))
+                inputs.get('goal_relations',torch.empty(0,dtype=torch.float32)).detach().clone(),
+                inputs.get('reward_binding',torch.empty(0,dtype=torch.float32)).detach().clone(),binding_receipt))
             if option_event is not None:
                 environment._record(dict(kind='strategic-option-choice',decisionIndex=len(rows)-1,
                     event=option_event,optionContext=inputs['option_context'].tolist(),

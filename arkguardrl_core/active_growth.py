@@ -19,8 +19,13 @@ FIELDS=('target_catalog_index','idle','pair','level_then_merge','growth',
 
 
 def validate(config):
-    if not isinstance(config,dict) or set(config)-{'recovery','options','relations'}!={'schema','band_index','growth_anchors','max_plan_rounds','hidden'}:
+    if not isinstance(config,dict) or set(config)-{'recovery','options','relations','binding'}!={'schema','band_index','growth_anchors','max_plan_rounds','hidden'}:
         raise ValueError('Explicit action-led plan policy config required')
+    if 'binding' in config:
+        from .offer_binding import validate as validate_binding
+        validate_binding(config['binding'])
+        from .strategic_options import is_search
+        if not is_search(config.get('options')) or not config['options']['enabled']:raise ValueError('Binding requires active precise search choices')
     if 'relations' in config:
         from .goal_relations import validate as validate_relations
         validate_relations(config['relations'])
@@ -46,7 +51,7 @@ def description(config):
     validate(config)
     return dict(schema=PLAN_SCHEMA,fields=FIELDS,dimension=DIM,config=config,
         source='past accepted own actions and current public inventory only',
-        control='memory only; all native action choices learned, no action overrides except declared fixed band')
+        control='native learned actions; declared fixed band and optional current-offer post-selection binding only')
 
 
 def validate_tensor(value,batch=None):
@@ -181,6 +186,7 @@ class ActiveGrowthPolicy(Policy):
                         ('candidates','route_actions','schedules','experts')})
             if 'option_context' in packed:row['option_context']=packed['option_context'][i]
             if 'goal_relations' in packed:row['goal_relations']=packed['goal_relations'][i][valid]
+            if 'reward_binding' in packed:row['reward_binding']=packed['reward_binding'][i][valid]
             row['facts'] = packed['facts'][packed['fact_state'] == i]
             single = data.collate([row], max_bytes=2**63-1)
             logp, value = network.forward(self, single)
@@ -202,6 +208,13 @@ class ActiveGrowthPolicy(Policy):
         return self.base.value(obs)+self.plan_value(context).squeeze(-1)
 
     def forward(self,row):
+        logp,value=self.forward_raw(row)
+        if 'binding' in self.planner_config:
+            from .offer_binding import pushforward
+            logp=pushforward(logp,row['reward_binding'])
+        return logp,value
+
+    def forward_raw(self,row):
         logp,value=Policy.forward(self,row)
         obs=self.base.definitions.expand(row['obs'])
         adjusted,values=self.adjust_planning(logp[None],value.reshape(1),obs[None],

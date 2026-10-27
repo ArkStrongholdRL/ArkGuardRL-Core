@@ -69,6 +69,7 @@ class SearchMemory:
         self.active=False;self.stage='idle';self.material=None;self.acquired=None;self.direction=None
         self.timing='defer';self.use='undecided';self.started=0;self.duration=0;self.limit=0.;self.debit=0.
         self.serial=0;self.offer_serial=0;self.last_offer=None;self.requested_offer=None;self.requested_object=None
+        self.stream_id=None;self.requested_binding=None
         self.commit_level=0;self.upgraded=False;self.violation=False;self.gold_start=0
         self.merges=0;self.rewards=0;self.pending=[];self.receipt_serial=0;self.closing=False
         self.seen=set();self.choice_count=Counter();self.events=[];self._signal=None;self._menu=None;self.use_pending_action=False
@@ -107,7 +108,7 @@ class SearchMemory:
         if self.active:self.events.append(dict(event='search-end',parent=self.serial,reason=reason,round=state['round'],debit=self.debit))
         self.active=False;self.stage='idle';self.material=None;self.acquired=None;self.direction=None
         self.timing='defer';self.use='undecided';self.pending=[];self.closing=False;self.requested_offer=None
-        self.requested_object=None
+        self.requested_object=None;self.requested_binding=None
         self.duration=0;self.limit=0.;self.debit=0.;self.upgraded=False;self.violation=False
         self.use_pending_action=False
 
@@ -116,7 +117,7 @@ class SearchMemory:
         key=fingerprint({k:offer.get(k) for k in ('tier','source','label','slots')}) if offer else None
         if key!=self.last_offer:
             if key is not None:self.offer_serial+=1
-            self.last_offer=key;self.requested_offer=None;self.requested_object=None
+            self.last_offer=key;self.requested_offer=None;self.requested_object=None;self.requested_binding=None
         if not self.active:
             self.stage='offer' if offer else 'use' if self.pending else 'idle'
             return
@@ -222,6 +223,8 @@ class SearchMemory:
         elif kind=='pick':
             self.requested_offer=choice['slot']
             self.requested_object=dict(kind=choice['object_kind'],family=choice['family'])
+            from .offer_binding import token
+            self.requested_binding=token(self,state)
         elif kind in USES:
             self.acquired=next(r for r in self.pending if r['serial']==choice['receipt'])
             self.pending=[r for r in self.pending if r['serial']!=choice['receipt']]
@@ -258,7 +261,7 @@ class SearchMemory:
             # An accepted pick consumes the front offer; an identical next
             # queued offer is a distinct event. Queue-length changes alone are not.
             self.last_offer=None
-            self.requested_offer=None;self.requested_object=None
+            self.requested_offer=None;self.requested_object=None;self.requested_binding=None
         self.sync(after)
 
 
@@ -377,7 +380,7 @@ def verify_rows(model,rows,public,probabilities=False):
             if episode in seen:raise ValueError('Noncontiguous search episode')
             seen.add(episode);memory=SearchMemory(model.planner_config['options'],model.planner_config,public);index=0
         if row.transition.decision_index!=index:raise ValueError('Search requires complete ordered live prefix')
-        index+=1;before=row.capture['observation'];previous=memory.tensor(before)
+        index+=1;before=row.capture['observation'];memory.stream_id=row.capture['history']['progress']['stream_id'];previous=memory.tensor(before)
         menu=memory.menu(before,row.capture['history']['used']);event=row.option_event
         if (menu is None)!=(event is None):raise ValueError('Search event boundary mismatch')
         if event is not None:
@@ -391,5 +394,7 @@ def verify_rows(model,rows,public,probabilities=False):
         if not torch.equal(memory.tensor(before),row.option_context):raise ValueError('Search context replay mismatch')
         expected=relations(before,row.capture['actions'],public,row.option_context,memory.requested_offer)
         if row.goal_relations.device.type!='cpu' or not torch.equal(expected,row.goal_relations):raise ValueError('Search role relation replay mismatch')
+        from .offer_binding import verify_row
+        verify_row(model,row,memory,probabilities)
         memory.note(before,row.capture['actions'][row.capture['index']],SimpleNamespace(accepted=row.transition.accepted,observation=row.recovery_domain['successor']))
     return choices

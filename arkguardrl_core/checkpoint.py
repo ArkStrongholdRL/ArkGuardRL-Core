@@ -31,6 +31,12 @@ def identity(contract, width, route_backend, specialist=None, planner=None):
         from .active_growth import description
         result['planner']=dict(planner)
         result['input_contract']={**result['input_contract'],'plan_context':description(planner)}
+        if 'binding' in planner:
+            from .offer_binding import SCHEMA as BINDING_SCHEMA
+            result['input_contract']['offer_binding']=dict(schema=BINDING_SCHEMA,config=planner['binding'],
+                zero_probability_log_sentinel=-1e9,probability='current-offer pushforward; raw timing retained',
+                greedy='raw argmax then map, never argmax after mass merge',
+                learning='native PPO/entropy/KL/anchor on executed pushforward; upper event credit separate')
         if 'recovery' in planner:
             from .capacity_recovery import SCHEMA as RECOVERY_SCHEMA, FIELDS
             result['input_contract']['recovery']=dict(schema=RECOVERY_SCHEMA,fields=FIELDS,
