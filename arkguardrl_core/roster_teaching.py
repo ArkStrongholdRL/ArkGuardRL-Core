@@ -23,7 +23,9 @@ class ReplacementMemory(task.Memory):
         own = state['own']
         pieces = [p for area in ('board', 'hand', 'temp') for p in own[area]
                   if p and p['kind'] == 'chess']
-        records = {p['uid']: public.record('chess', p['id']) for p in pieces}
+        # record() is an identity/mechanism projection; combat attributes live
+        # in the public catalog table, also used by the route feature encoder.
+        records = {p['uid']: public._data['chess'][p['id']] for p in pieces}
         power = (0, 10, 12.5, 15, 18, 21.5, 25)
         def value(p):
             rec = records[p['uid']]
@@ -32,7 +34,9 @@ class ReplacementMemory(task.Memory):
         bonds = public._data['bonds']
         def score(group):
             recs = [records[p['uid']] for p in group]
-            blockers = sum(r.get('stats', {}).get('blockCnt', 0) > 0 for r in recs)
+            blockers = sum(public.placement_class(p) == 'melee'
+                and (records[p['uid']].get('stats') or {}).get('blockCnt', 0) > 0
+                and records[p['uid']].get('attackKind') != 'none' for p in group)
             healers = sum(r.get('dmgType') == 'heal' or r.get('attackKind') == 'heal' for r in recs)
             total = sum(value(p) for p in group)
             total -= max(0, min(2, len(group)) - blockers)*15
