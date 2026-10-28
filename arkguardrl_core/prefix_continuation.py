@@ -5,6 +5,7 @@ retains its strict source identity; runner identity is recorded separately.
 No LiveRow, optimizer, training buffer or checkpoint migration is provided.
 """
 from pathlib import Path
+import copy
 import hashlib
 import time
 import torch
@@ -81,7 +82,7 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
         start_progress = objective.progress
         controller.begin(start)
         start_memory = dict(plan=memory.tensor(start).tolist(), parent=upper.tensor(start).tolist(),
-            recovery=recovery.tensor().tolist(), upper_events=upper.events)
+            recovery=recovery.tensor().tolist(), upper_events=copy.deepcopy(upper.events))
         env._record(dict(kind='continuation-branch', schema=SCHEMA, prefix_decisions=len(prefix),
             observationId=fingerprint(start), memory=start_memory, rng_seed=rng_seed,
             on_policy_admissible=False, controller=controller.snapshot()))
