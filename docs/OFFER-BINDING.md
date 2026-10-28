@@ -16,8 +16,7 @@ choice probability/credit remains separate and is counted once per actual event.
 Live rows retain raw selection and scope receipts alongside the candidate map.
 The private transport schemas are row/column v8 and worker v11. Scalar/batch and
 ordered upper replay reconstruct identity before accepting complete live rows.
-No archived or auxiliary-labelled rows are admitted to PPO. Historical source
-checkpoints require explicit exact-parameter adoption into the new source identity.
+No archived or auxiliary-labelled rows are admitted to PPO.
 
 Native raw behavior replay occurs before native optimization in `verify_live`.
 The later upper update verifies unchanged upper probabilities and binding

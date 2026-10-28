@@ -203,15 +203,13 @@ class Collector:
             raise ValueError('Unique uint32 game seeds required')
         if type(rng_seed) is not int or not 0 <= rng_seed <= 0xffffffff-len(seeds):
             raise ValueError('Sampling RNG range outside uint32')
-        self.ctx.check(sources=True)
+        self.ctx.check()
         started = time.monotonic()
         policy_sha, anchor_sha = sha(checkpoint), sha(anchor)
         parameters = weights_hash(model)
         pending = deque()
         for index, seed in enumerate(seeds):
-            log_mode = ('full' if self.ctx.collection_index % self.ctx.config['full_trace_every'] == 0
-                        else 'compact')
-            self.ctx.collection_index += 1
+            log_mode = self.ctx.config['log_mode']
             pending.append({'kind': 'collect', 'token': uuid.uuid4().hex, 'index': index,
                 'seed': seed, 'rng_seed': rng_seed+index, 'revision': revision,
                 'checkpoint': str(checkpoint), 'anchor': str(anchor),
@@ -292,9 +290,12 @@ class Collector:
                                 or report['policy_revision'] != revision or report['seed'] != task['seed']
                                 or report['rng_seed'] != task['rng_seed'] or report['status'] != 'personal-ended'
                                 or report['decisions'] != message['rows'] or not 1 <= message['rows'] <= self.ctx.config['max_decisions']
-                                or report['trajectory_audit']['status'] not in ('personal-ended', 'game-ended')
-                                or not report['trajectory_audit']['public_feedback_verified']):
+                                or report['log_mode'] != task['log_mode']):
                             raise ValueError('Incomplete/mismatched worker episode')
+                        if task['log_mode'] == 'full' and (
+                                report['trajectory_audit']['status'] not in ('personal-ended', 'game-ended')
+                                or not report['trajectory_audit']['public_feedback_verified']):
+                            raise ValueError('Incomplete debug trajectory')
                         total_capture += report['capture_bytes_upper_bound']
                         if total_capture > self.ctx.ppo.max_buffer_bytes:
                             raise MemoryError('Combined live captures exceed buffer budget')
@@ -400,7 +401,7 @@ class Collector:
                 'parent_peak_rss_bytes': _peak_rss(), 'collector_options': self.options,
                 'inference_setup_seconds': inference_setup_seconds,
                 'inference': inference.report() if inference is not None else None}
-            self.ctx.check(sources=True)
+            self.ctx.check()
             return rows, reports, timing
         except BaseException:
             self.close(force=True)

@@ -131,6 +131,7 @@ class PublicCatalog:
         return self._definition_bank
 
     def _record(self, kind, identifier):
+        """Borrow an immutable catalog projection for internal read-only use."""
         row = self._views.get(kind, {}).get(identifier)
         if not isinstance(row, dict):
             raise UnsupportedPublicState(f"Unknown public {kind} identity: {identifier!r}")
@@ -203,12 +204,12 @@ class PublicCatalog:
     def entity_index(self, kind, identifier, *, allow_unknown=False):
         if allow_unknown and (kind, identifier) not in self._entity_indices:
             return 0  # Rejected intents may name an identity absent from the public catalog.
-        self.record(kind, identifier)
+        self.validate_identity(kind, identifier)
         return self._entity_indices[(kind, identifier)]
 
     def combat_record(self, kind, identifier):
         """Public default catalog values, never current effective combat attributes."""
-        self.record(kind, identifier)
+        self.validate_identity(kind, identifier)
         table = {"chess": "chess", "item": "items", "token": "tokens", "band": "bands"}[kind]
         source = self._data[table][identifier]
         keys = ("stats", "canHitFly", "dmgType", "position", "garrisonIds")

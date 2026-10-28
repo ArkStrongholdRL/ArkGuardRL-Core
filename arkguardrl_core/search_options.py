@@ -73,26 +73,44 @@ class SearchMemory:
         self.commit_level=0;self.upgraded=False;self.violation=False;self.gold_start=0
         self.merges=0;self.rewards=0;self.pending=[];self.receipt_serial=0;self.closing=False
         self.seen=set();self.choice_count=Counter();self.events=[];self._signal=None;self._menu=None;self.use_pending_action=False
+        self._inventory_key=None;self._inventory_cache=None;self._asset_tensor=None
 
     def base(self,p):
-        return self.public.record('chess',p['id']).get('baseId',p['id']) if p['kind']=='chess' else p['id']
+        return self.public._record('chess',p['id']).get('baseId',p['id']) if p['kind']=='chess' else p['id']
 
     def pieces(self,state):
         return [p for area in ('board','hand','temp') for p in state['own'][area] if p]
 
     def inventory(self,state):
-        pieces=[p for p in self.pieces(state) if p['kind']=='chess']
-        normal=Counter(self.base(p) for p in pieces if not self.public.record('chess',p['id']).get('isGolden'))
-        gold=Counter(self.base(p) for p in pieces if self.public.record('chess',p['id']).get('isGolden'))
-        board={self.base(p) for p in state['own']['board'] if p['kind']=='chess'}
+        own=state['own']
+        # A bounded content key also handles distinct snapshots and in-place edits.
+        # These are exactly the fields used by inventory and the asset tensor.
+        key=(tuple(tuple((p['kind'],p['id']) for p in own[area] if p)
+                   for area in ('board','hand','temp')),own['funds'],
+             tuple((p['kind'],p['id'],p['sold'],p['price']) if p else None
+                   for p in own['shop']['slots']))
+        if key==self._inventory_key:return self._inventory_cache
+        normal,gold,board=Counter(),Counter(),set()
+        for area in ('board','hand','temp'):
+            for p in own[area]:
+                if not p or p['kind']!='chess':continue
+                rec=self.public._record('chess',p['id'])
+                family=rec.get('baseId',p['id'])
+                (gold if rec.get('isGolden') else normal)[family]+=1
+                if area=='board':board.add(family)
         visible={}
-        for p in state['own']['shop']['slots']:
-            if p and p['kind']=='chess' and not p['sold'] and p['price']<=state['own']['funds'] and not self.public.record('chess',p['id']).get('isGolden'):
-                key=self.base(p);visible[key]=min(visible.get(key,math.inf),p['price'])
-        return normal,gold,board,visible
+        for p in own['shop']['slots']:
+            if p and p['kind']=='chess' and not p['sold'] and p['price']<=own['funds'] and not self.public._record('chess',p['id']).get('isGolden'):
+                family=self.base(p);visible[family]=min(visible.get(family,math.inf),p['price'])
+        # Keep only the latest content; memory does not grow across an episode.
+        self._inventory_key=key
+        self._inventory_cache=normal,gold,board,visible
+        self._asset_tensor=None
+        return self._inventory_cache
 
     def assets(self,state):
         normal,gold,board,visible=self.inventory(state)
+        if self._asset_tensor is not None:return self._asset_tensor
         families=sorted(set(normal)|set(gold)|set(visible))
         if len(families)>MAX_ASSETS:raise ValueError('Public search assets exceed explicit capacity')
         rows=[]
@@ -100,9 +118,10 @@ class SearchMemory:
             rows.append([float(self.public.entity_index('chess',family)),min(normal[family]/3,1),
                 min(gold[family]/3,1),float(family in board),float(family in visible),
                 float(normal[family]>=2 and family in visible),min(visible.get(family,0)/24,1),
-                min(self.public.record('chess',family).get('tier',0)/6,1)])
+                min(self.public._record('chess',family).get('tier',0)/6,1)])
         rows += [[0.]*len(ASSET_FIELDS) for _ in range(MAX_ASSETS-len(rows))]
-        return torch.tensor(rows,dtype=torch.float32)
+        self._asset_tensor=torch.tensor(rows,dtype=torch.float32)
+        return self._asset_tensor
 
     def end(self,reason,state):
         if self.active:self.events.append(dict(event='search-end',parent=self.serial,reason=reason,round=state['round'],debit=self.debit))
@@ -170,7 +189,7 @@ class SearchMemory:
             for receipt in self.pending:
                 for use in USES:
                     if use=='growth':
-                        bonds=self.public.record('chess',receipt['family']).get('bonds',[]) if receipt['kind']=='chess' else []
+                        bonds=self.public._record('chess',receipt['family']).get('bonds',[]) if receipt['kind']=='chess' else []
                         for bond in sorted(set(bonds)-set(state['public']['disabledBonds'])):
                             if bond in layout.BOND_IDS:menu.append(dict(kind=use,family=receipt['family'],object_kind=receipt['kind'],receipt=receipt['serial'],bond=bond))
                     else:menu.append(dict(kind=use,family=receipt['family'],object_kind=receipt['kind'],receipt=receipt['serial']))
@@ -330,32 +349,46 @@ def distribution(model,state,menu):
 
 def relations(state,actions,public,context,requested_slot=None):
     validate_tensor(context)
-    material,acquired=map(int,context[:2]);active=bool(context[2])
+    from .native_runtime import kernel
+    from arkguardrl.candidates import MAX_CANDIDATES
+    if len(actions)>MAX_CANDIDATES:raise ValueError('Search relation candidate bound exceeded')
+    # One tensor-to-host conversion per decision; never extract scalars per action.
+    values=context.tolist()
+    material,acquired=map(int,values[:2]);active=bool(values[2])
     assets=context[HEADER:].reshape(MAX_ASSETS,-1)
-    paths={int(r[0]):r for r in assets if r[0]>0}
+    # Keep the original float32 comparison against 2/3 (Python double differs).
+    pairs=(assets[:,1]>=2/3).tolist()
+    paths={int(values[HEADER+i*len(ASSET_FIELDS)]):pairs[i] for i in range(MAX_ASSETS)
+           if values[HEADER+i*len(ASSET_FIELDS)]>0}
     locations={p['uid']:(area,p) for area in ('board','hand','temp') for p in state['own'][area] if p}
+    identities={}
     def index(p):
         if not p:return 0
-        key=public.record('chess',p['id']).get('baseId',p['id']) if p['kind']=='chess' else p['id']
-        return public.entity_index(p['kind'],key)
-    rows=[]
+        identity=(p['kind'],p['id'])
+        if identity in identities:return identities[identity]
+        key=public._record('chess',p['id']).get('baseId',p['id']) if p['kind']=='chess' else p['id']
+        result=public.entity_index(p['kind'],key)
+        identities[identity]=result
+        return result
+    offer=state['own']['shop'].get('rewardOffer') or {}
+    kinds={'g.buy':1,'g.levelUp':2,'g.reward':3,'g.move':4,'g.sell':5,'g.equip':6,'g.ready':7}
+    candidates=[]
     for a in actions:
         t=a['t'];area,p=locations.get(a.get('uid'),(None,None));obj=index(p)
-        offer=state['own']['shop'].get('rewardOffer') or {}
         bought=state['own']['shop']['slots'][a['slot']] if t=='g.buy' else offer['slots'][a['idx']] if t=='g.reward' else None
-        purchased=index(bought);asset=paths.get(purchased)
+        purchased=index(bought)
         eq=index(locations.get(a.get('targetUid'),(None,None))[1]) if t=='g.equip' else 0
-        rows.append([float(active),float(t=='g.buy' and asset is not None),float(t=='g.buy' and asset is not None and asset[1]>=2/3),
-            float(t=='g.buy' and purchased==material and material>0),float(t=='g.levelUp' and context[FIELDS.index('timing_upgrade_first')]>0),
-            float(t=='g.reward' and requested_slot is not None and a['idx']==requested_slot),float(t=='g.reward' and (requested_slot is None or a['idx']!=requested_slot)),
-            float(t=='g.move' and obj==acquired and acquired>0 and a['to']['area']=='board' and area!='board'),
-            float(t=='g.sell' and obj==acquired and acquired>0),float(t=='g.equip' and eq==acquired and acquired>0),
-            float(t=='g.move' and obj==material and material>0 and a['to']['area']=='board' and area!='board'),
-            float(t=='g.sell' and obj==material and material>0),float(t=='g.ready' and bool(offer)),
-            float(t=='g.ready' and acquired>0 and context[FIELDS.index('acquired_on_board')]==0),
-            *[float(context[FIELDS.index('stage_'+s)]) for s in STAGES[1:]],
-            float(context[FIELDS.index('use_undecided')]),float(context[FIELDS.index('order_violation')])])
-    return torch.tensor(rows,dtype=torch.float32)
+        candidates.append((kinds.get(t,0),obj,purchased,eq,
+            bool(t=='g.move' and a['to']['area']=='board' and area!='board'),
+            purchased in paths,bool(paths.get(purchased,False)),
+            bool(t=='g.reward' and requested_slot is not None and a['idx']==requested_slot)))
+    shared=[float(active),float(values[FIELDS.index('timing_upgrade_first')]>0),
+            float(bool(offer)),float(values[FIELDS.index('acquired_on_board')]==0),
+            *[values[FIELDS.index('stage_'+s)] for s in STAGES[1:]],
+            values[FIELDS.index('use_undecided')],values[FIELDS.index('order_violation')]]
+    result=torch.from_numpy(kernel().search_relations(candidates,material,acquired,shared))
+    # Preserve the historical empty-input shape; live decisions are nonempty.
+    return result if actions else result.reshape(0)
 
 
 def validate_relations(value,count,batch=None):

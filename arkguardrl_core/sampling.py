@@ -117,13 +117,14 @@ class LiveRow:
 
 
 def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason,
-                         policy_revision, old_logp, value):
-    """Transfer owned CPU input tensors into the native live capture once.
+                         policy_revision, old_logp, value, validate=False):
+    """Transfer the decision snapshot and CPU tensors into live capture.
 
-    model.row creates fresh tensors; collection/model code never mutates them.
-    Trainable hidden activations are not cached across optimizer updates.
+    build_decision owns an isolated state and fresh action dictionaries. Neither
+    the caller nor the learner may mutate them after this ownership transfer.
+    PPO validates captures at its input boundary; debug tracing can check here too.
     """
-    actions = json.loads(canonical(list(decision.actions)))
+    actions = list(decision.actions)
     record = {'observation': decision.state,
         'history': (json.loads(decision.history_json) if decision.history_json is not None
                     else json.loads(canonical(history.snapshot(decision.state)))),
@@ -134,17 +135,17 @@ def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason
         'old_logp': old_logp, 'value': value}
     if any(record[k].device.type != 'cpu' for k in ('obs', 'candidates', 'schedules', 'experts')):
         raise ValueError('CPU capture tensors required')
-    observation_bytes = learn._validate_record(record, on_policy=True)
-    # Validation serializes this exact live mapping once. Decode those bytes to
-    # isolate capture from the caller's mutable decision, without re-encoding.
-    record['observation'] = json.loads(observation_bytes)
+    if type(index) is not int or not 0 <= index < len(actions):
+        raise ValueError('Selected index outside captured action domain')
+    if validate:
+        learn._validate_record(record, on_policy=True)
     return record
 
 
 def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directory, log_mode=None,
             session_pool=None, on_row=None, inference=None):
     """Collect one complete live episode. Never reload PPO rows from artifacts."""
-    ctx.check(sources=True)
+    ctx.check()
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
     rng = torch.Generator(device='cpu').manual_seed(rng_seed)
@@ -156,8 +157,8 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     rows, levels = [], []
     pending = None
     if log_mode is None:
-        log_mode = 'full' if ctx.collection_index % ctx.config['full_trace_every'] == 0 else 'compact'
-    ctx.collection_index += 1
+        log_mode = ctx.config['log_mode']
+    tracing = log_mode == 'full'
     used_bytes = 0
     reward = rewards.NativeProgressCore()
     ready_cost = ReadyCost(ctx.config['end_prep_loss']) if ctx.config.get('end_prep_loss') else None
@@ -180,13 +181,13 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
     rejected, total_reward = 0, 0.0
     started = time.monotonic()
     phase_times = Counter()
-    behavior = hashlib.sha256()
+    behavior = hashlib.sha256() if tracing else None
     from .route_arrays import RouteFeatureCache
     route_cache = RouteFeatureCache() if model.route_backend == 'array' else None
-    trace_name = 'trajectory.jsonl' if log_mode == 'full' else 'receipts.jsonl.gz'
+    trace_path = directory / 'trajectory.jsonl' if tracing else None
     environment = RecordingEnv(ctx.engine_root, deadline=min(ctx.deadline, started + ctx.config['game_wall']),
         session_pool=session_pool,
-        expected_data_sha256=ctx.contract.data_sha256, trace_path=directory / trace_name,
+        expected_data_sha256=ctx.contract.data_sha256, trace_path=trace_path,
         log_mode=log_mode, trace_max_bytes=ctx.config['trace_max_bytes'],
         source='ppo-policy', policy_id=f'{ctx.schema}:{policy_sha}:{revision}',
         max_decisions=ctx.config['max_decisions'], max_advances=ctx.config['max_advances'])
@@ -207,8 +208,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 try:
                     decision=recovery_memory.constrain(decision,ctx.public)
                 except RecoveryFailure as error:
-                    environment._record(dict(kind='capacity-recovery-failure',reason=str(error),
-                        context=recovery_memory.snapshot(),technical_truncation=True,personal_termination=False))
+                    if tracing:
+                        environment._record(dict(kind='capacity-recovery-failure',reason=str(error),
+                            context=recovery_memory.snapshot(),technical_truncation=True,personal_termination=False))
                     raise
             geometry = environment.geometry()
             inputs = model.row(decision, geometry, ctx.public, route_cache=route_cache)
@@ -271,14 +273,15 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             if pending is not None:
                 rows[-1].transition = Transition.from_step(ctx.objective_contract,
                     **pending, next_value=value)
-                environment._record({'kind': 'bootstrap-link', 'decisionIndex': len(rows)-1,
-                    'nextValue': value, 'source': 'next-live-decision-value'})
+                if tracing:
+                    environment._record({'kind': 'bootstrap-link', 'decisionIndex': len(rows)-1,
+                        'nextValue': value, 'source': 'next-live-decision-value'})
                 pending = None
                 if on_row is not None:
                     on_row(rows[-1])
             capture = snapshot_from_inputs(decision, session.history, inputs, episode_id=episode_id,
                 index=index, reason='fresh-autonomous-route-policy', policy_revision=revision,
-                old_logp=old_logp, value=value)
+                old_logp=old_logp, value=value, validate=tracing)
             size = (learn._record_bytes(capture) + 32 * ctx.contract.feature_dim
                     + 2 * sum(x.numel() * x.element_size() for x in
                               (inputs['route_obs'], inputs['route_actions'], old_logps, anchor_logps,
@@ -294,18 +297,20 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 raise MemoryError('Live episode capture bound exceeded; batch not trained')
             action = decision.actions[index]
             if binding_receipt is not None:
-                environment._record(dict(kind='offer-binding',decisionIndex=len(rows),receipt=binding_receipt,
-                    mapSha256=tensor_sha(inputs['reward_binding']),executedIndex=index,effectiveLogProbability=old_logp))
+                if tracing:
+                    environment._record(dict(kind='offer-binding',decisionIndex=len(rows),receipt=binding_receipt,
+                        mapSha256=tensor_sha(inputs['reward_binding']),executedIndex=index,effectiveLogProbability=old_logp))
             candidate = Candidate.from_native(ctx.objective_contract, before, action,
                 tuple(decision.observation_features) + tuple(decision.candidate_features[index]))
-            environment._record({'kind': 'route-input', 'schema': rp.SCHEMA,
-                'observationId': fingerprint(before), 'geometry': geometry,
-                'geometrySha256': fingerprint(geometry), 'selectedIndex': index,
-                'selectedLogProbability': old_logp, 'policyRevision': revision,
-                'policySha256': policy_sha,
-                'prepHistorySha256': tensor_sha(inputs['prep_history']) if history_config else None,
-                'planContextSha256':tensor_sha(inputs['plan_context']) if plan_memory else None,
-                'goalRelationsSha256':tensor_sha(inputs['goal_relations']) if 'goal_relations' in inputs else None})
+            if tracing:
+                environment._record({'kind': 'route-input', 'schema': rp.SCHEMA,
+                    'observationId': fingerprint(before), 'geometry': geometry,
+                    'geometrySha256': fingerprint(geometry), 'selectedIndex': index,
+                    'selectedLogProbability': old_logp, 'policyRevision': revision,
+                    'policySha256': policy_sha,
+                    'prepHistorySha256': tensor_sha(inputs['prep_history']) if history_config else None,
+                    'planContextSha256':tensor_sha(inputs['plan_context']) if plan_memory else None,
+                    'goalRelationsSha256':tensor_sha(inputs['goal_relations']) if 'goal_relations' in inputs else None})
             phase_times['capture_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
             settlements_before=environment.settlement_count
@@ -315,16 +320,19 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 try:
                     recovery_memory.note(before,action,result)
                 except RecoveryFailure as error:
-                    environment._record(dict(kind='capacity-recovery-failure',reason=str(error),
-                        context=recovery_memory.snapshot(),technical_truncation=True,personal_termination=False))
+                    if tracing:
+                        environment._record(dict(kind='capacity-recovery-failure',reason=str(error),
+                            context=recovery_memory.snapshot(),technical_truncation=True,personal_termination=False))
                     raise
-                environment._record(dict(kind='capacity-recovery',context=recovery_memory.snapshot(),
-                    inputSha256=tensor_sha(inputs['recovery_context']),allowedActionIds=capture['action_ids']))
+                if tracing:
+                    environment._record(dict(kind='capacity-recovery',context=recovery_memory.snapshot(),
+                        inputSha256=tensor_sha(inputs['recovery_context']),allowedActionIds=capture['action_ids']))
             battle_count=environment.settlement_count-settlements_before
             if plan_memory is not None:plan_memory.note(before,action,result.accepted)
             if option_memory is not None:option_memory.note(before,action,result)
             phase_times['environment_seconds'] += time.monotonic()-phase_started
-            behavior.update(canonical((action, result.accepted, fingerprint(before), fingerprint(result.observation))))
+            if tracing:
+                behavior.update(canonical((action, result.accepted, fingerprint(before), fingerprint(result.observation))))
             if type(result.accepted) is not bool:
                 raise RuntimeError('Selected action was not executed; batch not trained')
             info = reward.step(before, result.observation)
@@ -371,21 +379,23 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 inputs.get('goal_relations',torch.empty(0,dtype=torch.float32)).detach().clone(),
                 inputs.get('reward_binding',torch.empty(0,dtype=torch.float32)).detach().clone(),binding_receipt))
             if option_event is not None:
-                environment._record(dict(kind='strategic-option-choice',decisionIndex=len(rows)-1,
-                    event=option_event,optionContext=inputs['option_context'].tolist(),
-                    selectedLogProbability=option_event['old_logps'][option_event['index']],
-                    jointLogProbability=old_logp+option_event['old_logps'][option_event['index']],
-                    nativeLogProbability=old_logp))
+                if tracing:
+                    environment._record(dict(kind='strategic-option-choice',decisionIndex=len(rows)-1,
+                        event=option_event,optionContext=inputs['option_context'].tolist(),
+                        selectedLogProbability=option_event['old_logps'][option_event['index']],
+                        jointLogProbability=old_logp+option_event['old_logps'][option_event['index']],
+                        nativeLogProbability=old_logp))
             if on_row is not None and rows[-1].transition is not None:
                 on_row(rows[-1])
-            environment._record({'kind': 'policy-sample', 'experiment': ctx.schema,
-                'episodeId': episode_id, 'decisionIndex': len(rows)-1,
-                'policyRevision': revision, 'policySha256': policy_sha,
-                'selectedActionId': candidate.action_id, 'selectedIndex': index,
-                'oldLogProbability': old_logp, 'value': value, 'nextValue': next_value,
-                'nextValuePending': next_value is None,
-                'reward': info, 'objectiveReward': objective_reward, 'prepCost': charged,'settlements':battle_count,
-                'objectiveContractId': ctx.objective_contract.contract_id, 'candidateCount': len(decision.actions)})
+            if tracing:
+                environment._record({'kind': 'policy-sample', 'experiment': ctx.schema,
+                    'episodeId': episode_id, 'decisionIndex': len(rows)-1,
+                    'policyRevision': revision, 'policySha256': policy_sha,
+                    'selectedActionId': candidate.action_id, 'selectedIndex': index,
+                    'oldLogProbability': old_logp, 'value': value, 'nextValue': next_value,
+                    'nextValuePending': next_value is None,
+                    'reward': info, 'objectiveReward': objective_reward, 'prepCost': charged,'settlements':battle_count,
+                    'objectiveContractId': ctx.objective_contract.contract_id, 'candidateCount': len(decision.actions)})
             counts[action['t']] += 1
             rejected += int(not result.accepted)
             total_reward += objective_reward
@@ -400,9 +410,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
         raise ValueError('Policy/critic weights changed during a live episode')
     # Native validation checks continuity and terminal bootstrap before any learning.
     learn._advantages(ctx.objective_contract, rows, 1.0)
-    audit = (verify_trajectory(directory / 'trajectory.jsonl') if log_mode == 'full'
-             else environment.audit())
-    if audit['status'] not in ('personal-ended', 'game-ended') or not audit['public_feedback_verified']:
+    environment.require_complete()
+    audit = verify_trajectory(trace_path) if tracing else None
+    if audit is not None and (audit['status'] not in ('personal-ended', 'game-ended') or not audit['public_feedback_verified']):
         raise ValueError('Incomplete public trajectory audit')
     report = {'seed': seed, 'rng_seed': rng_seed, 'decoder': 'sampled',
         'status': 'personal-ended', 'reason': None, 'error': None,
@@ -418,14 +428,13 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
         'trajectory_audit': audit, 'log_mode': log_mode,
         'collection_elapsed': time.monotonic()-started,
         'route_cache': dict(route_cache.stats) if route_cache is not None else {},
-        'sampling_rng': 'per-episode-cpu-generator/v1', 'behavior_sha256': behavior.hexdigest(),
+        'sampling_rng': 'per-episode-cpu-generator/v1', 'behavior_sha256': behavior.hexdigest() if tracing else None,
         'phases': dict(phase_times),'settlements':sum(r.battle_count for r in rows),
         'plan_events':plan_memory.events if plan_memory else [],
         'plan_modes':dict(Counter(int(r.plan_context[1:5].argmax()) for r in rows)) if plan_memory else {},
         'capacity_recovery':recovery_memory.events if recovery_memory else [],
         'strategic_options':option_memory.events if option_memory else [],
         'option_choices':sum(r.option_event is not None for r in rows)}
-    write(directory / 'summary.json', report)
     if log_mode == 'full':
         # Full diagnostics retain independent post-read verification/compression.
         audit_rows = [{'decision_index': row.transition.decision_index,
@@ -436,18 +445,9 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
             'objective_contract': ctx.objective_contract.to_dict(), 'rows': audit_rows,
             'role': 'hash receipts only; not a PPO replay dataset'})
         archive_case(directory)
-    else:
-        # Online independent observer checked each actual engine transition;
-        # avoid a second full-state dump, reread, gzip and decompression pass.
-        write(directory / 'behavior-audit.json', environment.behavior() | {
-            'seed': seed, 'trajectory_audit': audit,
-            'actual_upgrades': sum(e['levelIncrease'] for e in levels)})
-        write(directory / 'archive.json', {'schema': audit['schema'],
-            'bytes': environment.writer.bytes, 'sha256': sha(directory / trace_name),
-            'full_observations_archived': False, 'offline_ppo_ready': False})
     report['elapsed'] = time.monotonic()-started
     write(directory / 'summary.json', report)
-    ctx.check(sources=True)
+    ctx.check()
     return rows, report
 
 
@@ -470,7 +470,7 @@ def verify_live_metadata(ctx, rows, revision, checkpoint):
                     or value.shape != (len(capture['actions']),)):
                 raise ValueError('Live '+name+' distribution shape/device mismatch')
             neural._finite(value, 'live '+name+' distribution')
-    ctx.check(sources=True)
+    ctx.check()
 
 
 def verify_replay(row, logp, value):
@@ -502,7 +502,7 @@ def verify_live(ctx, model, rows, revision, checkpoint):
             logp, value = model(row.inputs())
             logp = logp.log_softmax(0)
         verify_replay(row, logp, value)
-    ctx.check(sources=True)
+    ctx.check()
 
 
 def distribution_metrics(model, rows):

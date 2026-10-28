@@ -47,7 +47,7 @@ admission route. Re-encoding verifies ordered menus, receipts, contexts,
 relations and recorded behavior probabilities before learning.
 
 New selector/projection modules require explicit adoption and new initialization;
-old checkpoints and sealed source hashes are never rewritten. No tests,
+old checkpoints are never rewritten. No tests,
 fixtures, engine/data modifications or claim of improved play are included.
 
 Native recovery v2 also covers the reproduced PREP64 single-temp-item case:

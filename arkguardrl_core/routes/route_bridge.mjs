@@ -1,4 +1,4 @@
-// Standalone experimental extension of the source-bound native bridge.
+// Standalone experimental extension of the native bridge.
 // Independent native-intent bridge for the frozen Stronghold Protocol 0.3.1 engine.
 // Engine implementation stays external; no legacy ArkGuardRL adapter is imported.
 import fs from 'node:fs';

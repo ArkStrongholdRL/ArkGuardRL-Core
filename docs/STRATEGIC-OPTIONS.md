@@ -6,7 +6,7 @@ memory remains unchanged. A separate sampled 12-dimensional option state enters
 both primitive candidate heads, scheduler and value via a zero-initialized
 projection of the target's frozen catalog embedding and 11 public scalars.
 Historical native/plan/recovery parameters are adopted exactly under a new
-source/input identity. There are no synthetic engine actions or action overrides.
+input contract. There are no synthetic engine actions or action overrides.
 
 Once per eligible PREP round, after mandatory choices and before PREP64 recovery,
 the selector samples continue, idle/exit, or a target-specific pair,

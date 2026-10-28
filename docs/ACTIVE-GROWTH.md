@@ -23,7 +23,7 @@ are not claimed by this first pilot. Raw IDs come from the public catalog only.
 The 12-float plan input is captured on CPU. Every live episode prefix reconstructs
 it exactly before PPO. Scalar/batch/inference and row/columnar wire transport carry
 the same tensor (private wire v6, row/columnar v3); missing inputs reject. Public
-SETTLE entrances are counted before both full and compact recording. New
+SETTLE entrances are counted even when recording is disabled. New
 `PPOConfig.gae_clock='settlement'` retains gamma1 native reward/termination and
 uses lambda**actual_settlement_count in backward GAE; within-PREP trace factor1.
 Native decision-clock GAE remains available. Bootstrap on a genuine truncation

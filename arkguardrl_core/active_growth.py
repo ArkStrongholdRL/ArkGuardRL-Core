@@ -71,7 +71,7 @@ class PlanMemory:
         self.events=[]
 
     def base(self,piece):
-        return self.public.record('chess',piece['id']).get('baseId',piece['id'])
+        return self.public._record('chess',piece['id']).get('baseId',piece['id'])
 
     def pieces(self,state):
         return [p for area in ('board','hand','temp') for p in state['own'][area] if p and p['kind']=='chess']
@@ -82,7 +82,7 @@ class PlanMemory:
 
     def tensor(self,state):
         pieces=self.pieces(state)
-        normal=Counter(self.base(p) for p in pieces if not self.public.record('chess',p['id']).get('isGolden'))
+        normal=Counter(self.base(p) for p in pieces if not self.public._record('chess',p['id']).get('isGolden'))
         bases={self.base(p) for p in pieces}
         if self.pending:
             action,accepted,old=self.pending;self.pending=None

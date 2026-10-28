@@ -36,9 +36,8 @@ the identical saved candidate support.
 Eight recovery input fields (`FIELDS` in `capacity_recovery.py`) are shared by
 actor and critic through a zero-initialized context projection. All existing
 B-revision13 tensors are adopted exactly; the added projection initially changes
-neither logits nor value outside support changes. New source/input/checkpoint
-identities are explicit. Old checkpoints must strict-load in their old source
-closure and export parameters before adoption; they are never relabeled.
+neither logits nor value outside support changes. Checkpoints must match the
+new input contract and parameter shapes.
 
 Live rows retain the pre-constraint candidate domain and actual successor.
 Verification independently folds native attempt history from the full episode,

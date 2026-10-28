@@ -8,7 +8,7 @@ real-engine eligibility and final execution witnesses belong to the experiment.
 
 Only existing option projection, search economy relation scorer and search
 scheduler are trainable. Upper selection, placement, base and value parameters
-remain exact. The optimizer and CPU checkpoints are independent and require
-explicit source-bound adoption. `responses` reports full and reward-conditional
+remain exact. The optimizer and CPU checkpoints are independent.
+`responses` reports full and reward-conditional
 probabilities, checks scalar/batch equality and preserves the complete domain.
 The diagnostic does not establish strategic value or authorize promotion.

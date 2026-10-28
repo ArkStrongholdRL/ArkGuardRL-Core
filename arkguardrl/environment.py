@@ -74,6 +74,10 @@ class SoloEnv:
         if self._trace is not None:
             self._trace.append(record)
 
+    @property
+    def recording(self):
+        return self.trace_path is not None
+
     def _result(self, *, accepted=None, metrics=None, action_id=None, execution=None):
         return Transition(deepcopy(self._state), bool(self._state["personalEnded"]),
                           self._reason is not None and not self._state["personalEnded"],
@@ -128,17 +132,21 @@ class SoloEnv:
         intent = deepcopy(action)
         aid = action_id(intent)
         before = self._state
-        key = (decision_id(before), aid)
-        self._seen[key] = self._seen.get(key, 0) + 1
+        if self.recording:
+            key = (decision_id(before), aid)
+            self._seen[key] = self._seen.get(key, 0) + 1
         reply = self._call(self.session.act, action=intent)
         self._decisions += 1
         self._state = reply["state"]
         execution = self._progress_state._observe_validated(self._state, action=intent, reply=reply)
         metrics = management_changes(before, self._state)
-        self._record({"kind": "action", "action": intent, "actionId": aid,
-                      "decisionId": key[0], "attemptAtContext": self._seen[key],
-                      "accepted": reply["accepted"], "result": reply["result"], "execution": execution,
-                      "metrics": metrics, "before": before, "after": self._state})
+        if self.recording:
+            self._record({"kind": "action", "action": intent, "actionId": aid,
+                          "decisionId": key[0], "attemptAtContext": self._seen[key],
+                          "accepted": reply["accepted"], "result": reply["result"], "execution": execution,
+                          "metrics": metrics, "before": before, "after": self._state})
+        else:
+            self._record({"kind": "action", "before": before, "after": self._state})
         self._progress()
         if (self._decisions >= self.max_decisions and not self._state["personalEnded"]
                 and self._reason is None):
