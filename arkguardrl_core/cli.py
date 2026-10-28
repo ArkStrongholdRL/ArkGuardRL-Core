@@ -27,7 +27,9 @@ def main():
     run.add_argument('--max-buffer-bytes', type=int, default=1024**3)
     run.add_argument('--execution-memory-bytes', type=int, default=1024**3)
     run.add_argument('--workers', type=int, default=4,
-                     help='Persistent CPU collectors, each with a reusable Node process (1..16)')
+                     help='Maximum persistent Python collector processes (1..16)')
+    run.add_argument('--envs-per-worker', type=int, default=1,
+                     help='Independent env slots per Python worker (1..8; requires batched inference above 1)')
     run.add_argument('--iterations', type=int, default=1,
                      help='Equal consecutive groups of explicit seeds; keep workers and optimizer alive')
     run.add_argument('--transfer-mode', choices=('stream', 'episode'), default='stream')
@@ -65,9 +67,13 @@ def main():
     if args.iterations < 1 or len(args.seeds) % args.iterations:
         parser.error('Seeds must split into nonempty equal groups for iterations')
     if (not 1 <= args.transfer_window <= 16 or not 1 <= args.queue_rows <= 8
-            or not 1 <= args.transport_rows <= 32 or not 0 <= args.inference_wait_ms <= 50):
+            or not 1 <= args.transport_rows <= 32 or not 0 <= args.inference_wait_ms <= 50
+            or not 1 <= args.envs_per_worker <= 8):
         parser.error('Invalid bounded transfer/inference settings')
+    if args.envs_per_worker > 1 and args.inference_mode == 'local':
+        parser.error('--envs-per-worker > 1 requires --inference-mode batch-cpu/batch-mps/batch-cuda')
     games_per_iteration = len(args.seeds)//args.iterations
+    workers = min(args.workers, (games_per_iteration+args.envs_per_worker-1)//args.envs_per_worker)
     learn._setup_torch(seed=args.rng_seed)
     ppo = PPOConfig(batch_size=args.batch_size, epochs=args.epochs,
                     learning_rate=args.learning_rate, max_buffer_bytes=args.max_buffer_bytes,
@@ -84,18 +90,19 @@ def main():
         del checked_anchor
         options = dict(transfer_mode=args.transfer_mode, transfer_window=args.transfer_window,
             queue_rows=args.queue_rows, block_rows=args.transport_rows, model_cache=not args.no_model_cache,
-            inference_mode=args.inference_mode, inference_wait_ms=args.inference_wait_ms)
+            inference_mode=args.inference_mode, inference_wait_ms=args.inference_wait_ms,
+            envs_per_worker=args.envs_per_worker)
         write(ctx.root/'inputs.json', {'checkpoint_sha256': sha(args.checkpoint), 'anchor_sha256': sha(args.anchor),
             'seeds': args.seeds, 'rollout_rng_start': args.rng_seed, 'optimizer_rng': args.rng_seed,
             'sampling_rng': 'per-episode-cpu-generator/v1', 'iterations': args.iterations,
-            'workers': min(args.workers, games_per_iteration), 'collector_options': options,
-            'collection': 'persistent spawn workers; complete live episodes; reusable Node per worker'})
+            'workers': workers, 'collector_options': options,
+            'collection': 'persistent spawn workers; complete live episodes; reusable Node per env slot'})
         optimizer = None if args.collect_only else torch.optim.Adam(model.parameters(), lr=ppo.learning_rate)
         rng = random.Random(args.rng_seed)
         policy_path = args.checkpoint
         rounds = []
         all_started = time.monotonic()
-        with Collector(ctx, workers=min(args.workers, games_per_iteration), **options) as collector:
+        with Collector(ctx, workers=workers, **options) as collector:
             for revision in range(args.iterations):
                 iteration_started = time.monotonic()
                 offset = revision*games_per_iteration

@@ -144,7 +144,23 @@ def snapshot_from_inputs(decision, history, inputs, *, episode_id, index, reason
 
 def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directory, log_mode=None,
             session_pool=None, on_row=None, inference=None):
-    """Collect one complete live episode. Never reload PPO rows from artifacts."""
+    episode = collect_steps(ctx, model, anchor, seed=seed, rng_seed=rng_seed, revision=revision,
+        checkpoint=checkpoint, directory=directory, log_mode=log_mode, session_pool=session_pool,
+        on_row=on_row, remote_inference=inference is not None)
+    try:
+        inputs, index, selector = next(episode)
+        while True:
+            prediction = inference(inputs, index, selector=True) if selector else inference(inputs, index)
+            inputs, index, selector = episode.send(prediction)
+    except StopIteration as complete:
+        return complete.value
+    finally:
+        episode.close()
+
+
+def collect_steps(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directory, log_mode=None,
+                  session_pool=None, on_row=None, remote_inference=False):
+    """Yield inference requests; keep all game state and RNG private to this episode."""
     ctx.check()
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
@@ -227,10 +243,10 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 if menu is not None:
                     raw=option_state(model,inputs,previous)
                     menu_tensor=option_memory.menu_tensor(menu,before)
-                    if inference is None:
+                    if not remote_inference:
                         with torch.no_grad():option_logp,option_value=option_distribution(model,raw,menu_tensor)
                     else:
-                        option_logp,option_value,_=inference({'state':raw,'menu':menu_tensor},len(rows),selector=True)
+                        option_logp,option_value,_=yield {'state':raw,'menu':menu_tensor},len(rows),True
                     option_index=int(torch.multinomial(option_logp.exp(),1,generator=option_rng))
                     option_event=dict(schema=planner_config['options']['schema'],menu=menu,menu_tensor=menu_tensor.tolist(),
                         previous_context=previous.tolist(),state=raw.tolist(),old_logps=option_logp.tolist(),
@@ -249,23 +265,26 @@ def collect(ctx, model, anchor, *, seed, rng_seed, revision, checkpoint, directo
                 inputs['reward_binding'],binding_receipt=encode_binding(planner_config['binding'],before,decision.actions,option_memory,session.history.progress['stream_id'])
             phase_times['feature_seconds'] += time.monotonic()-phase_started
             phase_started = time.monotonic()
+            # Yield outside torch contexts: grad/inference modes are thread-local
+            # and must not leak into another episode resumed by this worker.
+            prediction = (yield inputs,len(rows),False) if remote_inference else None
             with torch.no_grad():
                 if binding_receipt is not None:
                     from .offer_binding import decode,pushforward
-                    if inference is None:
+                    if not remote_inference:
                         raw_logp,value=model.forward_raw(inputs)
                         anchor_logps=anchor(inputs)[0].log_softmax(0).detach().cpu().clone()
                     else:
-                        raw_logp,value,anchor_logps=inference(inputs,len(rows))
+                        raw_logp,value,anchor_logps=prediction
                     raw_index,index=decode(raw_logp,inputs['reward_binding'],generator=rng)
                     logp=pushforward(raw_logp,inputs['reward_binding'])
                     binding_receipt.update(raw_selected_index=raw_index,raw_selected_logp=float(raw_logp[raw_index]),
                         mapped=index!=raw_index,raw_reward_selected=decision.actions[raw_index]['t']=='g.reward')
-                elif inference is None:
+                elif not remote_inference:
                     logp, value = model(inputs)
                     anchor_logps = anchor(inputs)[0].log_softmax(0).detach().cpu().clone()
                 else:
-                    logp, value, anchor_logps = inference(inputs, len(rows))
+                    logp, value, anchor_logps = prediction
                 distribution = torch.distributions.Categorical(logits=logp, validate_args=False)
                 if binding_receipt is None:
                     chosen = torch.multinomial(distribution.probs, 1, generator=rng).squeeze(0)

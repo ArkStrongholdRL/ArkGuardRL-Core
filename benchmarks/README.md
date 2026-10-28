@@ -24,3 +24,13 @@ N 组；它不是同一批种子的 N 次重复。失败和截断对局不要计
 GPU 推理分别用 `--inference-mode batch-mps` 或 `batch-cuda`；`--device` 只控制 PPO。
 报告冷启动和后续复用轮次，并附上实际 batch 大小分布。相同数量的 worker 下比较
 端到端吞吐，不能用大 batch 的固定输入前向速度替代完整采集结果。
+
+多 env 实验显式设置 `--envs-per-worker`。比较时固定总游戏数与种子，同时报告
+Python worker 数和并发 env 数，例如 8×1 与 8×2 均采集同一批 16 局。
+每个 env 槽位拥有独立 Node；增加槽位会增加 Node 数和同时驻留的轨迹。
+
+2026-10-28 本机实验（Apple M5、16 GB、PyTorch 2.14.1、MPS）：固定权重及 16 局种子，
+共 3446 次决策。冻结的 main `6af66bf` 与多 env 分支各取 5 次热运行，采集中位数
+从 30.97 秒降至 25.74 秒，吞吐从 111.3 提至 133.9 decisions/s；平均 batch 中位数
+从 2.73 增至 4.58。两组均为 8 个 Python worker，Node 会话从 8 增至 16。
+这是该负载的端到端 MPS 测量，CUDA 尚未实测。
