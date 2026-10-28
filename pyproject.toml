@@ -12,6 +12,7 @@ license = "GPL-3.0-or-later"
 license-files = ["LICENSE", "NOTICE.md"]
 
 [project.optional-dependencies]
+gym = ["gymnasium>=1.1,<2", "numpy>=1.26"]
 train = ["torch>=2.6"]
 vector = ["torch>=2.6", "numpy>=1.26"]
 
