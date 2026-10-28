@@ -189,3 +189,11 @@ class RouteEnv(DeadlineEnv):
     def takeover(self):
         self._remaining()
         return self.session._request('teacherTakeover')
+
+    def layout_goal(self, uids):
+        """Current deployed members, deterministic public engine layout teacher."""
+        self._remaining()
+        goal = self.session._request('layoutGoal', uids=list(uids))['layout']
+        if goal['revision'] != self._state['revision']:
+            raise ValueError('Layout goal belongs to another decision')
+        return goal

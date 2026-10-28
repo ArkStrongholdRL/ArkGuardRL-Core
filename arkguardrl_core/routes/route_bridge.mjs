@@ -120,6 +120,38 @@ function dispatch(req) {
       assertEngineHealthy();
       return {geometry:geometry(match,match.players.get(PLAYER),bot,revision)};
     }
+    case 'layoutGoal': {
+      assertEngineHealthy();
+      const ps = match.players.get(PLAYER);
+      if (match.phase !== 'PREP' || ps.ready) throw Error('Layout requires active PREP');
+      const ids = req.uids;
+      if (!Array.isArray(ids) || ids.length > 12 || new Set(ids).size !== ids.length)
+        throw Error('Distinct bounded layout members required');
+      const board = [...ps.board.values()];
+      const pieces = ids.map(uid => board.find(p => p.uid === uid && p.kind === 'chess'));
+      if (pieces.some(p => !p)) throw Error('Layout members must be currently deployed chess');
+      // Invoke the existing planner on an isolated read-only facade. Current
+      // spawn identities/counts/routes are visible; private stat multipliers and
+      // boss parts are deliberately omitted. No pool or future wave is queried.
+      const sanitize = wave => wave ? {...wave, spawns: (wave.spawns || [])
+        .filter(s => s.tag !== 'part').map(s => ({enemyKey:s.enemyKey,
+          count:s.count, routeIndex:s.routeIndex, tag:s.tag}))} : null;
+      const group = match.wave ? null : match.bossGroupOf(ps);
+      const view = Object.create(match);
+      view.wave = sanitize(match.wave);
+      view.bossGroupOf = () => group ? {...group, wave:sanitize(group.wave)} : null;
+      view._botPath = null;
+      view.rngBots = () => .5; // Deterministic tie handling; no real RNG draw.
+      const player = Object.create(ps);
+      player.m = view;
+      player._botRangeRecs = new Map();
+      const occupied = new Set([...ps.board].filter(([,p]) => !ids.includes(p.uid)).map(([key]) => key));
+      const plan = bot.planLayout(view, player, pieces, bot.LAYOUT_PARAMS, {occupied});
+      return {layout:{schema:'arkguardrl/public-engine-layout/v1', revision,
+        positions:[...plan].map(([uid,key]) => ({uid, cell:key.split(',').map(Number), dir:plan.dirOf(uid)})),
+        missing:ids.filter(uid => !plan.has(uid)), tie:'constant-half',
+        enemy_stats:'public nominal; private spawn multipliers omitted'}};
+    }
     case 'teacherTakeover': {
       const ps=match.players.get(PLAYER); const before=observe();
       if(before.personalEnded)throw Error('Cannot correct ended game');
