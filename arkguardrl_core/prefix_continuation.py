@@ -26,7 +26,11 @@ SCHEMA = 'arkguardrl-core/frozen-prefix-continuation/v1'
 
 def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
             prefix, source_choices, expected_state, controller, wall=300,
-            max_decisions=1024, max_advances=8192):
+            max_decisions=1024, max_advances=8192, record_learning_signals=False,
+            restart_rng_after_step=None):
+    if restart_rng_after_step is not None and (
+            len(restart_rng_after_step) != 2 or restart_rng_after_step[0] < 0):
+        raise ValueError('Expected nonnegative decision step and continuation seed')
     directory = Path(directory)
     directory.mkdir(exist_ok=False, parents=True)
     weight_hash = weights_hash(model)
@@ -88,6 +92,13 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
             on_policy_admissible=False, controller=controller.snapshot()))
         steps = 0
         while not (result.terminated or result.truncated):
+            if restart_rng_after_step is not None and steps == restart_rng_after_step[0]+1:
+                continuation_seed = restart_rng_after_step[1]
+                native_rng.manual_seed(continuation_seed)
+                upper_rng.manual_seed(continuation_seed+1000000000)
+                env._record(dict(kind='diagnostic-rng-restart', step=steps,
+                    native_seed=continuation_seed, upper_seed=continuation_seed+1000000000,
+                    on_policy_admissible=False))
             before = result.observation
             controller.observe(before)
             decision = recovery.constrain(session.decision(), public)
@@ -107,11 +118,19 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
             row['goal_relations'] = search_options.relations(before, decision.actions, public, row['option_context'], upper.requested_offer)
             row['reward_binding'], receipt = offer_binding.encode(cfg['binding'], before, decision.actions, upper, upper.stream_id)
             with torch.no_grad():
-                raw, _ = model.forward_raw(row)
+                raw, native_value = model.forward_raw(row)
                 raw_index, sampled = offer_binding.decode(raw, row['reward_binding'], generator=native_rng)
                 effective = offer_binding.pushforward(raw, row['reward_binding']).log_softmax(0)
-                direct, _ = model(row)
+                direct, direct_value = model(row)
             if not torch.allclose(effective, direct.log_softmax(0), atol=1e-5, rtol=1e-5): raise ValueError('Actual continuation scoring route mismatch')
+            if not torch.allclose(native_value, direct_value, atol=1e-5, rtol=1e-5):
+                raise ValueError('Actual continuation value route mismatch')
+            inspect = getattr(controller, 'inspect_policy', None)
+            if inspect is not None:
+                inspect(before, decision.actions, effective, float(native_value), session.history.snapshot(before))
+            if record_learning_signals:
+                env._record(dict(kind='diagnostic-value', step=steps, value=float(native_value),
+                    observation_id=fingerprint(before), on_policy_admissible=False))
             selected, reason = controller.action(before, decision.actions, effective, sampled)
             if not 0 <= selected < len(decision.actions): raise ValueError('Controller action outside support')
             action = decision.actions[selected]
@@ -134,6 +153,12 @@ def collect(model, public, *, engine, data_sha256, seed, rng_seed, directory,
                 ready[-1]['after'] = dict(hp=result.observation['own']['lp'], round=result.observation['round'],
                     phase=result.observation['phase'], bonds=result.observation['own']['bonds'])
             info = objective.step(before, result.observation)
+            if record_learning_signals:
+                env._record(dict(kind='diagnostic-outcome', step=steps,
+                    reward=info['reward'], components=info['components'],
+                    settlements=env.settlement_count-settling_before,
+                    terminated=result.terminated, truncated=result.truncated,
+                    on_policy_admissible=False))
             total += info['reward']
             behavior.update(canonical((action, result.accepted, fingerprint(before), fingerprint(result.observation))))
             rejected += not result.accepted
