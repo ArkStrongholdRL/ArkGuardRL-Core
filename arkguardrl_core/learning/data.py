@@ -61,61 +61,73 @@ def validate_expanded(obs, actions):
         raise ValueError('Invalid execution budget context')
 
 
-def prepare(model, row, *, copy_inputs=True):
+def prepare(model, row, *, copy_inputs=True, validate=True):
     """Validate/expand inputs; optionally borrow caller-owned read-only tensors.
 
     Borrowing keeps the tensors alive but shares storage. The caller must retain
     exclusive mutation ownership until all collation/update work finishes.
+    Live inference can skip repeated validation of worker-generated inputs.
     """
-    if next(model.parameters()).device.type != 'cpu':
-        raise ValueError('Prepare public inputs with the CPU actor')
-    if any(value.device.type != 'cpu' for value in row.values()):
-        raise ValueError('Preparation requires owned CPU inputs')
-    neural.validate_tensors(*(row[k] for k in ('obs', 'candidates', 'schedules', 'experts')))
-    if hasattr(model,'planner_config'):
-        from ..active_growth import validate_tensor as validate_plan
-        validate_plan(row.get('plan_context'))
-    elif 'plan_context' in row:raise ValueError('Unexpected plan input')
-    if 'recovery' in getattr(model,'planner_config',{}):
-        from ..capacity_recovery import validate_tensor as validate_recovery
-        validate_recovery(row.get('recovery_context'))
-    elif 'recovery_context' in row:raise ValueError('Unexpected recovery input')
-    if 'options' in getattr(model,'planner_config',{}):
-        from ..strategic_options import validate_context
-        validate_context(model,row.get('option_context'))
-    elif 'option_context' in row:raise ValueError('Unexpected strategic option input')
-    from ..strategic_options import is_search
-    if is_search(getattr(model,'planner_config',{}).get('options')):
-        from ..search_options import validate_relations
-        validate_relations(row.get('goal_relations'),len(row['candidates']))
-    elif 'relations' in getattr(model,'planner_config',{}):
-        from ..goal_relations import validate_tensor as validate_relations
-        validate_relations(row.get('goal_relations'),len(row['candidates']))
-    elif 'goal_relations' in row:raise ValueError('Unexpected goal relations')
-    if 'binding' in getattr(model,'planner_config',{}):
-        from ..offer_binding import validate_tensor as validate_binding
-        validate_binding(row.get('reward_binding'),len(row['candidates']))
-    elif 'reward_binding' in row:raise ValueError('Unexpected binding input')
-    history_config = getattr(model, 'specialist_config', {}).get('prep_history')
-    if history_config is not None:
-        from ..prep_history import validate_tensor
-        validate_tensor(row.get('prep_history'), history_config)
-    elif 'prep_history' in row:
-        raise ValueError('Unexpected PREP history for history-free model')
-    for key, shape in (('route_obs', (rf.OBS_DIM,)),
-                       ('route_actions', (len(row['candidates']), rf.ACTION_DIM))):
-        value = row[key]
-        if value.dtype != torch.float32 or value.shape != shape:
-            raise ValueError('Route input shape/dtype mismatch: '+key)
-        neural._finite(value, key)
+    if validate:
+        if next(model.parameters()).device.type != 'cpu':
+            raise ValueError('Prepare public inputs with the CPU actor')
+        if any(value.device.type != 'cpu' for value in row.values()):
+            raise ValueError('Preparation requires owned CPU inputs')
+        neural.validate_tensors(*(row[k] for k in ('obs', 'candidates', 'schedules', 'experts')))
+        if hasattr(model,'planner_config'):
+            from ..active_growth import validate_tensor as validate_plan
+            validate_plan(row.get('plan_context'))
+        elif 'plan_context' in row:raise ValueError('Unexpected plan input')
+        if 'recovery' in getattr(model,'planner_config',{}):
+            from ..capacity_recovery import validate_tensor as validate_recovery
+            validate_recovery(row.get('recovery_context'))
+        elif 'recovery_context' in row:raise ValueError('Unexpected recovery input')
+        if 'options' in getattr(model,'planner_config',{}):
+            from ..strategic_options import validate_context
+            validate_context(model,row.get('option_context'))
+        elif 'option_context' in row:raise ValueError('Unexpected strategic option input')
+        from ..strategic_options import is_search
+        if is_search(getattr(model,'planner_config',{}).get('options')):
+            from ..search_options import validate_relations
+            validate_relations(row.get('goal_relations'),len(row['candidates']))
+        elif 'relations' in getattr(model,'planner_config',{}):
+            from ..goal_relations import validate_tensor as validate_relations
+            validate_relations(row.get('goal_relations'),len(row['candidates']))
+        elif 'goal_relations' in row:raise ValueError('Unexpected goal relations')
+        if 'binding' in getattr(model,'planner_config',{}):
+            from ..offer_binding import validate_tensor as validate_binding
+            validate_binding(row.get('reward_binding'),len(row['candidates']))
+        elif 'reward_binding' in row:raise ValueError('Unexpected binding input')
+        history_config = getattr(model, 'specialist_config', {}).get('prep_history')
+        if history_config is not None:
+            from ..prep_history import validate_tensor
+            validate_tensor(row.get('prep_history'), history_config)
+        elif 'prep_history' in row:
+            raise ValueError('Unexpected PREP history for history-free model')
+        for key, shape in (('route_obs', (rf.OBS_DIM,)),
+                           ('route_actions', (len(row['candidates']), rf.ACTION_DIM))):
+            value = row[key]
+            if value.dtype != torch.float32 or value.shape != shape:
+                raise ValueError('Route input shape/dtype mismatch: '+key)
+            neural._finite(value, key)
     with torch.no_grad():
         obs = model.base.definitions.expand(row['obs'])
-        validate_expanded(obs, row['candidates'])
+        if validate:
+            validate_expanded(obs, row['candidates'])
+            config = getattr(model, 'planner_config', getattr(model, 'specialist_config', {}))
+            if 'band_index' in config:
+                actions = row['candidates']
+                bands = actions[:, 5+len(layout.DIRECTIONS)+layout.ACTION_TYPES.index('band')] > .5
+                if bands.any():
+                    entities = obs[layout.ENTITY_START:layout.BOND_START].reshape(layout.MAX_ENTITIES, layout.ENTITY_DIM)
+                    ids = torch.cat((entities.new_zeros(1), entities[:, 1]))
+                    if ((ids[actions[:, 3].long()] == config['band_index']) & bands).sum() != 1:
+                        raise ValueError('Fixed band absent from candidate domain')
     facts = obs[layout.FACT_START:layout.CONTROL_START].reshape(layout.MAX_FACTS, layout.FACT_DIM)
     return {k: (v.detach().clone() if copy_inputs else v.detach())
             for k, v in row.items() if k != 'obs'} | {
-        'tables': obs[:layout.FACT_START].clone(),
-        'control': obs[layout.CONTROL_START:].clone(), 'facts': facts[facts[:, 0] == 1].clone()}
+        'tables': obs[:layout.FACT_START],
+        'control': obs[layout.CONTROL_START:], 'facts': facts[facts[:, 0] == 1]}
 
 
 def estimated_bytes(rows):
@@ -146,7 +158,7 @@ def split_for_memory(rows, max_bytes):
     return chunks
 
 
-def collate(rows, device='cpu', max_bytes=1024**3):
+def collate(rows, device='cpu', max_bytes=1024**3, *, bucket_size=0):
     if not rows or len(rows) > 256:
         raise ValueError('Batch must contain 1..256 validated states')
     batch, count = len(rows), max(len(r['candidates']) for r in rows)
@@ -155,6 +167,13 @@ def collate(rows, device='cpu', max_bytes=1024**3):
     estimate = estimated_bytes(rows)
     if estimate > max_bytes:
         raise ValueError('Padded batch exceeds declared memory budget; no candidate truncation')
+    if bucket_size:
+        padded = (count+bucket_size-1)//bucket_size*bucket_size
+        # Bucketing is optional; retain exact-sized execution at the memory bound.
+        if estimate+batch*(padded-count)*4096+bucket_size*4096 <= max_bytes:
+            count = padded
+        else:
+            bucket_size = 0
     result = {k: torch.stack([r[k] for r in rows]) for k in ('tables', 'control', 'route_obs')}
     if any('plan_context' in r for r in rows):
         if not all('plan_context' in r for r in rows):raise ValueError('Mixed plan input contracts')
@@ -207,9 +226,22 @@ def collate(rows, device='cpu', max_bytes=1024**3):
     active_experts = torch.cat([row['experts'] for row in rows])
     for expert in (0, 1):
         result[f'expert_{expert}'] = (active_experts == expert).nonzero().flatten()
+        if bucket_size and result[f'expert_{expert}'].numel():
+            indices = result[f'expert_{expert}']
+            extra = (-len(indices)) % bucket_size
+            result[f'expert_{expert}_padded'] = torch.cat((indices, indices[:1].expand(extra)))
+    if bucket_size:
+        indices = torch.arange(len(result['active_candidates']))
+        result['target_padded'] = torch.cat((indices, indices[:1].expand((-len(indices)) % bucket_size)))
     result['facts'] = torch.cat([r['facts'] for r in rows])
     result['fact_state'] = torch.cat([torch.full((len(r['facts']),), i, dtype=torch.long)
                                       for i, r in enumerate(rows)])
+    if bucket_size:
+        extra = (-len(result['facts'])) % (2*bucket_size)
+        # Owner zero is discarded by both semantic encoders; padding cannot
+        # contribute to an entity/enemy or change the learned distributions.
+        result['facts'] = torch.cat((result['facts'], result['facts'].new_zeros(extra, layout.FACT_DIM)))
+        result['fact_state'] = torch.cat((result['fact_state'], torch.zeros(extra, dtype=torch.long)))
     result['groups'] = (torch.arange(len(neural.features.SCHEDULES))[None, :, None]
                         == result['schedules'][:, None, :]) & valid[:, None, :]
     return {k: v.to(device) for k, v in result.items()}

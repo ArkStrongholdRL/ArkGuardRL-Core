@@ -1,6 +1,5 @@
 """Dynamic-only wire layout. Static definitions are owned once by the model/run."""
 from . import structured as base
-from .contracts import fingerprint
 
 FEATURE_SCHEMA = "arkguardrl/native-dynamic-static-bank-v7"
 # Definition reference is independent of catalog embedding identity.
@@ -26,15 +25,3 @@ def definition_key(row):
     if row["kind"] == "effect":
         return tuple(row["definition"]) if row["definition"] else ("effect", "unresolved")
     return row["kind"], row["id"]
-
-
-def pack(projected, catalog):
-    bank, identity, indices = catalog.definitions()
-    rows = [(indices[definition_key(raw)],) + tuple(encoded[c] for c in ENTITY_COLUMNS)
-            for encoded, (raw, _) in zip(projected["entities"], projected["raw_entities"])]
-    enemies = [(indices[("enemy", raw["enemyKey"])],) + tuple(row[:11])
-               for raw, row in zip(projected["raw_enemies"], projected["enemies"])]
-    return (projected["global"] + base._pack(rows, base.MAX_ENTITIES, ENTITY_DIM, "dynamic entities")
-            + tuple(v for row in projected["bonds"] for v in row[:5])
-            + base._pack(projected["grid"], len(base.CELLS), base.GRID_DIM, "grid")
-            + base._pack(enemies, base.MAX_ENEMIES, 12, "dynamic enemies") + projected["control"])

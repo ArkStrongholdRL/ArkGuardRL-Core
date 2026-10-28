@@ -8,7 +8,7 @@ def main():
     entry_started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    sub.add_parser('identity', help='Print framework source identity; no engine or Torch required')
+    sub.add_parser('identity', help='Print runtime version and Rust ABI')
     run = sub.add_parser('iterate', help='Collect explicit complete games, then update PPO with persistent workers')
     run.add_argument('--engine-root', type=Path, required=True)
     run.add_argument('--expected-data-sha256', required=True)
@@ -35,15 +35,18 @@ def main():
     run.add_argument('--queue-rows', type=int, default=2, help='Bounded sender queue per worker (1..8)')
     run.add_argument('--transport-rows', type=int, default=8, help='Rows per columnar block (1 uses legacy row codec; max 32)')
     run.add_argument('--no-model-cache', action='store_true', help='Reload both policies per game for comparison')
-    run.add_argument('--inference-mode', choices=('local', 'batch-cpu', 'batch-mps'), default='local')
-    run.add_argument('--inference-wait-ms', type=float, default=2., help='Maximum batching wait (0..50 ms)')
+    run.add_argument('--inference-mode', choices=('local', 'batch-cpu', 'batch-mps', 'batch-cuda'), default='local',
+                     help='Sampling inference device; independent of --device for PPO')
+    run.add_argument('--inference-wait-ms', type=float, default=2.,
+                     help='Idle-device batching window (0..50 ms); excludes waiting for an active batch')
     run.add_argument('--collect-only', action='store_true')
+    run.add_argument('--trace', action='store_true', help='Record full trajectories for debugging (off by default)')
     args = parser.parse_args()
     if args.command == 'identity':
         import json
-        from .identity import source_hashes
+        from .native_runtime import kernel
         from . import __version__
-        print(json.dumps({'version': __version__, 'sources': source_hashes()}, indent=2))
+        print(json.dumps({'version': __version__, 'rust_abi': kernel().ABI}, indent=2))
         return
     import random
     import torch
@@ -70,6 +73,7 @@ def main():
                     learning_rate=args.learning_rate, max_buffer_bytes=args.max_buffer_bytes,
                     execution_memory_bytes=args.execution_memory_bytes)
     sampler = SamplerConfig(prep_action_cost=args.prep_action_cost,
+                            log_mode='full' if args.trace else 'none',
                             max_episode_bytes=args.max_buffer_bytes//games_per_iteration)
     ctx = Run(args.out, engine_root=args.engine_root, expected_data_sha256=args.expected_data_sha256,
               difficulty=args.difficulty, sampler=sampler, ppo=ppo, device=args.device, max_wall=args.max_wall)
@@ -85,7 +89,7 @@ def main():
             'seeds': args.seeds, 'rollout_rng_start': args.rng_seed, 'optimizer_rng': args.rng_seed,
             'sampling_rng': 'per-episode-cpu-generator/v1', 'iterations': args.iterations,
             'workers': min(args.workers, games_per_iteration), 'collector_options': options,
-            'collection': 'persistent spawn workers; complete audited live episodes; reusable Node per worker'})
+            'collection': 'persistent spawn workers; complete live episodes; reusable Node per worker'})
         optimizer = None if args.collect_only else torch.optim.Adam(model.parameters(), lr=ppo.learning_rate)
         rng = random.Random(args.rng_seed)
         policy_path = args.checkpoint

@@ -8,7 +8,6 @@ from arkguardrl import catalog, learn, neural, rewards
 from arkguardrl.contracts import fingerprint
 from . import checkpoint
 from .device import available
-from .identity import source_hashes
 from .io import sha, write
 
 
@@ -18,7 +17,7 @@ class SamplerConfig:
     max_advances: int = 8192
     game_wall: float = 210
     max_episode_bytes: int = 512*1024**2
-    full_trace_every: int = 16
+    log_mode: str = 'none'
     trace_max_bytes: int = 64*1024**2
     prep_action_cost: float = 0.0
     construction_potential: dict | None = None
@@ -29,7 +28,9 @@ class SamplerConfig:
         validate(self.construction_potential)
         from .ready_cost import validate as validate_ready_cost
         validate_ready_cost(self.end_prep_loss)
-        for name in ('max_decisions', 'max_advances', 'max_episode_bytes', 'full_trace_every', 'trace_max_bytes'):
+        if self.log_mode not in ('none', 'full'):
+            raise ValueError('Logging mode must be none or full')
+        for name in ('max_decisions', 'max_advances', 'max_episode_bytes', 'trace_max_bytes'):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError('Positive integer sampler bound required: '+name)
         if not math.isfinite(self.game_wall) or self.game_wall <= 0:
@@ -93,7 +94,6 @@ class Run:
         self.device = device
         self.config, self.training = asdict(self.sampler), asdict(self.ppo)
         self.deadline = time.monotonic()+max_wall
-        self.collection_index = 0
         self.public = catalog.PublicCatalog(self.engine_root, expected_data_sha256=expected_data_sha256)
         self.contract = learn.make_contract(self.public, difficulty)
         learn._validate_learning_contract(self.contract)
@@ -122,20 +122,17 @@ class Run:
         self.objective_contract = (replace(self.contract, reward_schema=cost_schema)
             if self.cost_arm or self.sampler.construction_potential is not None
             or self.sampler.end_prep_loss is not None else self.contract)
-        self._sources, self._native_sources = source_hashes(), neural.source_hashes()
-        self._last_source_check = -float('inf')
         self._configuration = fingerprint({'sampler': self.config, 'ppo': self.training})
         self._max_disk, self._min_free, self._last_scan = max_disk_bytes, min_free_bytes, -float('inf')
         self.root.mkdir(parents=True, exist_ok=False)
         write(self.root/'run.json', {'schema': self.schema, 'contract': self.contract.to_dict(),
             'objective_contract': self.objective_contract.to_dict(), 'reward': objective,
             'sampler': self.config, 'ppo': self.training, 'learner_device': device,
-            'core_sources': self._sources, 'native_sources': self._native_sources,
             'max_wall': max_wall, 'max_disk_bytes': max_disk_bytes, 'min_free_bytes': min_free_bytes,
-            'resume': 'not implicit; optimizer/RNG and exact source identity required'})
+            'resume': 'restore optimizer/RNG explicitly'})
         self.check()
 
-    def check(self, *, sources=False):
+    def check(self):
         if time.monotonic() >= self.deadline:
             raise TimeoutError('Framework run wall budget exhausted')
         if shutil.disk_usage(self.root).free < self._min_free:
@@ -143,12 +140,6 @@ class Run:
         if fingerprint({'sampler': self.config, 'ppo': self.training}) != self._configuration:
             raise ValueError('Run configuration changed during live work')
         now = time.monotonic()
-        # Polling each row keeps budgets responsive. Hash the source closure at
-        # most once per second there, and unconditionally at work boundaries.
-        if sources or now-self._last_source_check >= 1:
-            if source_hashes() != self._sources or neural.source_hashes() != self._native_sources:
-                raise ValueError('Framework source identity changed during live work')
-            self._last_source_check = now
         if now-self._last_scan >= 30:
             size = 0
             for path in self.root.rglob('*'):
@@ -168,7 +159,7 @@ class Run:
         checkpoint.verify_bound(model, path, self.contract)
 
     def save(self, path, model, **metadata):
-        self.check(sources=True)
+        self.check()
         checkpoint.save(path, model, self.contract, {
             'schema': self.schema, 'run_sha256': sha(self.root/'run.json'),
             'objective_contract': self.objective_contract.to_dict(),

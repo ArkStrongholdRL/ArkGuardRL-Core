@@ -19,7 +19,7 @@ from .io import sha, write
 from .transport import decode_row
 
 FRAME_BYTES = 1024 * 1024
-WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v11'
+WIRE_SCHEMA = 'arkguardrl-core/live-worker-pipe/v12'
 
 
 def _receive(connection, deadline):
@@ -84,20 +84,20 @@ def _worker(connection, data_connection, ctx, options):
             sender = RowSender(data_connection, token, ctx, options['transfer_window'], options['queue_rows'], options['block_rows'])
             inference_bytes = 0
 
-            def infer(inputs, index):
+            def infer(inputs, index, *, selector=False):
                 nonlocal inference_bytes
                 packet, size = pack_tensors(inputs, ctx.config['max_episode_bytes'])
                 inference_bytes += size
-                connection.send(dict(kind='infer', token=token, index=index, packet=packet))
+                connection.send(dict(kind='infer', token=token, index=index, packet=packet, selector=selector))
                 reply = _receive(connection, ctx.deadline)
                 if reply.get('kind') != 'prediction' or reply.get('token') != token or reply.get('index') != index:
                     raise ValueError('Inference reply identity/order mismatch')
-                values = unpack_tensors(reply['packet'], {'logp', 'anchor'}, ctx.config['max_episode_bytes'])
-                if (values['logp'].shape != (len(inputs['candidates']),)
-                        or values['anchor'].shape != values['logp'].shape
+                values = unpack_tensors(reply['packet'], {'logp'} if selector else {'logp', 'anchor'}, ctx.config['max_episode_bytes'])
+                if (values['logp'].shape != (len(inputs['menu'] if selector else inputs['candidates']),)
+                        or (not selector and values['anchor'].shape != values['logp'].shape)
                         or type(reply['value']) not in (int, float)):
                     raise ValueError('Inference reply shape/value mismatch')
-                return values['logp'], reply['value'], values['anchor']
+                return values['logp'], reply['value'], values.get('anchor')
 
             starts, startup = pool.starts, pool.start_seconds
             rows, report = sampling.collect(ctx, model, anchor,
@@ -143,7 +143,7 @@ class Collector:
                  model_cache=True, inference_mode='local', inference_wait_ms=2., block_rows=8):
         if type(workers) is not int or not 1 <= workers <= 16:
             raise ValueError('Collector workers must be 1..16')
-        if transfer_mode not in ('stream', 'episode') or inference_mode not in ('local', 'batch-cpu', 'batch-mps'):
+        if transfer_mode not in ('stream', 'episode') or inference_mode not in ('local', 'batch-cpu', 'batch-mps', 'batch-cuda'):
             raise ValueError('Unknown explicit collection execution mode')
         if (type(transfer_window) is not int or not 1 <= transfer_window <= 16
                 or type(queue_rows) is not int or not 1 <= queue_rows <= 8
@@ -154,6 +154,8 @@ class Collector:
                             queue_rows=queue_rows, block_rows=block_rows, model_cache=model_cache,
                             inference_mode=inference_mode, inference_wait_ms=inference_wait_ms)
         self._anchor = self._anchor_key = None
+        self._inference = self._inference_architecture = None
+        self._inference_runner = None
         self.ctx, self.workers = ctx, workers
         self.children = []
         self.startup_seconds = 0.0
@@ -203,15 +205,13 @@ class Collector:
             raise ValueError('Unique uint32 game seeds required')
         if type(rng_seed) is not int or not 0 <= rng_seed <= 0xffffffff-len(seeds):
             raise ValueError('Sampling RNG range outside uint32')
-        self.ctx.check(sources=True)
+        self.ctx.check()
         started = time.monotonic()
         policy_sha, anchor_sha = sha(checkpoint), sha(anchor)
         parameters = weights_hash(model)
         pending = deque()
         for index, seed in enumerate(seeds):
-            log_mode = ('full' if self.ctx.collection_index % self.ctx.config['full_trace_every'] == 0
-                        else 'compact')
-            self.ctx.collection_index += 1
+            log_mode = self.ctx.config['log_mode']
             pending.append({'kind': 'collect', 'token': uuid.uuid4().hex, 'index': index,
                 'seed': seed, 'rng_seed': rng_seed+index, 'revision': revision,
                 'checkpoint': str(checkpoint), 'anchor': str(anchor),
@@ -223,15 +223,28 @@ class Collector:
         inference_started = time.monotonic()
         if self.options['inference_mode'] != 'local':
             from . import checkpoint as checkpoints
-            from .inference import BatchedInference
+            from .inference import BatchedInference, InferenceExecutor
             if self._anchor_key != anchor_sha:
                 self._anchor, _ = checkpoints.load(anchor, self.ctx.contract)
                 self._anchor_key = anchor_sha
-            inference = BatchedInference(model, self._anchor, self.options['inference_mode'][6:],
-                                         self.ctx.ppo.execution_memory_bytes)
+            architecture = (type(model), model.width, repr(getattr(model, 'planner_config', None)),
+                            repr(getattr(model, 'specialist_config', None)))
+            keys = dict(actor_key=parameters, anchor_key=self._anchor._core_load_receipt[-1])
+            if self._inference is None or self._inference_architecture != architecture:
+                if self._inference_runner is not None:
+                    self._inference_runner.close()
+                self._inference = BatchedInference(model, self._anchor, self.options['inference_mode'][6:],
+                                                  self.ctx.ppo.execution_memory_bytes, **keys)
+                self._inference_architecture = architecture
+                self._inference_runner = InferenceExecutor(self._inference)
+            else:
+                self._inference.update(model, self._anchor, **keys)
+            inference = self._inference
         inference_setup_seconds = time.monotonic()-inference_started
+        runner = self._inference_runner if inference is not None else None
         requests = []
-        first_request = None
+        queue_seconds, queued_states, max_queue = 0., 0, 0
+        last_data_fd = -1
         dispatch_finished = None
         worker_completed = {child['process'].pid: 0 for child in self.children}
         total_wire, total_capture, total_raw = 0, 0, 0
@@ -256,9 +269,30 @@ class Collector:
                 channels = {channel: state for control, state in active.items()
                             for channel in (control, state['child']['data_pipe'])}
                 timeout = min(1.0, max(0, self.ctx.deadline-time.monotonic()))
-                if requests:
-                    timeout = min(timeout, max(0., self.options['inference_wait_ms']/1000-(time.monotonic()-first_request)))
-                ready = wait(list(channels), timeout=timeout)
+                if requests and runner.batch is None:
+                    timeout = min(timeout, max(0., self.options['inference_wait_ms']/1000-(time.monotonic()-requests[0][5])))
+                ready = wait(list(channels)+([runner.ready] if runner is not None else []), timeout=timeout)
+                if runner is not None and runner.ready in ready:
+                    from .inference import pack_tensors
+                    batch, predictions = runner.receive()
+                    for (connection, state, index, _, selector, _), (logp, value, anchor_logp) in zip(batch, predictions):
+                        fields = {'logp': logp} if selector else {'logp': logp, 'anchor': anchor_logp}
+                        packet, _ = pack_tensors(fields, self.ctx.config['max_episode_bytes'])
+                        connection.send(dict(kind='prediction', token=state['task']['token'], index=index,
+                                             packet=packet, value=value))
+                        state['next_inference'] += int(not selector)
+                        state['inference_pending'] = False
+                    ready.remove(runner.ready)
+                # Recheck inference between bulk frames, rather than decoding
+                # every ready worker's block before responding. Rotate data
+                # pipes so large transfers cannot starve other workers.
+                if runner is not None:
+                    control_ready = [c for c in ready if c in active]
+                    data_ready = sorted((c for c in ready if c not in active),
+                                        key=lambda c: (c.fileno() <= last_data_fd, c.fileno()))
+                    ready = control_ready+data_ready[:1]
+                    if data_ready:
+                        last_data_fd = data_ready[0].fileno()
                 for connection in ready:
                     state = channels[connection]
                     message = connection.recv()
@@ -280,11 +314,12 @@ class Collector:
                                 or message['index'] >= self.ctx.config['max_decisions']):
                             raise ValueError('Unexpected or reordered inference request')
                         expected_inputs = ({'reward_binding'} if 'binding' in getattr(model,'planner_config',{}) else set()) | ({'goal_relations'} if 'relations' in getattr(model,'planner_config',{}) or getattr(model,'planner_config',{}).get('options',{}).get('schema')=='arkguardrl-core/search-and-adapt-options/v1' else set()) | ({'option_context'} if 'options' in getattr(model,'planner_config',{}) else set()) | ({'recovery_context'} if 'recovery' in getattr(model,'planner_config',{}) else set()) | ({'plan_context'} if hasattr(model,'planner_config') else set()) | INPUTS | ({'prep_history'} if getattr(model, 'specialist_config', {}).get('prep_history') else set())
-                        row = unpack_tensors(message['packet'], expected_inputs, self.ctx.config['max_episode_bytes'])
+                        selector = message['selector']
+                        row = unpack_tensors(message['packet'], {'state', 'menu'} if selector else expected_inputs,
+                                             self.ctx.config['max_episode_bytes'])
                         state['inference_pending'] = True
-                        requests.append((connection, state, message['index'], row))
-                        if first_request is None:
-                            first_request = time.monotonic()
+                        requests.append((connection, state, message['index'], row, selector, time.monotonic()))
+                        max_queue = max(max_queue, len(requests))
                     elif kind == 'episode':
                         report = message['report']
                         if (state['report'] is not None or message['policy_sha256'] != policy_sha
@@ -292,9 +327,12 @@ class Collector:
                                 or report['policy_revision'] != revision or report['seed'] != task['seed']
                                 or report['rng_seed'] != task['rng_seed'] or report['status'] != 'personal-ended'
                                 or report['decisions'] != message['rows'] or not 1 <= message['rows'] <= self.ctx.config['max_decisions']
-                                or report['trajectory_audit']['status'] not in ('personal-ended', 'game-ended')
-                                or not report['trajectory_audit']['public_feedback_verified']):
+                                or report['log_mode'] != task['log_mode']):
                             raise ValueError('Incomplete/mismatched worker episode')
+                        if task['log_mode'] == 'full' and (
+                                report['trajectory_audit']['status'] not in ('personal-ended', 'game-ended')
+                                or not report['trajectory_audit']['public_feedback_verified']):
+                            raise ValueError('Incomplete debug trajectory')
                         total_capture += report['capture_bytes_upper_bound']
                         if total_capture > self.ctx.ppo.max_buffer_bytes:
                             raise MemoryError('Combined live captures exceed buffer budget')
@@ -366,18 +404,20 @@ class Collector:
                         dispatch(state['child'])
                     else:
                         raise ValueError('Unknown live worker message')
-                if requests and (len(requests) >= len(active) or
-                        time.monotonic()-first_request >= self.options['inference_wait_ms']/1000):
-                    from .inference import pack_tensors
-                    predictions = inference.evaluate([request[3] for request in requests])
-                    for (connection, state, index, _), (logp, value, anchor_logp) in zip(requests, predictions):
-                        packet, _ = pack_tensors({'logp': logp, 'anchor': anchor_logp}, self.ctx.config['max_episode_bytes'])
-                        connection.send(dict(kind='prediction', token=state['task']['token'], index=index,
-                                             packet=packet, value=value))
-                        state['next_inference'] += 1
-                        state['inference_pending'] = False
-                    requests.clear()
-                    first_request = None
+                if requests and runner.batch is None and (
+                        len(requests) >= sum(s['report'] is None for s in active.values()) or
+                        time.monotonic()-requests[0][5] >= self.options['inference_wait_ms']/1000):
+                    # A selector unlocks its worker's next native input. Serve
+                    # these short jobs first to let native requests accumulate.
+                    # Each worker must finish a native decision before submitting
+                    # another selector, so this cannot starve native inference.
+                    selector = any(r[4] for r in requests)
+                    batch = [r for r in requests if r[4] == selector]
+                    requests = [r for r in requests if r[4] != selector]
+                    now = time.monotonic()
+                    queue_seconds += sum(now-r[5] for r in batch)
+                    queued_states += len(batch)
+                    runner.submit(batch, selector)
             if sha(checkpoint) != policy_sha or sha(anchor) != anchor_sha or weights_hash(model) != parameters:
                 raise ValueError('Parent policy/anchor changed during collection')
             rows, reports = [], []
@@ -399,8 +439,10 @@ class Collector:
                 'task_occupancy': sum(r['task_seconds'] for r in reports)/(self.workers*(time.monotonic()-started)),
                 'parent_peak_rss_bytes': _peak_rss(), 'collector_options': self.options,
                 'inference_setup_seconds': inference_setup_seconds,
+                'inference_queue': {'max_pending': max_queue,
+                    'mean_wait_seconds': queue_seconds/max(1, queued_states)},
                 'inference': inference.report() if inference is not None else None}
-            self.ctx.check(sources=True)
+            self.ctx.check()
             return rows, reports, timing
         except BaseException:
             self.close(force=True)
@@ -443,6 +485,10 @@ class Collector:
                 raise RuntimeError('Collector worker did not exit')
             process.close()
         self.children = []
+        if self._inference_runner is not None:
+            self._inference_runner.close()
+            self._inference_runner = None
+        self._inference = self._inference_architecture = None
 
     def __exit__(self, exc_type, *_):
         self.close(force=exc_type is not None)

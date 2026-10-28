@@ -104,7 +104,7 @@ class EntityContextPolicy(SpecialistPolicy):
         mech_bank = torch.cat((mech.new_zeros(batch,1,mech.shape[-1]),mech),1)
         refs = entities[:,:,5:9].long()
         mechanism = mech_bank[owner,refs].sum(2)/(refs>0).sum(2).clamp_min(1)[:,:,None]
-        symbols = self.base.encoder.semantic_identity(facts[:,[2,3,6]].long()).flatten(1)
+        symbols = self.base.encoder.semantic_identity(torch.stack((facts[:,2],facts[:,3],facts[:,6]),-1).long()).flatten(1)
         types = F.one_hot(facts[:,4].long(),5)[:,1:].to(tables.dtype)
         fact_features = torch.cat((symbols,types,facts[:,5:6]),-1)
         owners = fact_state*(1+layout.MAX_ENTITIES+layout.MAX_ENEMIES)+facts[:,1].long()
@@ -116,8 +116,6 @@ class EntityContextPolicy(SpecialistPolicy):
         tokens = self.specialist_entity(raw)*present[:,:,None]
         state_token=self.specialist_state(state)
         if hasattr(self,'specialist_history'):
-            from .prep_history import validate_tensor
-            validate_tensor(prep_history,self.specialist_config['prep_history'],batch)
             state_token=state_token+self.specialist_history(prep_history)
         elif prep_history is not None:
             raise ValueError('History tensor supplied to a history-free entity policy')

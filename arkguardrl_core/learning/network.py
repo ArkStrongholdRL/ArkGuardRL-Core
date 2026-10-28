@@ -22,24 +22,26 @@ def group_lse(values, groups):
     return torch.logsumexp(masked, -1), present
 
 
-def expert_scores(model, inputs, data):
+def expert_scores(model, inputs, data, heads=None):
     """Score each valid candidate once, preserving zero gradients for absent heads.
 
     Adam must still see zero gradients for an unused expert: changing those to
     None would skip its momentum update and change the original optimizer rule.
     """
     raw = inputs.new_zeros(len(inputs))
-    for expert, head in enumerate((model.base.purchase_head, model.base.placement_head)):
+    for expert, head in enumerate(heads or (model.base.purchase_head, model.base.placement_head)):
         indices = data[f'expert_{expert}']
         if indices.numel():
-            raw = raw.index_copy(0, indices, head(inputs[indices]).squeeze(-1))
+            padded = data.get(f'expert_{expert}_padded', indices)
+            scores = head(inputs[padded]).squeeze(-1)[:indices.numel()]
+            raw = raw.index_copy(0, indices, scores)
         else:
             zero = sum(parameter.reshape(-1)[0]*0 for parameter in head.parameters())
             raw = raw+zero
     return raw
 
 
-def forward(model, data):
+def forward(model, data, *, apply_binding=True):
     enc, width = model.base.encoder, model.width
     obs, actions = data['tables'], data['candidates']
     batch = len(obs)
@@ -52,7 +54,8 @@ def forward(model, data):
     facts = data['facts']
     owner_count = 1+layout.MAX_ENTITIES+layout.MAX_ENEMIES
     owners = facts[:, 1].long()+data['fact_state']*owner_count
-    symbols = facts[:, [2, 3, 6]].long()
+    # A Python index list creates a host tensor and a blocking MPS/CUDA copy.
+    symbols = torch.stack((facts[:, 2], facts[:, 3], facts[:, 6]), -1).long()
     types = torch.nn.functional.one_hot(facts[:, 4].long(), 5)[:, 1:].to(obs.dtype)
     fact_hidden = enc.semantic_fact(torch.cat((enc.semantic_identity(symbols).flatten(1), types, facts[:, 5:6]), -1))
     count = obs.new_zeros(batch*owner_count, 1).index_add(0, owners, obs.new_ones(len(facts), 1))
@@ -106,7 +109,10 @@ def forward(model, data):
     safe = schedule_logp.masked_fill(~existing, 0)
     logp = safe.gather(1, schedules)+raw-normalizers.gather(1, schedules)
     route = model.route_encoder(data['route_obs'])
-    active_delta = model.target(torch.cat((route[owner], data['active_route_actions']), -1)).squeeze(-1)
+    target_inputs = torch.cat((route[owner], data['active_route_actions']), -1)
+    if 'target_padded' in data:
+        target_inputs = target_inputs[data['target_padded']]
+    active_delta = model.target(target_inputs).squeeze(-1)[:len(active)]
     delta = active_delta.new_zeros(batch*count_candidates).index_copy(
         0, data['candidate_flat_index'], active_delta).reshape(batch, count_candidates)
     masses, _ = group_lse(logp, groups)
@@ -119,8 +125,9 @@ def forward(model, data):
     value = model.base.critic(hidden).squeeze(-1)
     if hasattr(model, 'adjust_planning'):
         adjusted,values=model.adjust_planning(result.log_softmax(1),value,obs,actions,data['route_actions'],
-            data['schedules'],data['experts'],data['valid'],data.get('plan_context'),data.get('recovery_context'),data.get('option_context'),data.get('goal_relations'))
-        if 'binding' in model.planner_config:
+            data['schedules'],data['experts'],data['valid'],data.get('plan_context'),data.get('recovery_context'),data.get('option_context'),data.get('goal_relations'),
+            candidate_data=data)
+        if apply_binding and 'binding' in model.planner_config:
             from ..offer_binding import pushforward
             adjusted=pushforward(adjusted,data['reward_binding'])
         return adjusted,values

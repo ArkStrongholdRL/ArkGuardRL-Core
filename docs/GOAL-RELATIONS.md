@@ -2,7 +2,7 @@
 
 `planner.relations` enables `arkguardrl-core/public-goal-candidate-relations/v1`
 only with active strategic options and finite PREP64 recovery. It is a new
-input/source/controller identity; old checksums/checkpoints are never rewritten.
+input/controller configuration.
 
 `goal_relations.encode` produces one 20-bit row per actual candidate, after the
 sampled option and recovery constraints. It describes target-family purchase,

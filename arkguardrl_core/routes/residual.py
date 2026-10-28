@@ -1,6 +1,4 @@
-"""Explicit experimental route residual policy around the source-bound v7 actor."""
-from pathlib import Path
-import hashlib
+"""Route residual policy around the native v7 actor."""
 import torch
 from torch import nn
 from arkguardrl import neural,learn
@@ -8,11 +6,6 @@ from arkguardrl.contracts import fingerprint
 from . import features as rf
 
 SCHEMA='arkguardrl/route-relational-policy/v2'
-
-def sources():
-    from ..identity import source_hashes
-    return source_hashes()
-
 
 def contract(base):
     return {'schema':SCHEMA,'base_contract':base.to_dict(),'base_contract_id':base.contract_id,'features':rf.SCHEMA,'route_observation_dim':rf.OBS_DIM,'route_action_dim':rf.ACTION_DIM,'grid_fields':list(rf.GRID_FIELDS),'global_fields':list(rf.GLOBAL_FIELDS),'action_fields':list(rf.ACTION_FIELDS),'routing':'native-intent-then-target; residual logits','geometry':'own-field-route-geometry/v2; no enemy weights or outcomes'}

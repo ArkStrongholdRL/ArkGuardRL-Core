@@ -36,9 +36,8 @@ the identical saved candidate support.
 Eight recovery input fields (`FIELDS` in `capacity_recovery.py`) are shared by
 actor and critic through a zero-initialized context projection. All existing
 B-revision13 tensors are adopted exactly; the added projection initially changes
-neither logits nor value outside support changes. New source/input/checkpoint
-identities are explicit. Old checkpoints must strict-load in their old source
-closure and export parameters before adoption; they are never relabeled.
+neither logits nor value outside support changes. Checkpoints must match the
+new input contract and parameter shapes.
 
 Live rows retain the pre-constraint candidate domain and actual successor.
 Verification independently folds native attempt history from the full episode,
@@ -49,8 +48,9 @@ receipts and scripted prefix diagnostics are not on-policy training datasets.
 The zero-training acceptance run found a pre-existing original B float32
 multi-state GEMM replay mismatch (one row beyond the unchanged 1e-5 absolute/
 relative criterion at batch sizes 256, 64 and 16; single-state execution passed).
-The new opt-in policy consequently executes each state separately in
-`forward_batch`, then stacks results with original padding. PPO minibatch size,
-mean loss, gradients and optimizer step boundaries are unchanged. CPU is the
-explicit supported execution device for this first contract. No tolerance was
-relaxed, no parameters retrained, and old policy classes retain their math.
+CPU `forward_batch` consequently executes each state separately, then stacks
+results with original padding. PPO minibatch size, mean loss, gradients and
+optimizer step boundaries are unchanged. GPU execution uses the batched network;
+live MPS rollout/replay checks retain the original tolerance. CUDA has the same
+execution path but still requires validation on NVIDIA hardware. No parameters
+were retrained. See [runtime options](RUNTIME.md) for device selection.

@@ -2,8 +2,7 @@
 
 Code is GPL-3.0-or-later; see LICENSE. Derived from HarcoChen/ArkGuardRL, whose
 retained research originated from LittleDrinks/arknights at
-`e00a2d7e44a004052c88d04d4346989ffb553bb3`. Original paths and extraction hashes
-are recorded in SOURCE_MANIFEST.json. The native arkguardrl package was independently
+`e00a2d7e44a004052c88d04d4346989ffb553bb3`. The native arkguardrl package was independently
 maintained in that project; it does not import the legacy experiments/arknights code.
 
 Optimized route arrays, compact semantic encoding, recording and state-batch PPO

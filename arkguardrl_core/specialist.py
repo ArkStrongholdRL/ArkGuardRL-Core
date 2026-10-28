@@ -97,8 +97,6 @@ class SpecialistPolicy(Policy):
         has_band = is_band.any(1)
         subject = referred[:, :, 3, 1].long()
         fixed = is_band & (subject == self.specialist_config['band_index'])
-        if bool((has_band & (fixed.sum(1) != 1)).any()):
-            raise ValueError('Fixed band not present exactly once in legal actor candidates')
         forced = torch.where(fixed, adjusted.new_zeros(()), adjusted.new_full((), -1e9))
         adjusted = torch.where(has_band[:, None], forced, adjusted).masked_fill(~valid, -torch.inf)
         values = value + value_delta*gate

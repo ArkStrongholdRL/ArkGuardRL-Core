@@ -34,12 +34,9 @@ before evaluation. Calling `model.row` alone cannot reconstruct public history.
 Missing or incompatible history is rejected; it is never silently zero-filled.
 
 Checkpoint identity includes the new architecture/configuration and full input
-contract. Old context schemas keep their old input/parameter sets, but exact
-source binding still applies: use their sealed source for strict old loads.
-No implicit checkpoint migration is provided. Explicit adoption must first
-strictly verify the old source/checkpoint, copy every old parameter exactly and
-retain the newly zero-initialized `specialist_history.weight` projection. Save
-under a new identity with the source receipt; never relabel the original file.
+contract. Old context schemas keep their old input/parameter sets.
+Adding history requires copying the existing parameters and retaining the
+newly zero-initialized `specialist_history.weight` projection.
 The new projection has 43*hidden parameters (2752 for hidden64).
 
 Read-only validation used sixteen existing complete public archives: 3187

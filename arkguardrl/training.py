@@ -1,7 +1,4 @@
-"""Native contracts, executed transitions and decision-time GAE.
-
-Historical linear JSON training lives in compat.linear.
-"""
+"""Native contracts, executed transitions and decision-time GAE."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields

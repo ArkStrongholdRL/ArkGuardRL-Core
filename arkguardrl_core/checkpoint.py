@@ -1,12 +1,7 @@
-"""New strict checkpoint identity for extracted package APIs.
-
-Historical route checkpoints must be strictly loaded in their frozen research
-checkout and explicitly adopted; this loader never rewrites old identities.
-"""
+"""Checkpoint loading based on model and input compatibility."""
 from pathlib import Path
 from arkguardrl import neural
 from arkguardrl.contracts import fingerprint
-from .identity import source_hashes
 from .io import sha
 from .models import Policy, SCHEMA
 from .routes import residual
@@ -15,8 +10,7 @@ from .routes import residual
 def identity(contract, width, route_backend, specialist=None, planner=None):
     result = {'schema': SCHEMA, 'input_contract': residual.contract(contract),
         'width': width, 'route_backend': route_backend,
-        'architecture': 'native-v7-width; compact semantic facts; route residual; same parameter shapes',
-        'native_sources': neural.source_hashes(), 'core_sources': source_hashes()}
+        'architecture': 'native-v7-width; compact semantic facts; route residual; same parameter shapes'}
     if specialist is not None:
         from .specialist import validate
         validate(specialist)
@@ -84,7 +78,7 @@ def restore_verified_state(model, state):
 def save(path, model, contract, metadata):
     ident = identity(contract, model.width, model.route_backend, getattr(model, 'specialist_config', None), getattr(model, 'planner_config', None))
     neural.save_payload(path, {'schema': SCHEMA, 'identity': ident,
-        'identity_sha256': fingerprint(ident), 'definitions': model.base.definitions.bank,
+        'definitions': model.base.definitions.bank,
         'metadata': metadata, 'state_dict': {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}})
 
     from .sampling import weights_hash
@@ -96,10 +90,12 @@ def load(path, contract):
     payload = neural.load_payload(path)
     if payload.get('schema') != SCHEMA:
         raise ValueError('Extracted core checkpoint required; adopt verified legacy weights explicitly')
-    declared = payload['identity']
+    # Old checkpoints may carry source manifests. They do not affect compatibility.
+    declared = {k: v for k, v in payload['identity'].items()
+                if k not in ('core_sources', 'native_sources')}
     ident = identity(contract, declared['width'], declared['route_backend'], declared.get('specialist'), declared.get('planner'))
-    if declared != ident or payload['identity_sha256'] != fingerprint(ident):
-        raise ValueError('Core input/source/model identity mismatch')
+    if declared != ident:
+        raise ValueError('Core model or input contract mismatch')
     if 'planner' in declared:
         from .active_growth import ActiveGrowthPolicy
         model=ActiveGrowthPolicy(contract,payload['definitions'],declared['width'],declared['route_backend'],declared['planner'])
@@ -123,7 +119,7 @@ def load(path, contract):
 
 
 def verify_bound(model, path, contract):
-    """Reuse strict load evidence, but recheck source, file and live parameters."""
+    """Ensure the live policy still matches the supplied checkpoint."""
     from .sampling import weights_hash
     receipt = getattr(model, '_core_load_receipt', None)
     current = (str(Path(path).resolve()), sha(path),
@@ -135,4 +131,4 @@ def verify_bound(model, path, contract):
             raise ValueError('Live actor differs from the declared checkpoint')
         model._core_load_receipt = current
     elif receipt != current:
-        raise ValueError('Strict load receipt differs from current source/file/parameters')
+        raise ValueError('Live policy differs from checkpoint file or parameters')

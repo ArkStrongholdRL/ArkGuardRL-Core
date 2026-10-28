@@ -92,7 +92,7 @@ def attach(model,config):
 
 
 def adjustments(model,relations,experts,valid):
-    batch,count=valid.shape;validate_tensor(relations,count,batch)
+    batch,count=valid.shape
     if not model.planner_config['relations']['enabled']:relations=torch.zeros_like(relations)
     delta=torch.where(experts==0,model.goal_economy(relations).squeeze(-1),model.goal_placement(relations).squeeze(-1))
     mask=valid[...,None]

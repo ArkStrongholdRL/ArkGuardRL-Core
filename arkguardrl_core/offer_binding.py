@@ -66,7 +66,6 @@ def pushforward(raw, mask):
     scalar = raw.ndim == 1
     values = raw[None] if scalar else raw
     codes = mask[None] if scalar else mask
-    validate_tensor(mask, raw.shape[-1], None if scalar else len(raw))
     active = (codes == 2).any(1)
     members = codes > 0
     # Finite dummy for empty reductions; no undefined backward at inactive rows.

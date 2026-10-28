@@ -192,7 +192,7 @@ def ppo_update(ctx, actor, optimizer, rows, revision, checkpoint, beta, rng, *, 
         optimizer.load_state_dict(tensors_to(learner_optimizer.state_dict(), 'cpu'))
         del learner_optimizer, learner
     device_return_seconds = time.monotonic()-started
-    ctx.check(sources=True)
+    ctx.check()
     return {'updates': len(metrics), 'optimizer_examples': sum(x['batch_rows'] for x in metrics),
         'decisions': len(rows), 'early_stop': early_stop, 'kl_coef': beta,
         'raw_advantage_mean': raw_mean, 'raw_advantage_std': raw_std,

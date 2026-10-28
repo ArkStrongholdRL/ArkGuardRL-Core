@@ -5,7 +5,6 @@ Candidate routing is explicit native metadata, not an engine legality oracle.
 """
 from __future__ import annotations
 
-import hashlib
 import math
 from pathlib import Path
 
@@ -54,14 +53,6 @@ def device_name(device):
     if device == "mps" and not torch.backends.mps.is_available():
         raise RuntimeError("MPS requested but unavailable; select cpu explicitly")
     return device
-
-
-def source_hashes():
-    """Portable paths identify the independent native source closure, not assets."""
-    root = Path(__file__).parent
-    paths = sorted((*root.rglob("*.py"), *root.rglob("*.mjs")))
-    return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in paths if "__pycache__" not in path.parts and "compat" not in path.parts}
 
 
 def _finite(tensor, name):
@@ -339,8 +330,7 @@ def save_checkpoint(path, model, *, algorithm, updates, provenance):
         raise ValueError("Nonnegative optimizer update count required")
     validate_contract(model.contract)
     canonical(provenance)
-    metadata = {"algorithm": algorithm, "updates": updates, "provenance": provenance,
-                "source_hashes": source_hashes()}
+    metadata = {"algorithm": algorithm, "updates": updates, "provenance": provenance}
     weights = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
     for value in weights.values():
         _finite(value, "checkpoint weights")
@@ -412,12 +402,11 @@ def load_checkpoint(path, expected_contract, *, device="cpu"):
             or payload["contract_id"] != expected_contract.contract_id):
         raise ValueError("Native checkpoint identity mismatch; legacy conversion is unsupported")
     metadata = payload["metadata"]
-    if (not isinstance(metadata, dict) or set(metadata) != {
-            "algorithm", "updates", "provenance", "source_hashes"}
+    if (not isinstance(metadata, dict) or set(metadata)-{"source_hashes"} != {
+            "algorithm", "updates", "provenance"}
             or metadata["algorithm"] not in ("native-behavior-cloning", "native-ppo")
-            or type(metadata["updates"]) is not int or metadata["updates"] < 0
-            or metadata["source_hashes"] != source_hashes()):
-        raise ValueError("Checkpoint algorithm/source provenance mismatch")
+            or type(metadata["updates"]) is not int or metadata["updates"] < 0):
+        raise ValueError("Checkpoint training metadata mismatch")
     canonical(metadata)
     model = NativeActorCritic(expected_contract, payload["static_definitions"])
     reference = model.state_dict()

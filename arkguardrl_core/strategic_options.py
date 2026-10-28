@@ -221,6 +221,27 @@ def distribution(model,state,menu):
     return logp,model.option_critic(hidden).squeeze(-1)
 
 
+def distribution_batch(model, states, menus, valid):
+    """Both selector schemas, with no per-choice Python/GPU synchronization."""
+    from .learning.network import group_lse
+    hidden = model.option_state(states)
+    identity = model.base.encoder.identity(menus[:, :, 0].long()).detach()
+    raw = model.option_actor(torch.cat((hidden[:, None].expand(-1, menus.shape[1], -1),
+                                       identity, menus[:, :, 1:]), -1)).squeeze(-1)
+    if is_search(model.planner_config['options']):
+        from .search_options import KINDS
+        count = len(KINDS)
+        group = menus[:, :, 1:1+count].argmax(-1)
+    else:
+        count = 5
+        group = torch.where(menus[:, :, 5] > .5, 0, menus[:, :, 1:5].argmax(-1)+1)
+    groups = (group[:, None] == torch.arange(count, device=states.device)[None, :, None]) & valid[:, None]
+    norms, present = group_lse(raw, groups)
+    mass = model.option_schedule(hidden).masked_fill(~present, -torch.inf).log_softmax(-1)
+    result = mass.gather(1, group)+raw-norms.gather(1, group)
+    return result.masked_fill(~valid, -torch.inf), model.option_critic(hidden).squeeze(-1)
+
+
 def verify_rows(model,rows,public,probabilities=False):
     config=getattr(model,'planner_config',{}).get('options')
     if is_search(config):return backend(config).verify_rows(model,rows,public,probabilities)

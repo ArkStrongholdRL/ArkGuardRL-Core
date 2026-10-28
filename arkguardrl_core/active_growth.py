@@ -71,7 +71,7 @@ class PlanMemory:
         self.events=[]
 
     def base(self,piece):
-        return self.public.record('chess',piece['id']).get('baseId',piece['id'])
+        return self.public._record('chess',piece['id']).get('baseId',piece['id'])
 
     def pieces(self,state):
         return [p for area in ('board','hand','temp') for p in state['own'][area] if p and p['kind']=='chess']
@@ -82,7 +82,7 @@ class PlanMemory:
 
     def tensor(self,state):
         pieces=self.pieces(state)
-        normal=Counter(self.base(p) for p in pieces if not self.public.record('chess',p['id']).get('isGolden'))
+        normal=Counter(self.base(p) for p in pieces if not self.public._record('chess',p['id']).get('isGolden'))
         bases={self.base(p) for p in pieces}
         if self.pending:
             action,accepted,old=self.pending;self.pending=None
@@ -167,15 +167,13 @@ class ActiveGrowthPolicy(Policy):
             attach_relations(self,config['relations'])
 
     def forward_batch(self, packed):
-        if 'recovery' not in self.planner_config:
+        if 'recovery' not in self.planner_config or packed['tables'].device.type != 'cpu':
             return super().forward_batch(packed)
         # This opt-in contract uses state-local float32 math. A live diagnostic
         # found old multi-state GEMMs outside the unchanged replay tolerance.
         # Keep the optimizer minibatch/gradient reduction intact; only learned
         # execution is split. No widening of probability tolerances.
         from .learning import data, network
-        if packed['tables'].device.type != 'cpu':
-            raise ValueError('Finite recovery currently requires CPU state-local execution')
         results, values = [], []
         width = packed['valid'].shape[1]
         for i in range(len(packed['tables'])):
@@ -225,8 +223,8 @@ class ActiveGrowthPolicy(Policy):
             row['goal_relations'][None] if 'goal_relations' in row else None)
         return adjusted[0],values[0]
 
-    def adjust_planning(self,logp,value,tables,actions,routes,schedules,experts,valid,plan,recovery=None,option=None,relations=None):
-        batch,count=valid.shape;validate_tensor(plan,batch)
+    def adjust_planning(self,logp,value,tables,actions,routes,schedules,experts,valid,plan,recovery=None,option=None,relations=None,*,candidate_data=None):
+        batch,count=valid.shape
         entities=tables[:,layout.ENTITY_START:layout.BOND_START].reshape(batch,layout.MAX_ENTITIES,layout.ENTITY_DIM)
         bank=torch.cat((entities.new_zeros(batch,1,layout.ENTITY_DIM),entities),1)
         owner=torch.arange(batch,device=tables.device)[:,None,None]
@@ -234,15 +232,19 @@ class ActiveGrowthPolicy(Policy):
         identity=self.base.encoder.identity(referred[:,:,:,1].long()).flatten(2)
         context=torch.cat((self.base.encoder.identity(plan[:,0].long()),plan[:,1:]),-1)
         if hasattr(self,'recovery_projection'):
-            from .capacity_recovery import validate_tensor as validate_recovery
-            validate_recovery(recovery,batch)
             context=context+self.recovery_projection(recovery)
         if hasattr(self,'option_projection'):
-            from .strategic_options import validate_context,context_features
-            validate_context(self,option,batch)
+            from .strategic_options import context_features
             context=context+self.option_projection(context_features(self,option))
         inputs=torch.cat((identity,actions[:,:,5:],routes,context[:,None].expand(-1,count,-1)),-1)
-        delta=torch.where(experts==0,self.plan_economy(inputs).squeeze(-1),self.plan_placement(inputs).squeeze(-1))
+        if candidate_data is None:
+            delta=torch.where(experts==0,self.plan_economy(inputs).squeeze(-1),self.plan_placement(inputs).squeeze(-1))
+        else:
+            from .learning.network import expert_scores
+            indices=candidate_data['candidate_flat_index']
+            active=inputs.reshape(batch*count,-1)[indices]
+            scores=expert_scores(self,active,candidate_data,(self.plan_economy,self.plan_placement))
+            delta=scores.new_zeros(batch*count).index_copy(0,indices,scores).reshape(batch,count)
         relation_schedule=0.
         if hasattr(self,'goal_schedule'):
             from .goal_relations import adjustments
@@ -264,7 +266,6 @@ class ActiveGrowthPolicy(Policy):
         band_col=5+len(layout.DIRECTIONS)+layout.ACTION_TYPES.index('band')
         is_band=(actions[:,:,band_col]>.5)&valid;has_band=is_band.any(1)
         fixed=is_band&(referred[:,:,3,1].long()==self.planner_config['band_index'])
-        if bool((has_band&(fixed.sum(1)!=1)).any()):raise ValueError('Fixed band absent from actual legal domain')
         forced=torch.where(fixed,result.new_zeros(()),result.new_full((),-1e9))
         result=torch.where(has_band[:,None],forced,result).masked_fill(~valid,-torch.inf)
         return result.log_softmax(1),value+self.plan_value(context).squeeze(-1)

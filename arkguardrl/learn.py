@@ -139,7 +139,7 @@ def _new_run(output_dir, contract, config):
     out.mkdir(parents=True, exist_ok=False)
     _write_json(out / "contract.json", contract.to_dict())
     _write_json(out / "plan.json", {"created_at": _utc(), "contract_id": contract.contract_id,
-                                    "config": config, "source_hashes": _modules()[3].source_hashes()})
+                                    "config": config})
     return out
 
 
@@ -267,7 +267,6 @@ def collect_teacher(engine_root, output_dir, *, seeds, difficulty, expected_data
               "max_wall": max_wall, "max_decisions": max_decisions, "max_advances": max_advances,
               "max_records": max_records, "teacher_id": policy_id, "threads": threads}
     out = _new_run(output_dir, contract, config)
-    source = neural.source_hashes()
     rows, episodes = [], []
     used_bytes = 2 * len(canonical(catalog.definitions()[0])) + 16384
     if used_bytes > MAX_BYTES:
@@ -340,11 +339,9 @@ def collect_teacher(engine_root, output_dir, *, seeds, difficulty, expected_data
         print(json.dumps({"teacher_episode": report}, allow_nan=False), flush=True)
         if failure or stop_reason != "games":
             break
-    if source != neural.source_hashes():
-        raise RuntimeError("Native source changed during teacher capture")
     payload = {"schema": DATASET_SCHEMA, "contract": contract.to_dict(),
                "contract_id": contract.contract_id, "source": "rule-teacher", "teacher_id": policy_id,
-               "source_hashes": source, "episodes": episodes, "rows": rows,
+               "episodes": episodes, "rows": rows,
                "created_at": _utc(), "stop_reason": stop_reason, "partial": failure is not None,
                "static_definitions": catalog.definitions()[0]}
     neural.save_payload(out / ("demonstrations-partial.pt" if failure else "demonstrations.pt"), payload)
@@ -360,13 +357,13 @@ def load_demonstrations(path, expected_contract):
     _validate_learning_contract(expected_contract)
     neural = _modules()[3]
     payload = neural.load_payload(path)
-    fields = {"schema", "contract", "contract_id", "source", "teacher_id", "source_hashes",
+    fields = {"schema", "contract", "contract_id", "source", "teacher_id",
               "episodes", "rows", "created_at", "stop_reason", "partial", "static_definitions"}
-    if (not isinstance(payload, dict) or set(payload) != fields or payload["schema"] != DATASET_SCHEMA
+    if (not isinstance(payload, dict) or set(payload)-{"source_hashes"} != fields or payload["schema"] != DATASET_SCHEMA
             or payload["contract"] != expected_contract.to_dict()
             or payload["contract_id"] != expected_contract.contract_id
             or payload["source"] != "rule-teacher" or payload["teacher_id"] != _modules()[5].POLICY_ID
-            or payload["source_hashes"] != neural.source_hashes() or payload["partial"] is not False):
+            or payload["partial"] is not False):
         raise ValueError("Native teacher dataset identity/provenance mismatch")
     neural.validate_static_definitions(payload["static_definitions"], expected_contract)
     rows, episodes = payload["rows"], payload["episodes"]
@@ -411,7 +408,6 @@ def train_bc(dataset_path, output_dir, *, expected_contract, steps, max_wall,
               "sampling": "uniform observed schedules then uniform supervised rows",
               "validation": "none; no held-out generalization claim"}
     out = _new_run(output_dir, expected_contract, config)
-    source = neural.source_hashes()
     model = neural.NativeActorCritic(expected_contract, dataset["static_definitions"]).to(device)
     parameters = [value for key, value in model.named_parameters() if not key.startswith("critic.")]
     optimizer = torch.optim.Adam(parameters, lr=learning_rate)
@@ -453,8 +449,6 @@ def train_bc(dataset_path, output_dir, *, expected_contract, steps, max_wall,
                       "elapsed_seconds": time.monotonic() - start}
             metrics.append(metric)
             print(json.dumps(metric, allow_nan=False), flush=True)
-    if source != neural.source_hashes():
-        raise RuntimeError("Native source changed during BC")
     summary = {**provenance, "updates": updates, "metrics": metrics,
                "sampled_counts_by_schedule": {str(key): value for key, value in sampled.items()},
                "critic_training": "head frozen; shared encoder changes; no fitted value targets",
@@ -633,7 +627,6 @@ def train_ppo(engine_root, output_dir, *, seeds, difficulty, expected_data_sha25
               "initial_checkpoint_sha256": _sha(initial_checkpoint) if initial_checkpoint else None}
     out = _new_run(output_dir, contract, config)
     neural.save_payload(out / "static-definitions.pt", catalog.definitions()[0])
-    source = neural.source_hashes()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     neural.save_checkpoint(out / "initial.pt", model, algorithm="native-ppo", updates=0, provenance=config)
     episodes, rollout, metrics = [], [], []
@@ -649,7 +642,7 @@ def train_ppo(engine_root, output_dir, *, seeds, difficulty, expected_data_sha25
         artifact = {"schema": ROLLOUT_SCHEMA, "contract": contract.to_dict(),
                     "contract_id": contract.contract_id, "source": "live-ppo-policy",
                     "static_definitions_sha256": contract.definition_sha256,
-                    "policy_revision": revision, "source_hashes": source,
+                    "policy_revision": revision,
                     "rows": [{"capture": row.capture, "transition": row.transition.to_dict()}
                              for row in rollout]}
         neural.save_payload(out / f"rollout-{batch_number:04d}.pt", artifact)
@@ -777,8 +770,6 @@ def train_ppo(engine_root, output_dir, *, seeds, difficulty, expected_data_sha25
     # diagnostics but never retry that old buffer against an uncertain revision.
     if rollout and failure is None:
         flush()
-    if source != neural.source_hashes():
-        raise RuntimeError("Native source changed during PPO")
     summary = {**config, "actual_steps": total_steps, "optimizer_updates": updates,
                "episodes": episodes, "metrics": metrics, "stop_reason": stop_reason,
                "error": failure, "elapsed_seconds": time.monotonic() - start,
