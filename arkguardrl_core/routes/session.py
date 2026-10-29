@@ -190,10 +190,11 @@ class RouteEnv(DeadlineEnv):
         self._remaining()
         return self.session._request('teacherTakeover')
 
-    def layout_goal(self, uids):
+    def layout_goal(self, uids, *, include_reserves=False):
         """Current deployed members, deterministic public engine layout teacher."""
         self._remaining()
-        goal = self.session._request('layoutGoal', uids=list(uids))['layout']
+        goal = self.session._request('layoutGoal', uids=list(uids),
+                                     includeReserves=include_reserves)['layout']
         if goal['revision'] != self._state['revision']:
             raise ValueError('Layout goal belongs to another decision')
         return goal

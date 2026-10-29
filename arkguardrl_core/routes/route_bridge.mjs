@@ -128,8 +128,11 @@ function dispatch(req) {
       if (!Array.isArray(ids) || ids.length > 12 || new Set(ids).size !== ids.length)
         throw Error('Distinct bounded layout members required');
       const board = [...ps.board.values()];
-      const pieces = ids.map(uid => board.find(p => p.uid === uid && p.kind === 'chess'));
-      if (pieces.some(p => !p)) throw Error('Layout members must be currently deployed chess');
+      if (req.includeReserves !== undefined && typeof req.includeReserves !== 'boolean')
+        throw Error('Explicit owned/deployed layout scope required');
+      const available = req.includeReserves ? ps.allChess() : board;
+      const pieces = ids.map(uid => available.find(p => p.uid === uid && p.kind === 'chess'));
+      if (pieces.some(p => !p)) throw Error('Layout members outside requested public inventory scope');
       // Invoke the existing planner on an isolated read-only facade. Current
       // spawn identities/counts/routes are visible; private stat multipliers and
       // boss parts are deliberately omitted. No pool or future wave is queried.
@@ -145,7 +148,8 @@ function dispatch(req) {
       const player = Object.create(ps);
       player.m = view;
       player._botRangeRecs = new Map();
-      const occupied = new Set([...ps.board].filter(([,p]) => !ids.includes(p.uid)).map(([key]) => key));
+      const occupied = new Set([...ps.board].filter(([,p]) => !ids.includes(p.uid)
+        && (!req.includeReserves || p.kind !== 'chess')).map(([key]) => key));
       const plan = bot.planLayout(view, player, pieces, bot.LAYOUT_PARAMS, {occupied});
       return {layout:{schema:'arkguardrl/public-engine-layout/v1', revision,
         positions:[...plan].map(([uid,key]) => ({uid, cell:key.split(',').map(Number), dir:plan.dirOf(uid)})),
