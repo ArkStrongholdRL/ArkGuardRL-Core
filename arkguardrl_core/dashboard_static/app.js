@@ -231,6 +231,7 @@ function card(piece, slot) {
   return n;
 }
 function detail(p) {
+  if (performance.now() < camera.suppressClickUntil) return;
   $("piece-detail").textContent = p
     ? `${name(p)} · UID ${fmt(p.uid)} · ${p.golden ? "金棋" : "普通"} · T${fmt(p.tier)} · 朝向 ${p.dir || "—"} · 装备 ${(p.items || []).map(name).join("、") || "无"}${p.ownerUid ? " · 归属 " + p.ownerUid : ""}`
     : "空槽";
@@ -267,6 +268,8 @@ function board(state) {
       : 0;
   const container = $("board");
   container.style.gridTemplateColumns = `repeat(${width - firstCol}, minmax(0, 1fr))`;
+  camera.columns = width - firstCol;
+  camera.rows = height - firstRow;
   const deployed = new Map(cells.map((c) => [`${c.row},${c.col}`, c]));
   const units = new Map(pieces.map((p) => [`${p.row},${p.col}`, p]));
   const frag = document.createDocumentFragment();
@@ -278,7 +281,8 @@ function board(state) {
         tile?.buildable === "ALL" ||
         tile?.buildable === "MELEE" ||
         tile?.buildable === "RANGED" ||
-        deployed.has(`${r},${c}`)
+        deployed.has(`${r},${c}`) ||
+        units.has(`${r},${c}`)
           ? "tile"
           : tile?.groundPassable
             ? "road"
@@ -294,10 +298,26 @@ function board(state) {
             (p.golden ? " golden" : "") +
             (p.kind === "token" ? " token" : ""),
         );
-        b.append(
+        const tower = el("span", undefined, "tower");
+        tower.setAttribute("aria-hidden", "true");
+        for (const face of ["top", "front", "back", "left", "right"]) {
+          tower.append(
+            el(
+              "span",
+              face === "top" ? arrows[p.dir] || "·" : "",
+              "face " + face,
+            ),
+          );
+        }
+        const tag = el("span", undefined, "unit-tag");
+        tag.append(
           el("span", name(p)),
-          el("small", `#${p.uid} ${arrows[p.dir] || ""}`),
+          el(
+            "small",
+            `#${p.uid} ${arrows[p.dir] || ""}${p.items?.length ? " · 装备 " + p.items.length : ""}`,
+          ),
         );
+        b.append(tower, tag);
         b.title = JSON.stringify(p);
         b.onclick = () => detail(p);
         cell.append(b);
@@ -306,6 +326,7 @@ function board(state) {
       frag.append(cell);
     }
   container.replaceChildren(frag);
+  updateCamera();
   $("board-meta").textContent =
     `${pieces.length} 个单位 · ${stage?.name || "坐标示意图"}`;
   $("hand").replaceChildren(...(own.hand || []).map(card));
@@ -579,3 +600,104 @@ function training(raw) {
   $("metric-select").onchange = draw;
   draw();
 }
+
+const camera = {
+  yaw: -24,
+  tilt: 52,
+  zoom: 1,
+  columns: 10,
+  rows: 8,
+  flat: false,
+  suppressClickUntil: 0,
+};
+function updateCamera() {
+  const viewport = $("board-viewport"),
+    plane = $("board");
+  const width = camera.columns * 56,
+    height = camera.rows * 56;
+  const angle = (camera.yaw * Math.PI) / 180,
+    tilt = (camera.tilt * Math.PI) / 180;
+  const projectedWidth =
+    Math.abs(width * Math.cos(angle)) + Math.abs(height * Math.sin(angle));
+  const projectedHeight =
+    (Math.abs(width * Math.sin(angle)) + Math.abs(height * Math.cos(angle))) *
+      Math.cos(tilt) +
+    100;
+  const fit = Math.min(
+    (viewport.clientWidth - 40) / projectedWidth,
+    (viewport.clientHeight - 45) / projectedHeight,
+    1.35,
+  );
+  plane.style.width = width + "px";
+  plane.style.setProperty("--inverse-yaw", -camera.yaw + "deg");
+  plane.style.setProperty("--inverse-tilt", -camera.tilt + "deg");
+  plane.style.transform = `translate(-50%, -50%) rotateX(${camera.tilt}deg) rotateZ(${camera.yaw}deg) scale(${Math.max(0.12, fit) * camera.zoom})`;
+  viewport.classList.toggle("flat", camera.flat);
+  $("toggle-3d").textContent = camera.flat ? "2D" : "3D";
+  $("toggle-3d").setAttribute("aria-pressed", String(!camera.flat));
+  viewport.setAttribute(
+    "aria-label",
+    camera.flat ? "二维棋盘" : "三维棋盘，可拖动旋转",
+  );
+}
+function zoomCamera(factor) {
+  camera.zoom = Math.max(0.45, Math.min(2.5, camera.zoom * factor));
+  updateCamera();
+}
+$("zoom-in").onclick = () => zoomCamera(1.15);
+$("zoom-out").onclick = () => zoomCamera(1 / 1.15);
+$("reset-camera").onclick = () => {
+  Object.assign(camera, { yaw: -24, tilt: 52, zoom: 1 });
+  updateCamera();
+};
+$("toggle-3d").onclick = () => {
+  camera.flat = !camera.flat;
+  updateCamera();
+};
+const viewport = $("board-viewport");
+let drag = null;
+viewport.addEventListener("pointerdown", (e) => {
+  if (camera.flat || e.button !== 0) return;
+  drag = {
+    id: e.pointerId,
+    x: e.clientX,
+    y: e.clientY,
+    yaw: camera.yaw,
+    tilt: camera.tilt,
+    moved: false,
+  };
+});
+viewport.addEventListener("pointermove", (e) => {
+  if (!drag || drag.id !== e.pointerId) return;
+  const dx = e.clientX - drag.x,
+    dy = e.clientY - drag.y;
+  if (Math.hypot(dx, dy) > 4) {
+    drag.moved = true;
+    viewport.setPointerCapture(e.pointerId);
+    viewport.classList.add("dragging");
+  }
+  if (!drag.moved) return;
+  camera.yaw = (drag.yaw + dx * 0.35) % 360;
+  camera.tilt = Math.max(18, Math.min(72, drag.tilt - dy * 0.25));
+  updateCamera();
+});
+function endDrag() {
+  if (drag?.moved) camera.suppressClickUntil = performance.now() + 250;
+  drag = null;
+  viewport.classList.remove("dragging");
+}
+viewport.addEventListener("pointerup", endDrag);
+viewport.addEventListener("pointercancel", endDrag);
+viewport.addEventListener("lostpointercapture", endDrag);
+viewport.addEventListener(
+  "wheel",
+  (e) => {
+    if (camera.flat) return;
+    e.preventDefault();
+    zoomCamera(Math.exp(-e.deltaY * 0.001));
+  },
+  { passive: false },
+);
+new ResizeObserver(() => {
+  if (!$("replay").hidden) updateCamera();
+}).observe(viewport);

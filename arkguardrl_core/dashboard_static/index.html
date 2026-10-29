@@ -84,7 +84,20 @@
                 <h3>局面 / <span id="phase"></span></h3>
                 <span id="board-meta"></span>
               </div>
-              <div id="board"></div>
+              <div class="board-tools">
+                <span>拖动旋转 · 滚轮缩放 · 点击棋子</span>
+                <button id="zoom-out" aria-label="缩小棋盘">−</button>
+                <button id="zoom-in" aria-label="放大棋盘">＋</button>
+                <button id="reset-camera">复位</button>
+                <button id="toggle-3d" aria-pressed="true">3D</button>
+              </div>
+              <div
+                id="board-viewport"
+                class="board-viewport"
+                aria-label="三维棋盘，可拖动旋转"
+              >
+                <div id="board"></div>
+              </div>
               <div class="legend">
                 <i class="road"></i>通路 <i class="tile"></i>可部署
                 <i class="gold"></i>金棋 <span>坐标与朝向来自快照</span>

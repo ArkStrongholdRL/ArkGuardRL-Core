@@ -571,3 +571,232 @@ th {
 #metric-select {
   max-width: 75%;
 }
+
+/* Local CSS 3D scene: all coordinates and selection remain native DOM controls. */
+.board-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+.board-tools span {
+  margin-right: auto;
+}
+.board-tools button {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+#toggle-3d[aria-pressed="true"] {
+  border-color: #6eaa86;
+  color: var(--green);
+}
+.board-viewport {
+  height: 420px;
+  position: relative;
+  overflow: hidden;
+  perspective: 1100px;
+  background: radial-gradient(ellipse at 50% 60%, #25332e 0%, #11191e 70%);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  touch-action: none;
+  cursor: grab;
+}
+.board-viewport.dragging {
+  cursor: grabbing;
+}
+.board-viewport #board {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: 0;
+  max-width: none;
+  gap: 2px;
+  transform-style: preserve-3d;
+  transform-origin: center;
+  will-change: transform;
+}
+.board-viewport .cell {
+  transform-style: preserve-3d;
+  aspect-ratio: 1;
+  box-shadow:
+    0 3px 0 #1a2823,
+    0 4px 0 #0d1613;
+}
+.board-viewport .cell.blocked {
+  opacity: 1;
+  background: #11191e;
+  border-color: #1b272c;
+  box-shadow: none;
+}
+.board-viewport .cell .coord {
+  font-size: 8px;
+  opacity: 0.8;
+}
+.board-viewport .unit {
+  inset: 0;
+  display: block;
+  overflow: visible;
+  background: none;
+  border: 0;
+  padding: 0;
+  transform-style: preserve-3d;
+  border-radius: 0;
+  color: var(--text);
+}
+.board-viewport .tower {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  margin: -13px;
+  transform-style: preserve-3d;
+  --top: #8fceac;
+  --side: #457b61;
+  --edge: #a7ebc1;
+  pointer-events: auto;
+}
+.board-viewport .golden .tower {
+  --top: #ffe09a;
+  --side: #a07a3f;
+  --edge: #ffe9ae;
+}
+.board-viewport .token .tower {
+  --top: #a9cfff;
+  --side: #466da3;
+  --edge: #b9d7ff;
+}
+.board-viewport .face {
+  position: absolute;
+  border: 1px solid var(--edge);
+  background: var(--side);
+  backface-visibility: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 21px;
+  line-height: 1;
+  color: #193226;
+}
+.board-viewport .face.top {
+  width: 26px;
+  height: 26px;
+  background: var(--top);
+  transform: translateZ(30px);
+  box-shadow: 0 0 12px #a4dfb622;
+}
+.board-viewport .face.front,
+.board-viewport .face.back {
+  width: 26px;
+  height: 30px;
+  transform-origin: top;
+  transform: rotateX(90deg);
+}
+.board-viewport .face.front {
+  top: 26px;
+  filter: brightness(0.75);
+}
+.board-viewport .face.back {
+  top: 0;
+}
+.board-viewport .face.left,
+.board-viewport .face.right {
+  width: 30px;
+  height: 26px;
+  transform-origin: left;
+  transform: rotateY(-90deg);
+}
+.board-viewport .face.right {
+  left: 26px;
+  filter: brightness(0.85);
+}
+.board-viewport .face.left {
+  left: 0;
+}
+.board-viewport .unit-tag {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 70px;
+  margin: -16px -35px;
+  min-height: 29px;
+  background: #14211feb;
+  border: 1px solid #5c8d76;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.3;
+  padding: 3px 2px;
+  transform: translateZ(59px) rotateZ(var(--inverse-yaw))
+    rotateX(var(--inverse-tilt));
+  backface-visibility: hidden;
+  pointer-events: auto;
+  box-shadow: 0 2px 8px #0008;
+}
+.board-viewport .unit-tag span,
+.board-viewport .unit-tag small {
+  display: block;
+}
+.board-viewport .unit-tag small {
+  font-size: 8px;
+  color: #a4b9ae;
+}
+.board-viewport .golden .unit-tag {
+  border-color: var(--gold);
+  color: #ffe09a;
+  background: #30281deb;
+}
+.board-viewport .token .unit-tag {
+  border-color: #8fb4e8;
+}
+.board-viewport .unit:hover .unit-tag,
+.board-viewport .unit:focus-visible .unit-tag {
+  border-color: #fff;
+  box-shadow: 0 0 14px #a4dfb655;
+}
+.board-viewport.flat {
+  height: auto;
+  min-height: 160px;
+  perspective: none;
+  padding: 14px;
+  cursor: default;
+  touch-action: auto;
+}
+.board-viewport.flat #board {
+  position: relative;
+  top: auto;
+  left: auto;
+  transform: none !important;
+  width: 100% !important;
+}
+.board-viewport.flat .tower {
+  display: none;
+}
+.board-viewport.flat .unit-tag {
+  inset: 2px;
+  top: 2px;
+  left: 2px;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  transform: none;
+  font-size: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+@media (max-width: 650px) {
+  .board-viewport {
+    height: 340px;
+  }
+  .board-tools span {
+    width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .board-viewport #board {
+    will-change: auto;
+  }
+}
