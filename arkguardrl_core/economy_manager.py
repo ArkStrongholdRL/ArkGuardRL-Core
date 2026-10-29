@@ -37,7 +37,7 @@ def encode(decision,public,parent_logp,targets,allow_commit):
             movement.append(i)
             continue
         vector=torch.zeros(ACTION_DIM,dtype=torch.float32)
-        intent=SCHEDULES[int(decision.schedules[i])]
+        intent=SCHEDULES[int(decision.schedule_ids[i])]
         vector[KINDS.index(intent)]=1
         offer=None
         if kind=='buy':offer=shop['slots'][a['slot']]
