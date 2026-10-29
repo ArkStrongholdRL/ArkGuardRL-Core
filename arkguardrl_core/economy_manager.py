@@ -79,7 +79,7 @@ class Policy(nn.Module):
 
 
 def update(model,optimizer,episodes,*,critic_only=False,seed=681):
-    if not episodes or any(not ep[-1]['terminated'] or any(r['truncated'] for r in ep) for ep in episodes):
+    if not episodes or any(not ep or not ep[-1]['terminated'] or any(r['truncated'] for r in ep) for ep in episodes):
         raise ValueError('Only complete fresh natural manager episodes are admitted')
     rows=[]
     for episode in episodes:
