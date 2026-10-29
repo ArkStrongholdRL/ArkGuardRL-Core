@@ -10,11 +10,11 @@ from arkguardrl.features import SCHEDULES
 
 SCHEMA='arkguardrl-core/economy-and-commit-manager/v1'
 KINDS=tuple(SCHEDULES)+('commit',)
-STATE_DIM=16
+STATE_DIM=17
 ACTION_DIM=len(KINDS)+7
 
 
-def encode(decision,public,parent_logp,targets,allow_commit):
+def encode(decision,public,parent_logp,targets,allow_commit,*,prep_used):
     state=decision.state;own=state['own'];shop=own['shop']
     locations={p['uid']:(area,p) for area in ('board','hand','temp') for p in own[area] if p}
     chess=[p for _,p in locations.values() if p['kind']=='chess']
@@ -28,7 +28,8 @@ def encode(decision,public,parent_logp,targets,allow_commit):
         len(targets-board)/max(1,len(targets)),float(allow_commit),
         float(own['canReady']),shop['freeRefreshes']/5,
         sum(s is not None and s['kind']=='chess' and not s['sold']
-            and s['price']<=own['funds'] for s in shop['slots'])/6),dtype=torch.float32)
+            and s['price']<=own['funds'] for s in shop['slots'])/6,
+        prep_used/64),dtype=torch.float32)
     indices=[];logits=[];features=[];movement=[]
     for i,a in enumerate(decision.actions):
         kind=a['t'][2:]
