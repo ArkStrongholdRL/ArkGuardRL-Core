@@ -198,3 +198,11 @@ class RouteEnv(DeadlineEnv):
         if goal['revision'] != self._state['revision']:
             raise ValueError('Layout goal belongs to another decision')
         return goal
+
+    def summon_goal(self):
+        """Public token-family slots at the current deployed owner positions."""
+        self._remaining()
+        goal = self.session._request('summonGoal')['layout']
+        if goal['revision'] != self._state['revision']:
+            raise ValueError('Summon goal belongs to another decision')
+        return goal

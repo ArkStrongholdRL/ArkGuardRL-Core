@@ -120,19 +120,32 @@ function dispatch(req) {
       assertEngineHealthy();
       return {geometry:geometry(match,match.players.get(PLAYER),bot,revision)};
     }
+    case 'summonGoal':
     case 'layoutGoal': {
       assertEngineHealthy();
       const ps = match.players.get(PLAYER);
       if (match.phase !== 'PREP' || ps.ready) throw Error('Layout requires active PREP');
-      const ids = req.uids;
+      const summons = req.cmd === 'summonGoal';
+      const ids = summons ? [] : req.uids;
       if (!Array.isArray(ids) || ids.length > 12 || new Set(ids).size !== ids.length)
         throw Error('Distinct bounded layout members required');
       const board = [...ps.board.values()];
       if (req.includeReserves !== undefined && typeof req.includeReserves !== 'boolean')
         throw Error('Explicit owned/deployed layout scope required');
       const available = req.includeReserves ? ps.allChess() : board;
-      const pieces = ids.map(uid => available.find(p => p.uid === uid && p.kind === 'chess'));
+      let pieces = ids.map(uid => available.find(p => p.uid === uid && p.kind === 'chess'));
       if (pieces.some(p => !p)) throw Error('Layout members outside requested public inventory scope');
+      if (summons) {
+        const owners = new Set(board.filter(p => p.kind === 'chess').map(p => p.uid));
+        pieces = [];
+        for (const p of [...board, ...ps.hand, ...ps.temp]) {
+          if (!p || p.kind !== 'token' || !owners.has(p.ownerUid)) continue;
+          for (let i = 0; i < (p.count || 1); i++) {
+            if (pieces.length >= 48) throw Error('Summon goal exceeds bounded placement domain');
+            pieces.push({...p, uid: -(pieces.length + 1), count: 1});
+          }
+        }
+      }
       // Invoke the existing planner on an isolated read-only facade. Current
       // spawn identities/counts/routes are visible; private stat multipliers and
       // boss parts are deliberately omitted. No pool or future wave is queried.
@@ -148,9 +161,16 @@ function dispatch(req) {
       const player = Object.create(ps);
       player.m = view;
       player._botRangeRecs = new Map();
-      const occupied = new Set([...ps.board].filter(([,p]) => !ids.includes(p.uid)
-        && (!req.includeReserves || p.kind !== 'chess')).map(([key]) => key));
+      const occupied = new Set([...ps.board].filter(([,p]) => summons ? p.kind !== 'token'
+        : !ids.includes(p.uid) && (!req.includeReserves || p.kind !== 'chess')).map(([key]) => key));
       const plan = bot.planLayout(view, player, pieces, bot.LAYOUT_PARAMS, {occupied});
+      if (summons) {
+        return {layout:{schema:'arkguardrl/public-summon-layout/v1', revision,
+          positions:pieces.filter(p => plan.has(p.uid)).map(p => ({ownerUid:p.ownerUid,
+            tokenId:p.id, cell:plan.get(p.uid).split(',').map(Number), dir:plan.dirOf(p.uid)})),
+          unplaced:pieces.filter(p => !plan.has(p.uid)).map(p => ({ownerUid:p.ownerUid, tokenId:p.id})),
+          tie:'constant-half', enemy_stats:'public nominal; private spawn multipliers omitted'}};
+      }
       return {layout:{schema:'arkguardrl/public-engine-layout/v1', revision,
         positions:[...plan].map(([uid,key]) => ({uid, cell:key.split(',').map(Number), dir:plan.dirOf(uid)})),
         missing:ids.filter(uid => !plan.has(uid)), tie:'constant-half',

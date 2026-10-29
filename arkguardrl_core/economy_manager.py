@@ -14,7 +14,7 @@ STATE_DIM=17
 ACTION_DIM=len(KINDS)+7
 
 
-def encode(decision,public,parent_logp,targets,allow_commit,*,prep_used):
+def encode(decision,public,parent_logp,targets,allow_commit,*,prep_used,fold_tokens=False):
     state=decision.state;own=state['own'];shop=own['shop']
     locations={p['uid']:(area,p) for area in ('board','hand','temp') for p in own[area] if p}
     chess=[p for _,p in locations.values() if p['kind']=='chess']
@@ -34,7 +34,8 @@ def encode(decision,public,parent_logp,targets,allow_commit,*,prep_used):
     for i,a in enumerate(decision.actions):
         kind=a['t'][2:]
         area,p=locations.get(a.get('uid'),(None,None))
-        if kind=='move' and not (p and (p['kind']=='token' or area=='temp' and a['to']['area']=='hand')):
+        if kind=='move' and not (p and (p['kind']=='token' and not fold_tokens
+                                      or area=='temp' and a['to']['area']=='hand')):
             movement.append(i)
             continue
         vector=torch.zeros(ACTION_DIM,dtype=torch.float32)
