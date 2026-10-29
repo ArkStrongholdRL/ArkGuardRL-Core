@@ -131,6 +131,30 @@ def save(path,model,metadata):
         metadata=metadata),path)
 
 
+def fit_preferences(model, examples, *, steps=200, lr=.003, anchor=.1):
+    """Separate auxiliary pair labels; never admitted as on-policy PPO rows."""
+    if not examples:
+        raise ValueError('Preference examples are required')
+    optimizer = torch.optim.Adam(model.actor.parameters(), lr=lr)
+    for _ in range(steps):
+        losses = []
+        for example in examples:
+            row = example['inputs']
+            logp, _ = model(row)
+            gap = logp[example['preferred']] - logp[example['rejected']]
+            kl = (row['prior'].exp() * (row['prior'] - logp)).sum()
+            losses.append(torch.nn.functional.softplus(-gap) + anchor * kl)
+        loss = torch.stack(losses).mean()
+        if not torch.isfinite(loss):
+            raise ValueError('Nonfinite auxiliary preference loss')
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.actor.parameters(), .5, error_if_nonfinite=True)
+        optimizer.step()
+    return dict(examples=len(examples), steps=steps, loss=float(loss.detach()),
+                source='separate counterfactual preferences; no PPO admission')
+
+
 def load(path):
     p=torch.load(path,map_location='cpu',weights_only=True)
     if p['schema']!=SCHEMA:raise ValueError('Unknown economic manager contract')
