@@ -256,14 +256,23 @@ function board(state) {
   );
   height = Math.min(40, height);
   width = Math.min(40, width);
+  // A report without map data only needs the occupied/deployable coordinate area.
+  const firstRow =
+    !stage && positions.length
+      ? Math.max(0, Math.min(...positions.map((p) => p.row)) - 1)
+      : 0;
+  const firstCol =
+    !stage && positions.length
+      ? Math.max(0, Math.min(...positions.map((p) => p.col)) - 1)
+      : 0;
   const container = $("board");
-  container.style.gridTemplateColumns = `repeat(${width}, minmax(0, 1fr))`;
+  container.style.gridTemplateColumns = `repeat(${width - firstCol}, minmax(0, 1fr))`;
   const deployed = new Map(cells.map((c) => [`${c.row},${c.col}`, c]));
   const units = new Map(pieces.map((p) => [`${p.row},${p.col}`, p]));
   const frag = document.createDocumentFragment();
   const arrows = { UP: "↑", DOWN: "↓", LEFT: "←", RIGHT: "→" };
-  for (let r = 0; r < height; r++)
-    for (let c = 0; c < width; c++) {
+  for (let r = firstRow; r < height; r++)
+    for (let c = firstCol; c < width; c++) {
       const tile = stage?.tiles?.[rows[r]?.[c]];
       const type =
         tile?.buildable === "ALL" ||
