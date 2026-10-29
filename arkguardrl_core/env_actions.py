@@ -10,7 +10,7 @@ def piece_actions(state, catalog, context, *, recovery):
     own = state['own']
     if recovery and own['canReady']:
         return []
-    locations, _, cells = context
+    locations, occupied, cells = context
     terrain = {'all': 0, 'melee': 0, 'high': 0}
     for (row, col), kind in cells.items():
         bit = 1 << ((row - 9) * 9 + col - 2)
@@ -25,11 +25,14 @@ def piece_actions(state, catalog, context, *, recovery):
         if not recovery or area == 'temp':
             if kind <= 1:
                 mask = terrain[catalog.placement_class(piece)] if cells else 0
-                if kind == 1 and area != 'board':
+                if kind == 1:
                     mask = sum(1 << ((row - 9) * 9 + col - 2)
                                for row, col in cells
                                if mask & (1 << ((row - 9) * 9 + col - 2))
-                               and empty_deployment_allowed(piece, (row, col), state, catalog, context))
+                               and ((area == 'board' and (row, col) in occupied)
+                                    or empty_deployment_allowed(piece, (row, col), state, catalog, context)))
+                    # Occupied destinations retain native swap candidates:
+                    # swapping with the owner can change the legal range.
             else:
                 capability = catalog.record('item', piece['id']).get('itemType')
                 if capability not in ('EQUIP', 'MAGIC'):
