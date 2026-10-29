@@ -12,6 +12,7 @@ def main():
     dashboard = sub.add_parser('dashboard', help='Browse local trajectories and training reports')
     dashboard.add_argument('--results-root', type=Path, required=True)
     dashboard.add_argument('--engine-root', type=Path)
+    dashboard.add_argument('--vendor-root', type=Path, help='Optional existing game public/vendor directory')
     dashboard.add_argument('--port', type=int, default=8765)
     run = sub.add_parser('iterate', help='Collect explicit complete games, then update PPO with persistent workers')
     run.add_argument('--engine-root', type=Path, required=True)
@@ -48,7 +49,7 @@ def main():
     args = parser.parse_args()
     if args.command == 'dashboard':
         from .dashboard import serve
-        serve(args.results_root, args.engine_root, port=args.port)
+        serve(args.results_root, args.engine_root, port=args.port, vendor_root=args.vendor_root)
         return
     if args.command == 'identity':
         import json

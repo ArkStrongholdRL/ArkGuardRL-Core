@@ -5,10 +5,12 @@ import gzip
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
+import mimetypes
 import os
 from pathlib import Path
 import threading
-from urllib.parse import parse_qs, urlsplit
+import shutil
+from urllib.parse import parse_qs, urlsplit, unquote
 
 STATIC = Path(__file__).with_name('dashboard_static')
 MAX_JSON = 32 * 1024**2
@@ -35,13 +37,19 @@ def safe_json(value):
 
 
 class Store:
-    def __init__(self, root, engine_root=None):
+    def __init__(self, root, engine_root=None, vendor_root=None):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError('Results root must be a directory')
         self.cache = OrderedDict()
         self.lock = threading.Lock()
         self.catalog = {'names': {}, 'stages': {}}
+        self.engine_root = Path(engine_root).resolve(strict=True) if engine_root else None
+        self.vendor_root = (Path(vendor_root).resolve(strict=True) if vendor_root else
+                            self.engine_root / 'public' / 'vendor' if self.engine_root else None)
+        self.catalog['renderer'] = dict(enabled=self.engine_root is not None,
+            vendor=bool(self.vendor_root and (self.vendor_root / 'pixi.min.js').is_file()),
+            art=bool(self.engine_root and (self.engine_root / 'public' / 'assets').is_dir()))
         if engine_root:
             data = Path(engine_root) / 'data'
             for name in ('chess', 'items', 'tokens', 'bonds'):
@@ -199,6 +207,30 @@ class Store:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def engine_file(self, request_path):
+        store = self.server.store
+        if store.engine_root is None:
+            raise ValueError('Native game rendering requires --engine-root')
+        prefix, _, relative = unquote(request_path).lstrip('/').partition('/')
+        mounts = {name: store.engine_root / 'public' / name for name in ('js', 'assets', 'fonts')}
+        mounts.update(data=store.engine_root / 'data', shared=store.engine_root / 'shared', vendor=store.vendor_root)
+        root = mounts.get(prefix)
+        if root is None:
+            raise FileNotFoundError(request_path)
+        root = root.resolve()
+        path = (root / relative).resolve(strict=True)
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError('Resource outside mounted game directory')
+        # Stream external resources in place; never copy engine code or art into Core.
+        with path.open('rb') as stream:
+            self.send_response(200)
+            self.send_header('Content-Type', mimetypes.guess_type(path.name)[0] or 'application/octet-stream')
+            self.send_header('Content-Length', str(os.fstat(stream.fileno()).st_size))
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            shutil.copyfileobj(stream, self.wfile, length=256 * 1024)
+
     def send(self, value, code=200, content_type='application/json; charset=utf-8'):
         body = value if isinstance(value, bytes) else json.dumps(safe_json(value), ensure_ascii=False, allow_nan=False).encode()
         self.send_response(code)
@@ -206,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -228,9 +260,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send({k: v for k, v in doc.items() if not k.startswith('_')})
             elif url.path == '/api/frame':
                 self.send(store.frame(query.get('path', [''])[0], int(query.get('index', ['0'])[0])))
-            elif url.path in ('/', '/app.js', '/style.css'):
-                filename, mime = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}[url.path]
+            elif url.path in ('/', '/app.js', '/style.css', '/game-view.js'):
+                filename, mime = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/game-view.js': ('game-view.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}[url.path]
                 self.send((STATIC / filename).read_bytes(), content_type=mime)
+            elif (url.path == '/data/assets.json' and store.engine_root and
+                  not (store.engine_root / 'public' / 'assets').is_dir()):
+                self.send(dict(version=1, chars={}, enemies={}, tokens={}, stats={}))
+            elif (url.path in ('/data/local-assets.json', '/data/local-fx.json') and store.engine_root and
+                  not (store.engine_root / url.path.lstrip('/')).is_file()):
+                self.send(dict(version=1, source='none', groups={}))
+            elif url.path.startswith(('/js/', '/data/', '/shared/', '/vendor/', '/assets/', '/fonts/')):
+                self.engine_file(url.path)
             else:
                 self.send({'error': 'Not found'}, 404)
         except FileNotFoundError:
@@ -242,8 +282,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def serve(root, engine_root=None, host='127.0.0.1', port=8765):
-    store = Store(root, engine_root)
+def serve(root, engine_root=None, host='127.0.0.1', port=8765, vendor_root=None):
+    store = Store(root, engine_root, vendor_root)
     with ThreadingHTTPServer((host, port), Handler) as server:
         server.store = store
         print(f'Dashboard: http://{host}:{server.server_port}  results={store.root}', flush=True)
@@ -256,10 +296,11 @@ def serve(root, engine_root=None, host='127.0.0.1', port=8765):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results-root', type=Path, required=True)
-    parser.add_argument('--engine-root', type=Path, help='Optional external engine for names and schematic maps')
+    parser.add_argument('--engine-root', type=Path, help='External game installation for native rendering')
+    parser.add_argument('--vendor-root', type=Path, help='Optional existing game public/vendor directory')
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
-    serve(args.results_root, args.engine_root, port=args.port)
+    serve(args.results_root, args.engine_root, port=args.port, vendor_root=args.vendor_root)
 
 
 if __name__ == '__main__':

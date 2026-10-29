@@ -85,23 +85,19 @@
                 <span id="board-meta"></span>
               </div>
               <div class="board-tools">
-                <span>拖动旋转 · 滚轮缩放 · 点击棋子</span>
-                <button id="zoom-out" aria-label="缩小棋盘">−</button>
-                <button id="zoom-in" aria-label="放大棋盘">＋</button>
-                <button id="reset-camera">复位</button>
-                <button id="toggle-3d" aria-pressed="true">3D</button>
+                <label
+                  >地图
+                  <select id="game-stage" aria-label="轨迹地图">
+                    <option value="">记录未包含地图，请选择</option>
+                  </select></label
+                >
+                <button id="game-reset">原生视角</button>
+                <button id="game-mode">请求 3D</button>
               </div>
-              <div
-                id="board-viewport"
-                class="board-viewport"
-                aria-label="三维棋盘，可拖动旋转"
-              >
-                <div id="board"></div>
-              </div>
-              <div class="legend">
-                <i class="road"></i>通路 <i class="tile"></i>可部署
-                <i class="gold"></i>金棋 <span>坐标与朝向来自快照</span>
-              </div>
+              <div id="game-field" aria-label="game 原生棋盘"></div>
+              <p id="renderer-status" class="notice" role="status">
+                正在加载 game 渲染器…
+              </p>
               <div id="piece-detail" class="piece-detail">
                 点击棋子查看装备与属性
               </div>
