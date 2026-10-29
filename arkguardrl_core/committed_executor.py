@@ -110,3 +110,34 @@ def load(path):
         raise ValueError('Unknown executor input contract')
     model=Policy();model.load_state_dict(payload['state_dict'],strict=True)
     return model.eval(),payload['metadata']
+
+
+def execute(session, public, goal, model, *, on_transition, max_moves=24):
+    """Frozen greedy lower policy as one caller-owned macro transition.
+
+    Every native transition is reported for exact reward accumulation. The
+    return does not send Ready and task limits do not terminate the game.
+    """
+    events=[]
+    for _ in range(max_moves+1):
+        decision=session.decision()
+        owned={p['uid'] for area in ('board','hand','temp') for p in decision.state['own'][area] if p}
+        if not set(goal.poses)<=owned:return dict(status='inventory_changed',events=events)
+        features,indices=row(decision,public,goal)
+        if len(indices)==1 and goal.errors(decision.state)>0:
+            return dict(status='native_budget',events=events)
+        with torch.no_grad():index=int(model(features).argmax())
+        native=indices[index]
+        errors=goal.errors(decision.state)
+        if native is None:
+            return dict(status='complete' if errors==0 else 'premature_stop',events=events)
+        if len(events)>=max_moves:return dict(status='task_budget',events=events)
+        action=decision.actions[native]
+        result=session.step(action)
+        on_transition(decision.state,result)
+        events.append(dict(action=action,accepted=result.accepted,errors=errors,
+            actual_errors=goal.errors(result.observation)))
+        if not result.accepted:return dict(status='rejected',events=events)
+        if features[index,FIELDS.index('buffer_witness')]:goal.buffered.add(action['uid'])
+        if result.terminated or result.truncated:return dict(status='native_end',events=events)
+    return dict(status='task_budget',events=events)
