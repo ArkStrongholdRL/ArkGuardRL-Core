@@ -6,6 +6,14 @@ from .pose_tasks import positions, after_move, supported_move
 from arkguardrl.candidates import public_context
 
 
+def supported_execution_move(state, action, public, context, wanted):
+    if action['t']=='g.move' and action['to']['area']=='hand':
+        location=context[0][action['uid']]
+        return (location[0]=='board' and location[2]['kind']=='chess'
+            and action['uid'] not in wanted and state['own']['hand'][action['to']['idx']] is None)
+    return supported_move(state,action,public,context)
+
+
 class Goal:
     def __init__(self, layout):
         if layout['missing']:
@@ -15,7 +23,10 @@ class Goal:
 
     def errors(self, state, action=None):
         actual = positions(state) if action is None else after_move(state, action)
-        return sum(actual.get(uid) != at for uid, at in self.poses.items())
+        chess={p['uid'] for area in ('board','hand','temp')
+               for p in state['own'][area] if p and p['kind']=='chess'}
+        extra=len((actual.keys() & chess)-self.poses.keys())
+        return sum(actual.get(uid) != at for uid, at in self.poses.items())+extra
 
     def choose(self, decision, public):
         state = decision.state
@@ -25,7 +36,7 @@ class Goal:
             return ready, 'layout_complete'
         context = public_context(state, public)
         choices = [(before-self.errors(state,a), i) for i,a in enumerate(decision.actions)
-            if a.get('uid') in self.poses and supported_move(state,a,public,context)]
+            if supported_execution_move(state,a,public,context,self.poses)]
         progress = [(gain,i) for gain,i in choices if gain>0]
         if progress:
             return max(progress, key=lambda pair:pair[0])[1], 'layout_progress'

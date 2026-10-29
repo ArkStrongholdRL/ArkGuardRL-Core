@@ -8,9 +8,10 @@ import time
 import torch
 from torch import nn
 from .pose_tasks import positions, supported_move
+from .engine_layout import supported_execution_move
 from arkguardrl.candidates import public_context
 
-SCHEMA = 'arkguardrl-core/committed-position-executor/v1'
+SCHEMA = 'arkguardrl-core/committed-position-executor/v2'
 FIELDS = ('stop', 'complete', 'error_fraction', 'move', 'source_wanted',
           'source_missing', 'source_wrong', 'source_at_goal', 'destination_is_goal',
           'direction_correct', 'goal_progress', 'goal_regress', 'error_delta',
@@ -59,7 +60,7 @@ def teacher(decision, public, goal, indices):
         before=goal.errors(decision.state)
         best=before-goal.errors(decision.state,decision.actions[index])
         acceptable=[j for j,i in enumerate(indices) if i is not None
-            and supported_move(decision.state,decision.actions[i],public,context)
+            and supported_execution_move(decision.state,decision.actions[i],public,context,goal.poses)
             and before-goal.errors(decision.state,decision.actions[i])==best]
     else:
         acceptable=[label]
