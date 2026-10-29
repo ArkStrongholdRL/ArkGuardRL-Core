@@ -133,10 +133,11 @@ def execute(session, public, goal, model, *, on_transition, max_moves=24):
             return dict(status='complete' if errors==0 else 'premature_stop',events=events)
         if len(events)>=max_moves:return dict(status='task_budget',events=events)
         action=decision.actions[native]
+        predicted=goal.errors(decision.state,action)
         result=session.step(action)
         on_transition(decision.state,result)
         events.append(dict(action=action,accepted=result.accepted,errors=errors,
-            actual_errors=goal.errors(result.observation)))
+            predicted_errors=predicted,actual_errors=goal.errors(result.observation)))
         if not result.accepted:return dict(status='rejected',events=events)
         if features[index,FIELDS.index('buffer_witness')]:goal.buffered.add(action['uid'])
         if result.terminated or result.truncated:return dict(status='native_end',events=events)

@@ -21,7 +21,20 @@ def after_move(state, action):
     uid = action['uid']
     old = result.pop(uid, None)
     to = action['to']
+    inventory = {p['uid']: p for area in ('board', 'hand', 'temp')
+                 for p in state['own'][area] if p}
+    source = inventory[uid]
+    lifted = set()
     if to['area'] != 'board':
+        if old is not None and source['kind'] == 'chess':
+            lifted.add(uid)
+            if to['area'] == 'hand':
+                occupant = state['own']['hand'][to['idx']]
+                if occupant is not None and occupant['kind'] == 'chess':
+                    result[occupant['uid']] = old
+        for p in state['own']['board']:
+            if p['kind'] == 'token' and p['ownerUid'] in lifted:
+                result.pop(p['uid'], None)
         return result
     target = (to['row'], to['col'])
     displaced = next((other for other, at in result.items() if at[:2] == target), None)
@@ -29,7 +42,14 @@ def after_move(state, action):
         previous = result.pop(displaced)
         if old is not None:
             result[displaced] = (*old[:2], previous[2])
+        if inventory[displaced]['kind'] == 'chess':
+            lifted.add(displaced)
     result[uid] = (*target, action['dir'])
+    if source['kind'] == 'chess' and (old is None or old[:2] != target):
+        lifted.add(uid)
+    for p in state['own']['board']:
+        if p['kind'] == 'token' and p['ownerUid'] in lifted:
+            result.pop(p['uid'], None)
     return result
 
 

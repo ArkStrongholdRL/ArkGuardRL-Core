@@ -3,6 +3,7 @@
 // Engine implementation stays external; no legacy ArkGuardRL adapter is imported.
 import fs from 'node:fs';
 import {geometry, captureTeacher, ROUTE_SCHEMA} from './route_teacher.mjs';
+import {fixedAllyPlanner} from './summon_layout.mjs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -32,6 +33,7 @@ const [{ Match }, { VirtualScheduler }, { getData, DATA_FILES }, protocol, const
   imp('server/match/Match.js'), imp('server/match/scheduler.js'), imp('server/data.js'), imp('shared/protocol.js'), imp('shared/constants.js'),
 ]);
 const bot = await imp('server/match/bot.js');
+const boardApi = await imp('server/match/board.js');
 const quiet = { info() {}, debug() {}, warn() {}, error() {} };
 const data = getData({ log: quiet });
 for (const key of DATA_FILES) {
@@ -163,13 +165,19 @@ function dispatch(req) {
       player._botRangeRecs = new Map();
       const occupied = new Set([...ps.board].filter(([,p]) => summons ? p.kind !== 'token'
         : !ids.includes(p.uid) && (!req.includeReserves || p.kind !== 'chess')).map(([key]) => key));
-      const plan = bot.planLayout(view, player, pieces, bot.LAYOUT_PARAMS, {occupied});
+      let plan = bot.planLayout(view, player, pieces, bot.LAYOUT_PARAMS, {occupied});
       if (summons) {
+        if (req.fixedAllies !== undefined && typeof req.fixedAllies !== 'boolean')
+          throw Error('Explicit fixed ally scoring flag required');
+        const scored = fixedAllyPlanner(bot,boardApi,view,player,pieces,plan);
+        if (req.fixedAllies !== false) plan=scored.plan;
         return {layout:{schema:'arkguardrl/public-summon-layout/v1', revision,
           positions:pieces.filter(p => plan.has(p.uid)).map(p => ({ownerUid:p.ownerUid,
             tokenId:p.id, cell:plan.get(p.uid).split(',').map(Number), dir:plan.dirOf(p.uid)})),
           unplaced:pieces.filter(p => !plan.has(p.uid)).map(p => ({ownerUid:p.ownerUid, tokenId:p.id})),
-          tie:'constant-half', enemy_stats:'public nominal; private spawn multipliers omitted'}};
+          tie:'deterministic first maximum', scoring:scored.comparison,
+          fixedAllies:req.fixedAllies !== false,
+          enemy_stats:'public nominal; private spawn multipliers omitted'}};
       }
       return {layout:{schema:'arkguardrl/public-engine-layout/v1', revision,
         positions:[...plan].map(([uid,key]) => ({uid, cell:key.split(',').map(Number), dir:plan.dirOf(uid)})),

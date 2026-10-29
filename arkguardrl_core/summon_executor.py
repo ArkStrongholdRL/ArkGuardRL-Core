@@ -145,9 +145,9 @@ class Policy(nn.Module):
         return self.score(features).squeeze(-1).log_softmax(0)
 
 
-def execute(session, public, model, *, mode='greedy', on_transition, max_moves=24, rng=None):
+def execute(session, public, model, *, mode='greedy', on_transition, max_moves=24, rng=None, fixed_allies=True):
     state = session.result.observation
-    layout = session.environment.summon_goal()
+    layout = session.environment.summon_goal(fixed_allies=fixed_allies)
     goal = Goal(state, layout)
     events, labels = [], []
     for step in range(max_moves + 1):
