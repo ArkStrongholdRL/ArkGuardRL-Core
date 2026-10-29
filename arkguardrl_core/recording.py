@@ -1,6 +1,7 @@
 """Live environment with optional full debug traces; recording is off by default."""
 import hashlib
 import gzip
+import time
 from pathlib import Path
 
 from arkguardrl.contracts import canonical
@@ -15,6 +16,7 @@ class BufferedWriter:
                        if str(path).endswith('.gz') else self.raw_stream)
         self.previous, self.count, self.bytes = None, 0, 0
         self.closed, self.max_bytes = False, max_bytes
+        self._flushed_at = time.monotonic()
         self.append(header)
 
     def append(self, record):
@@ -29,6 +31,11 @@ class BufferedWriter:
         self.stream.write(line)
         self.previous, self.count = digest, self.count + 1
         self.bytes += len(line)
+        # Bound visibility latency for dashboard readers while debug recording.
+        if time.monotonic() - self._flushed_at >= 1.0:
+            self.stream.flush()
+            self.raw_stream.flush()
+            self._flushed_at = time.monotonic()
 
     def close(self, status, reason):
         if self.closed:

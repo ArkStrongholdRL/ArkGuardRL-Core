@@ -9,6 +9,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('identity', help='Print runtime version and Rust ABI')
+    dashboard = sub.add_parser('dashboard', help='Browse local trajectories and training reports')
+    dashboard.add_argument('--results-root', type=Path, required=True)
+    dashboard.add_argument('--engine-root', type=Path)
+    dashboard.add_argument('--port', type=int, default=8765)
     run = sub.add_parser('iterate', help='Collect explicit complete games, then update PPO with persistent workers')
     run.add_argument('--engine-root', type=Path, required=True)
     run.add_argument('--expected-data-sha256', required=True)
@@ -42,6 +46,10 @@ def main():
     run.add_argument('--collect-only', action='store_true')
     run.add_argument('--trace', action='store_true', help='Record full trajectories for debugging (off by default)')
     args = parser.parse_args()
+    if args.command == 'dashboard':
+        from .dashboard import serve
+        serve(args.results_root, args.engine_root, port=args.port)
+        return
     if args.command == 'identity':
         import json
         from .native_runtime import kernel

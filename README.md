@@ -43,4 +43,19 @@ python benchmarks/report.py artifacts/run-01 artifacts/run-02 \
 
 [运行参数](docs/RUNTIME.md) · [Rust 内核](docs/RUST-ROUTES.md) · [性能测量](benchmarks/README.md)
 
+## 本地训练观察台
+
+```sh
+python -m arkguardrl_core dashboard --results-root /path/to/results \
+  --engine-root /path/to/engine --port 8765
+```
+
+打开 `http://127.0.0.1:8765`。无需前端构建、Torch 或额外服务；只读访问指定结果目录。
+支持完整 `*.jsonl[.gz]` 轨迹逐步浏览、研究 JSON 的 Ready 棋盘/手牌快照、动作记录和指标。
+可搜索实验、拖动时间轴、按回合跳转，并每 3 秒刷新文件。`--engine-root` 可选，仅从外部
+引擎读取棋子名称和地图，不复制素材。棋盘为状态示意图，不是战斗动画。
+未记录的商店、动作概率或战斗过程不会重建；未闭合轨迹也不自动判为运行中。
+新采集要看逐步状态时加 `iterate --trace`；默认训练仍不开启完整日志。
+JSON 报告上限 32 MiB；完整轨迹单次索引上限 512 MiB 解压数据 / 50,000 帧，页面会提示截断。
+
 代码使用 GPL-3.0-or-later，来源和外部资源说明见 [NOTICE](NOTICE.md) 与 [LICENSE](LICENSE)。

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ArkGuard · Training Observatory</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <aside>
+      <a class="brand" href="/"
+        >◈ <span>ARKGUARD<small>TRAINING OBSERVATORY</small></span></a
+      >
+      <div class="aside-title">
+        实验档案 <button id="refresh" title="刷新文件">↻</button>
+      </div>
+      <input
+        id="search"
+        placeholder="搜索实验 / seed / 文件…"
+        aria-label="搜索轨迹"
+      />
+      <div id="files"></div>
+      <footer>
+        <span class="dot"></span> LOCAL · READ ONLY<br />数据保留在本机 ·
+        不启动训练
+      </footer>
+    </aside>
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">CORE / RESEARCH</div>
+          <h1>训练观察台</h1>
+        </div>
+        <label class="follow"
+          ><input id="follow" type="checkbox" /> 自动刷新 <span>3s</span></label
+        >
+      </header>
+      <div id="error" role="alert" hidden></div>
+      <div id="welcome" class="empty">
+        <div class="emblem">◈</div>
+        <h2>从一次决策，看懂一局训练</h2>
+        <p>选择左侧轨迹或研究报告，查看棋盘、经营动作和结果。</p>
+        <p class="muted">
+          完整 JSONL 支持逐步浏览；研究报告展示已记录的回合快照。
+        </p>
+      </div>
+      <section id="viewer" hidden>
+        <div class="file-heading">
+          <div>
+            <h2 id="title"></h2>
+            <p id="path"></p>
+          </div>
+          <span id="status" class="badge"></span>
+        </div>
+        <div id="stats" class="stats"></div>
+        <div id="notice" class="notice"></div>
+        <div id="charts" class="panel"></div>
+        <section id="training" class="panel" hidden>
+          <div class="panel-head">
+            <h3>训练曲线</h3>
+            <select id="metric-select" aria-label="选择训练指标"></select>
+          </div>
+          <div id="metric-chart"></div>
+        </section>
+        <section id="replay">
+          <div class="transport panel">
+            <button id="prev" aria-label="上一帧">←</button
+            ><button id="play">播放</button
+            ><button id="next" aria-label="下一帧">→</button
+            ><input
+              id="scrub"
+              type="range"
+              min="0"
+              max="0"
+              value="0"
+              aria-label="轨迹时间轴"
+            /><span id="position"></span
+            ><select id="round" aria-label="跳到回合"></select>
+          </div>
+          <div class="workspace">
+            <section class="panel arena">
+              <div class="panel-head">
+                <h3>局面 / <span id="phase"></span></h3>
+                <span id="board-meta"></span>
+              </div>
+              <div id="board"></div>
+              <div class="legend">
+                <i class="road"></i>通路 <i class="tile"></i>可部署
+                <i class="gold"></i>金棋 <span>坐标与朝向来自快照</span>
+              </div>
+              <div id="piece-detail" class="piece-detail">
+                点击棋子查看装备与属性
+              </div>
+              <h3>手牌</h3>
+              <div id="hand" class="cards"></div>
+              <h3>商店 <span id="shop-meta"></span></h3>
+              <div id="shop" class="cards"></div>
+              <div id="bonds" class="bonds"></div>
+            </section>
+            <section class="panel decisions">
+              <div class="panel-head">
+                <h3>动作记录</h3>
+                <span id="event-count"></span>
+              </div>
+              <div id="events"></div>
+              <details>
+                <summary>当前记录 JSON</summary>
+                <pre id="raw-frame"></pre>
+              </details>
+            </section>
+          </div>
+        </section>
+        <details class="panel">
+          <summary>指标 / 原始报告</summary>
+          <div id="metrics"></div>
+          <pre id="raw-doc"></pre>
+        </details>
+      </section>
+    </main>
+  </body>
+</html>

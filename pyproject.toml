@@ -25,7 +25,7 @@ namespaces = false
 [tool.setuptools.package-data]
 "arkguardrl.engine" = ["*.mjs"]
 "arkguardrl_core.routes" = ["*.mjs"]
-"arkguardrl_core" = ["native/Cargo.toml", "native/Cargo.lock", "native/src/*.rs"]
+"arkguardrl_core" = ["native/Cargo.toml", "native/Cargo.lock", "native/src/*.rs", "dashboard_static/*.html", "dashboard_static/*.css", "dashboard_static/*.js"]
 
 [[tool.setuptools-rust.ext-modules]]
 target = "arkguardrl_core._rust_routes"
