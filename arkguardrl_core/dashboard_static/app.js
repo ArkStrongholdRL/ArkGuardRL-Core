@@ -178,6 +178,11 @@ async function load(path, following = false) {
       typeof doc.status === "string" ? doc.status : JSON.stringify(doc.status);
     $("notice").textContent =
       `${doc.precision} · ${doc.format === "native" ? "状态快照浏览，不含逐帧战斗动画" : "仅展示文件实际记录的数据，不补造中间局面"}${doc.warning ? " · " + doc.warning : ""}${doc.format === "native" && !Object.keys(doc.footer).length ? " · 未闭合不等于正在训练" : ""}`;
+    for (const related of doc.related || []) {
+      const button = el("button", related.label);
+      button.onclick = () => load(related.path);
+      $("notice").append(" ", button);
+    }
     $("replay").hidden = !doc.timeline.length;
     if (!doc.timeline.length)
       import("/game-view.js").then((module) => module.clear());
@@ -291,6 +296,8 @@ function events(frame) {
       );
     if (e.forced) meta.push(`干预：${e.forced}`);
     if (e.status) meta.push(e.status);
+    if (e.source) meta.push(e.source);
+    if (e.stop) meta.push("STOP");
     if (e.hp_loss !== undefined) meta.push(`本战掉血 ${e.hp_loss}`);
     n.append(el("div", meta.join(" · "), "meta"));
     root.append(n);

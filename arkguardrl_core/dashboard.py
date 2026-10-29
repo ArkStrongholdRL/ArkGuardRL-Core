@@ -170,12 +170,45 @@ class Store:
         raw = read_json(path)
         if not isinstance(raw, dict):
             return dict(format='metrics', precision='JSON 数据', status='报告', timeline=[], raw=raw)
-        timeline = []
+        timeline, frames, related = [], [], []
+        source, source_path = raw, None
+        is_case = isinstance(raw.get('own'), dict) and 'control_choice' in raw
+        if is_case:
+            # A case is one diagnostic observation, not an episode. Join only an
+            # unambiguous report with the explicit same seed, decoder and policy.
+            for model, label in [('initial', '原策略整局'), (raw.get('endpoint'), '训练后整局')]:
+                filename = f"{model}-{raw.get('decoder')}-{raw.get('seed')}.json"
+                matches = [entry['path'] for entry in self.files()['files']
+                           if Path(entry['path']).name == filename]
+                if len(matches) != 1:
+                    continue
+                candidate = read_json(self.path(matches[0]))
+                if (candidate.get('seed') != raw.get('seed') or
+                        candidate.get('decoder') != raw.get('decoder') or
+                        not isinstance(candidate.get('ready'), list)):
+                    continue
+                related.append(dict(label=label, path=matches[0]))
+                if model == raw.get('endpoint'):
+                    source, source_path = candidate, matches[0]
+            if source_path:
+                frames = self.ready_frames(source)
+            diagnostic = dict(state=dict(round=raw.get('round'), phase='DECISION',
+                own=raw['own'], public={'stageId': source.get('stage')}), record=raw,
+                events=[dict(round=raw.get('round'), kind='首次分歧',
+                             action=raw['control_choice'].get('action'))])
+            before = next((i for i, frame in enumerate(frames)
+                           if frame['state']['round'] >= raw.get('round', 0)), len(frames))
+            frames.insert(before, diagnostic)
+        elif isinstance(raw.get('ready'), list):
+            frames = self.ready_frames(raw)
+        for frame in frames:
+            state = frame['state']
+            own = state['own']
+            timeline.append(dict(round=state.get('round'), phase=state.get('phase'),
+                hp=own.get('lp'), funds=own.get('funds'), kind='case' if state['phase'] == 'DECISION' else 'ready',
+                hp_loss=frame['record'].get('hp_loss')))
         ready = raw.get('ready')
-        if isinstance(ready, list):
-            timeline = [dict(round=r.get('round'), phase='READY', hp=r.get('hp'), funds=r.get('funds'),
-                             hp_loss=r.get('hp_loss'), kind='ready') for r in ready if isinstance(r, dict)]
-        elif isinstance(raw.get('own'), dict):
+        if not frames and isinstance(raw.get('own'), dict):
             timeline = [dict(round=raw.get('round'), phase='DECISION', hp=raw.get('hp'), funds=raw.get('funds'), kind='case')]
         if raw.get('truncated'):
             status = '预算截断'
@@ -183,8 +216,32 @@ class Store:
             status = '自然结束'
         else:
             status = raw.get('status', raw.get('state', '报告'))
-        return dict(format='report' if timeline else 'metrics', precision='每轮 Ready 快照' if ready else '决策快照' if timeline else '指标 / 汇总',
-                    status=status, timeline=timeline, raw=raw)
+        return dict(format='report' if timeline else 'metrics', precision='整局 Ready 快照＋首次分歧' if source_path else '每轮 Ready 快照' if ready else '决策快照' if timeline else '指标 / 汇总',
+                    status='首次分歧诊断' if is_case else status, timeline=timeline, raw=raw,
+                    related=related, _frames=frames, source_path=source_path,
+                    warning=(f'已关联训练后整局报告：{source_path}。时间轴包含各轮 Ready 快照和分歧前状态；动作日志不等于逐动作状态。'
+                             if source_path else '这是一张诊断快照，尚无可唯一关联的整局报告。' if is_case else None))
+
+    def ready_frames(self, raw):
+        frames = []
+        for ready in raw.get('ready', []):
+            if not isinstance(ready, dict):
+                continue
+            round_number = ready.get('round')
+            events = []
+            commits = iter(c for c in raw.get('commits', []) if c.get('round') == round_number)
+            for event in raw.get('events', []):
+                if event.get('round') != round_number:
+                    continue
+                events.append(event)
+                if event.get('kind') == 'commit':
+                    commit = next(commits, {})
+                    events.extend(dict(e, round=round_number, source='棋子执行器') for e in commit.get('events', []))
+                    events.extend(dict(e, round=round_number, source='召唤物执行器') for e in (commit.get('summons') or {}).get('events', []))
+            frames.append(dict(state=dict(round=round_number, phase='READY',
+                own={**ready, 'lp': ready.get('hp')}, public={'stageId': raw.get('stage')}),
+                record=ready, events=events))
+        return frames
 
     def frame(self, relative, index):
         doc = self.document(relative)
@@ -199,6 +256,8 @@ class Store:
             record = envelope.get('record', envelope)
             return dict(state=record.get('after') or record.get('state'), record=record)
         raw = doc['raw']
+        if doc.get('_frames'):
+            return doc['_frames'][index]
         if isinstance(raw.get('ready'), list):
             ready = [r for r in raw['ready'] if isinstance(r, dict)][index]
             return dict(state=dict(round=ready.get('round'), phase='READY', own={**ready, 'lp': ready.get('hp')}, public={'stageId': raw.get('stage')}),
