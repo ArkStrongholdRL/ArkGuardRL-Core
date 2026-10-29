@@ -131,7 +131,8 @@ def save(path,model,metadata):
         metadata=metadata),path)
 
 
-def fit_preferences(model, examples, *, steps=200, lr=.003, anchor=.1):
+def fit_preferences(model, examples, *, steps=200, lr=.003, anchor=.1,
+                    preservation=(), preservation_weight=1.):
     """Separate auxiliary pair labels; never admitted as on-policy PPO rows."""
     if not examples:
         raise ValueError('Preference examples are required')
@@ -145,13 +146,20 @@ def fit_preferences(model, examples, *, steps=200, lr=.003, anchor=.1):
             kl = (row['prior'].exp() * (row['prior'] - logp)).sum()
             losses.append(torch.nn.functional.softplus(-gap) + anchor * kl)
         loss = torch.stack(losses).mean()
+        if preservation:
+            preservation_losses = []
+            for row in preservation:
+                logp, _ = model(row)
+                preservation_losses.append((row['prior'].exp() * (row['prior'] - logp)).sum())
+            loss = loss + preservation_weight * torch.stack(preservation_losses).mean()
         if not torch.isfinite(loss):
             raise ValueError('Nonfinite auxiliary preference loss')
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(model.actor.parameters(), .5, error_if_nonfinite=True)
         optimizer.step()
-    return dict(examples=len(examples), steps=steps, loss=float(loss.detach()),
+    return dict(examples=len(examples), preservation=len(preservation),
+                preservation_weight=preservation_weight, steps=steps, loss=float(loss.detach()),
                 source='separate counterfactual preferences; no PPO admission')
 
 
