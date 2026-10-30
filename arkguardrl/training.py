@@ -10,7 +10,7 @@ import re
 from typing import ClassVar
 
 from .contracts import ACTION_SCHEMA, action_id, canonical, decision_id, fingerprint
-from .engine.session import ENGINE_REVISION
+from .engine.session import ENGINE_REVISION, ENGINE_VERSION
 from .environment import ENV_SCHEMA, Transition as EnvironmentTransition
 from .observation import SCHEMA as OBSERVATION_SCHEMA, validate_state
 
@@ -93,7 +93,7 @@ class TrainingContract:
     definition_sha256: str
     gamma: float = 1.0
     discount_unit: str = "decision"
-    app_version: str = "0.3.1"
+    app_version: str = ENGINE_VERSION
     environment_schema: str = ENV_SCHEMA
     schema: str = CONTRACT_SCHEMA
 
@@ -103,8 +103,11 @@ class TrainingContract:
                      "history_schema", "difficulty"):
             _text(getattr(self, name), name)
         _digest(self.data_sha256, "data_sha256")
-        required = {"engine_revision": ENGINE_REVISION, "app_version": "0.3.1",
-                    "observation_schema": OBSERVATION_SCHEMA, "action_schema": ACTION_SCHEMA,
+        known_engines = {ENGINE_REVISION: ENGINE_VERSION,
+                         "c9d804f470b8d7422ae04eb66faf671cef21ad52": "0.3.1"}
+        if known_engines.get(self.engine_revision) != self.app_version:
+            raise ValueError("Unsupported native engine identity")
+        required = {"observation_schema": OBSERVATION_SCHEMA, "action_schema": ACTION_SCHEMA,
                     "environment_schema": ENV_SCHEMA, "schema": CONTRACT_SCHEMA,
                     "discount_unit": "decision"}
         if any(getattr(self, name) != value for name, value in required.items()):

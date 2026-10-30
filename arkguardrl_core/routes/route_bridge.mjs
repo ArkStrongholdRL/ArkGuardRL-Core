@@ -1,5 +1,5 @@
 // Standalone experimental extension of the native bridge.
-// Independent native-intent bridge for the frozen Stronghold Protocol 0.3.1 engine.
+// Independent native-intent bridge for the frozen Stronghold Protocol 0.3.3 engine.
 // Engine implementation stays external; no legacy ArkGuardRL adapter is imported.
 import fs from 'node:fs';
 import {geometry, captureTeacher, ROUTE_SCHEMA} from './route_teacher.mjs';
@@ -12,15 +12,15 @@ import readline from 'node:readline';
 
 if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node 22+ required');
 
-const REVISION = 'c9d804f470b8d7422ae04eb66faf671cef21ad52';
+const REVISION = '41bbca5712ac08394bbc4d5b4e3411c6be1634b6';
 const SCHEMA = 'arkguardrl/native-session-v2';
 const PLAYER = 'agent';
 const root = fs.realpathSync(process.argv[2]);
 const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
-if (git('rev-parse', 'HEAD') !== REVISION) throw new Error('Expected frozen 0.3.1 engine revision');
+if (git('rev-parse', 'HEAD') !== REVISION) throw new Error('Expected frozen 0.3.3 engine revision');
 if (git('status', '--porcelain', '--untracked-files=all')) throw new Error('Engine checkout must be clean');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-if (pkg.version !== '0.3.1') throw new Error('Expected engine app version 0.3.1');
+if (pkg.version !== '0.3.3') throw new Error('Expected engine app version 0.3.3');
 const digest = createHash('sha256');
 for (const name of fs.readdirSync(path.join(root, 'data')).filter(n => n.endsWith('.json')).sort()) {
   digest.update(name + '\0');

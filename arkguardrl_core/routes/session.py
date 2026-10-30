@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 
-from arkguardrl.engine.session import NativeSession, ENGINE_REVISION
+from arkguardrl.engine.session import NativeSession, ENGINE_REVISION, ENGINE_VERSION
 from arkguardrl.observation import SCHEMA
 from ..environment import DeadlineEnv
 
@@ -44,7 +44,7 @@ class RouteSession(NativeSession):
             self.identity = self._request('identity')['identity']
             if (self.identity.get('schema') != SCHEMA
                     or self.identity.get('engineRevision') != ENGINE_REVISION
-                    or self.identity.get('appVersion') != '0.3.1'):
+                    or self.identity.get('appVersion') != ENGINE_VERSION):
                 raise ValueError('Engine identity mismatch')
             if (self.expected_data_sha256 is not None
                     and self.identity['dataSha256'] != self.expected_data_sha256):

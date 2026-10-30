@@ -13,7 +13,7 @@ python -m pip install -e '.[vector]'
 ```
 
 游戏引擎和数据单独准备：[Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol)，
-版本 `c9d804f470b8d7422ae04eb66faf671cef21ad52`（app 0.3.1）。
+版本 `41bbca5712ac08394bbc4d5b4e3411c6be1634b6`（app 0.3.3）。
 本仓库不包含引擎素材、数据、权重或轨迹。
 
 ## 性能采集
