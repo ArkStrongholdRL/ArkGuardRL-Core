@@ -66,8 +66,8 @@ def _write_json(path, value):
 def _setup_torch(*, device="cpu", threads=1, seed=0):
     neural = _modules()[3]
     neural.device_name(device)
-    if type(threads) is not int or threads not in (1, 2):
-        raise ValueError("Use one or two Torch CPU threads")
+    if type(threads) is not int or threads not in (1, 2, 4):
+        raise ValueError("Use one, two or four Torch CPU threads")
     if type(seed) is not int or not 0 <= seed <= 0xffffffff:
         raise ValueError("Explicit uint32 training RNG seed required")
     neural.torch.set_num_threads(threads)
