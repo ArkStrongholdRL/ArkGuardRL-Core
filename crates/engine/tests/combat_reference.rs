@@ -30,9 +30,10 @@ struct Host {
     d: Value,
     trace: Vec<Value>,
     index: Option<Index>,
+    enemies: Vec<u64>,
     stored: u32,
     executor: Option<attacks::Executor>,
-    flights: Option<System<(u64, u64, attacks::Direct)>>,
+    flights: Option<System<(u64, u64, attacks::Direct, attacks::Area)>>,
     effects: Option<Effects>,
     rng: Rng,
 }
@@ -41,10 +42,7 @@ impl Host {
         let e = w.unit_mut(2)?;
         e.position = [10.0, if inside { 6.0 } else { 8.0 }];
         e.deployment.tile = [10, if inside { 6 } else { 8 }];
-        self.index
-            .as_mut()
-            .unwrap()
-            .rebuild(w, if self.d["healer"] == true { &[] } else { &[2] })
+        self.index.as_mut().unwrap().rebuild(w, &self.enemies)
     }
     fn base_profile(&self) -> AttackProfile {
         AttackProfile {
@@ -248,6 +246,29 @@ impl ally::Host for Host {
             heal_scale: 1.0,
             is_skill: used,
         };
+        let area = attacks::Area {
+            splash: if self.d["splash"] == true {
+                Some(attacks::Splash {
+                    radius: 1.5,
+                    scale: 0.7,
+                    hits_fly: false,
+                    fortress_melee: false,
+                })
+            } else {
+                None
+            },
+            chain: if self.d["chain"] == true {
+                Some(attacks::Chain {
+                    count: 4.0,
+                    radius: 1.7,
+                    falloff: 0.15,
+                    sluggish: 0.0,
+                })
+            } else {
+                None
+            },
+            ..Default::default()
+        };
         let mut executor = self.executor.take().ok_or("Reentrant test executor")?;
         let result = if self.d["ranged"] == true && self.d["healer"] != true {
             let Some(prepared) = executor.prepare(w, self, id, &selected.targets, payload)? else {
@@ -267,25 +288,55 @@ impl ally::Host for Host {
                             target: Some(target),
                             to: None,
                             speed: 14.0,
-                            hit_dead: false,
+                            hit_dead: area.splash.is_some(),
                             max_age: 10.0,
                             on_hit: true,
                             visual: "arrow".into(),
                             speed_changeable: None,
                             removable: None,
-                            payload: (id, prepared.attack_id, payload),
+                            payload: (id, prepared.attack_id, payload, area),
                         },
                     )?;
             }
             executor.finish(w, self, prepared, skill)
         } else {
-            executor.perform(w, self, id, &selected.targets, payload, skill)
+            executor.perform_area(w, self, id, &selected.targets, payload, area, skill)
         };
         self.executor = Some(executor);
         result
     }
 }
 impl attacks::Hooks for Host {
+    fn radius_targets(
+        &mut self,
+        origin: [f64; 2],
+        radius: f64,
+        splash: bool,
+        w: &mut World,
+        limit: usize,
+    ) -> Result<Vec<u64>, String> {
+        let enemies = self.enemies.clone();
+        spatial::enemies_in_radius(
+            w,
+            self,
+            &enemies,
+            origin,
+            radius,
+            if splash {
+                spatial::RadiusRule::Centre
+            } else {
+                spatial::RadiusRule::Body
+            },
+            splash,
+            limit,
+        )
+    }
+    fn chain_link(&mut self, _: u64, _: u64, _: &mut World) -> Result<(), String> {
+        Ok(())
+    }
+    fn sluggish(&mut self, _: u64, _: u64, _: f64, _: &mut World) -> Result<(), String> {
+        Err("Fixture has no status handler".into())
+    }
     fn has_before_attack(&self) -> bool {
         false
     }
@@ -340,33 +391,35 @@ struct FlightHost<'a> {
     host: &'a mut Host,
     skill: &'a mut Runtime,
 }
-impl projectiles::Hooks<(u64, u64, attacks::Direct)> for FlightHost<'_> {
+impl projectiles::Hooks<(u64, u64, attacks::Direct, attacks::Area)> for FlightHost<'_> {
     fn has_step(&self) -> bool {
         false
     }
     fn step(
         &mut self,
-        _: &mut Projectile<(u64, u64, attacks::Direct)>,
-        _: &mut System<(u64, u64, attacks::Direct)>,
+        _: &mut Projectile<(u64, u64, attacks::Direct, attacks::Area)>,
+        _: &mut System<(u64, u64, attacks::Direct, attacks::Area)>,
         _: &mut World,
     ) -> Result<bool, String> {
         Ok(false)
     }
     fn impact(
         &mut self,
-        p: &mut Projectile<(u64, u64, attacks::Direct)>,
+        p: &mut Projectile<(u64, u64, attacks::Direct, attacks::Area)>,
         target: Option<u64>,
-        _: &mut System<(u64, u64, attacks::Direct)>,
+        _: &mut System<(u64, u64, attacks::Direct, attacks::Area)>,
         w: &mut World,
     ) -> Result<(), String> {
         let mut executor = self.host.executor.take().unwrap();
-        let result = executor.impact(
+        let result = executor.impact_at(
             w,
             self.host,
             p.payload.0,
             target,
             p.payload.1,
             p.payload.2,
+            p.payload.3,
+            p.position,
             Some(self.skill),
         );
         self.host.executor = Some(executor);
@@ -387,7 +440,7 @@ fn native_composition_matches_continuous_attacks() {
     for line in BufReader::new(child.stdout.take().unwrap()).lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
         let d = &v["scenario"];
-        let mut w = World::new(2, 1, 1).unwrap();
+        let mut w = World::new(6, 1, 1).unwrap();
         let mut base = Base::default();
         for (k, x) in [("maxHp", 1000.0), ("atk", 80.0), ("bat", 0.2)] {
             base.0.insert(k.into(), x);
@@ -419,6 +472,27 @@ fn native_composition_matches_continuous_attacks() {
         e.deployment.tile = [10, 6];
         e.targeting.spawn_seq = 1;
         w.insert_unit(2, e).unwrap();
+        let mut enemies = if d["healer"] == true { vec![] } else { vec![2] };
+        let mut extra_ids = vec![];
+        if d["i"].as_u64().unwrap() >= 24 && d["healer"] != true {
+            for j in 0..4 {
+                let mut base = Base::default();
+                base.0.insert(
+                    "maxHp".into(),
+                    if d["dead"] == true { 500.0 } else { 100000.0 },
+                );
+                base.0.insert("def".into(), 20.0);
+                let mut e = Unit::new(UnitStats::new(base), Side::Enemy);
+                e.position = [10.0, 6.8 + j as f64 * 0.6];
+                e.motion_fly = j % 2 == 1;
+                e.deployed = true;
+                e.targeting.spawn_seq = j + 2;
+                let id = j + 3;
+                w.insert_unit(id, e).unwrap();
+                enemies.push(id);
+                extra_ids.push(id);
+            }
+        }
         let bank = Bank::new(
             1,
             match d["kind"].as_str().unwrap() {
@@ -444,7 +518,8 @@ fn native_composition_matches_continuous_attacks() {
         let mut h = Host {
             d: d.clone(),
             trace: vec![],
-            index: Some(Index::new(2, 128).unwrap()),
+            index: Some(Index::new(6, 256).unwrap()),
+            enemies,
             stored: 0,
             executor: Some(attacks::Executor::new(8, 8).unwrap()),
             flights: Some(System::new(128).unwrap()),
@@ -510,7 +585,7 @@ fn native_composition_matches_continuous_attacks() {
             let atk = w.unit_mut(1).unwrap().stats.stats().unwrap().n("atk");
             let u = w.unit(1).unwrap();
             let e = w.unit(2).unwrap();
-            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
+            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
         }
         for (tick, (a, b)) in states
             .iter()
@@ -526,5 +601,5 @@ fn native_composition_matches_continuous_attacks() {
         count += 1;
     }
     assert!(child.wait().unwrap().success());
-    assert_eq!(count, 24);
+    assert_eq!(count, 48);
 }

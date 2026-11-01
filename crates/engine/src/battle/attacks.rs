@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Main-target payload path of ai.js performAttack/resolveHit/doHeal.
+// Payload path of ai.js performAttack/resolveHit/doHeal.
 // Projectile delivery uses prepare -> impact callback -> finish; finish follows
-// launch, not arrival. Splash/chain/profession payloads need separate dispatch.
+// launch, not arrival. Profession-specific payloads need separate dispatch.
 use super::{
     damage::{Damage, DamageType, Penetration},
     health::{self, HealOptions, Hit, Id, Side, World},
     hit::Request,
     skills::Runtime,
+    targeting::{self, Profile, Queries},
 };
+use crate::deterministic::math::{hypot, powi};
 #[derive(Clone, Copy, Debug)]
 pub enum Mode {
     Damage(DamageType),
@@ -24,6 +26,34 @@ pub struct Direct {
     pub heal_scale: f64,
     pub is_skill: bool,
 }
+#[derive(Clone, Copy, Debug)]
+pub struct Splash {
+    pub radius: f64,
+    pub scale: f64,
+    pub hits_fly: bool,
+    pub fortress_melee: bool,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct Chain {
+    /// Total victims including the main target. Fractional counts follow JS loop semantics.
+    pub count: f64,
+    pub radius: f64,
+    pub falloff: f64,
+    pub sluggish: f64,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Area {
+    pub splash: Option<Splash>,
+    pub chain: Option<Chain>,
+    pub fortress_melee: bool,
+    pub selection: Profile,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VictimKind {
+    Main,
+    Splash,
+    Chain,
+}
 #[derive(Clone, Debug)]
 pub struct Context {
     pub attacker: Id,
@@ -39,17 +69,37 @@ pub struct Impact {
     pub amount: f64,
     pub is_skill: bool,
     pub heal: bool,
+    pub kind: VictimKind,
+    pub main: Option<Id>,
+    pub position: [f64; 2],
 }
 pub struct Prepared {
     pub context: Context,
     pub attack_id: u64,
     pub payload: Direct,
 }
-pub trait Hooks: super::skills::Hooks + health::Hooks {
+pub trait Hooks: super::skills::Hooks + health::Hooks + Queries {
     fn has_before_attack(&self) -> bool;
     fn before_attack(&mut self, c: &mut Context, w: &mut World) -> Result<(), String>;
     fn engage(&mut self, id: Id, w: &mut World) -> Result<(), String>;
     fn damage(&mut self, w: &mut World, request: &mut Request) -> Result<f64, String>;
+    /// Raw body-radius or selectable centre-radius query, in battle enemy order.
+    fn radius_targets(
+        &mut self,
+        origin: [f64; 2],
+        radius: f64,
+        splash: bool,
+        w: &mut World,
+        limit: usize,
+    ) -> Result<Vec<Id>, String>;
+    fn chain_link(&mut self, from: Id, to: Id, w: &mut World) -> Result<(), String>;
+    fn sluggish(
+        &mut self,
+        source: Id,
+        target: Id,
+        duration: f64,
+        w: &mut World,
+    ) -> Result<(), String>;
     fn each_hit(
         &mut self,
         impact: Impact,
@@ -169,9 +219,57 @@ impl Executor {
         target: Option<Id>,
         attack_id: u64,
         p: Direct,
+        skill: Option<&mut Runtime>,
+    ) -> Result<(), String> {
+        let position = match target {
+            Some(id) => w.unit(id)?.position,
+            None => [0.0, 0.0],
+        };
+        self.impact_at(
+            w,
+            h,
+            id,
+            target,
+            attack_id,
+            p,
+            Area::default(),
+            position,
+            skill,
+        )
+    }
+    pub fn impact_at<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        id: Id,
+        target: Option<Id>,
+        attack_id: u64,
+        p: Direct,
+        area: Area,
+        mut position: [f64; 2],
         mut skill: Option<&mut Runtime>,
     ) -> Result<(), String> {
         self.validate(p)?;
+        if let Some(chain) = area.chain {
+            // k < count: a fractional count may produce ceil(count) victims.
+            let count = if chain.count == 0.0 {
+                3.0
+            } else {
+                chain.count.max(1.0)
+            };
+            if !chain.count.is_finite()
+                || count.ceil() > self.max_targets as f64
+                || count.ceil() > i32::MAX as f64
+            {
+                return Err("Chain victim capacity exceeded; no jumps dropped".into());
+            }
+            if !chain.falloff.is_finite()
+                || !chain.radius.is_finite()
+                || !chain.sluggish.is_finite()
+            {
+                return Err("Invalid chain parameters".into());
+            }
+        }
         let (atk, atk_mul) = {
             let s = w.unit_mut(id)?.stats.stats().map_err(str::to_string)?;
             (s.n("atk"), s.n("atkScaleMul"))
@@ -231,10 +329,143 @@ impl Executor {
                             amount: total,
                             is_skill: p.is_skill,
                             heal: false,
+                            kind: VictimKind::Main,
+                            main: Some(target),
+                            position,
                         },
                         skill.as_deref_mut(),
                         w,
                     )?;
+                    position = w.unit(target)?.position;
+                }
+                if let Some(splash) = area
+                    .splash
+                    .filter(|s| s.radius > 0.0 && (!area.fortress_melee || s.fortress_melee))
+                {
+                    let victims =
+                        h.radius_targets(position, splash.radius, true, w, self.max_targets)?;
+                    if victims.len() > self.max_targets {
+                        return Err("Splash victim capacity exceeded".into());
+                    }
+                    for victim in victims {
+                        if Some(victim) == target {
+                            continue;
+                        }
+                        let u = w.unit_mut(victim)?;
+                        let flying = u
+                            .stats
+                            .is_flying(u.side == Side::Enemy, u.motion_fly)
+                            .map_err(str::to_string)?;
+                        if area.selection.ground_only && flying
+                            || !area.selection.can_hit_fly && flying && !splash.hits_fly
+                            || u.stats
+                                .stats()
+                                .map_err(str::to_string)?
+                                .flags
+                                .contains("untargetable")
+                        {
+                            continue;
+                        }
+                        let amount = atk * scale * splash.scale * p.skill_damage_mul;
+                        let mut r = single_hit(id, victim, attack_id, kind, amount, p.is_skill);
+                        r.is_splash = true;
+                        let dealt = h.damage(w, &mut r)?;
+                        total += dealt;
+                        h.each_hit(
+                            Impact {
+                                attacker: id,
+                                target: Some(victim),
+                                attack_id,
+                                amount: dealt,
+                                is_skill: p.is_skill,
+                                heal: false,
+                                kind: VictimKind::Splash,
+                                main: target,
+                                position,
+                            },
+                            skill.as_deref_mut(),
+                            w,
+                        )?;
+                    }
+                }
+                if let (Some(chain), Some(main)) = (area.chain, target) {
+                    let mut seen = vec![main];
+                    let mut prev = main;
+                    let n = if chain.count == 0.0 {
+                        3.0
+                    } else {
+                        chain.count.max(1.0)
+                    };
+                    let radius = if chain.radius == 0.0 {
+                        1.7
+                    } else {
+                        chain.radius
+                    };
+                    let mut k = 1;
+                    while (k as f64) < n {
+                        let origin = w.unit(prev)?.position;
+                        let candidates =
+                            h.radius_targets(origin, radius, false, w, self.max_targets)?;
+                        if candidates.len() > self.max_targets {
+                            return Err("Chain candidate capacity exceeded".into());
+                        }
+                        let mut best = None;
+                        let mut bd = f64::INFINITY;
+                        for e in candidates {
+                            if seen.contains(&e)
+                                || !targeting::can_target_enemy(w, h, Some(id), e, area.selection)?
+                            {
+                                continue;
+                            }
+                            let [y, x] = w.unit(e)?.position;
+                            let d = hypot(x - origin[1], y - origin[0]);
+                            let earlier = match best {
+                                Some(old) => {
+                                    w.unit(e)?.targeting.spawn_seq
+                                        < w.unit(old)?.targeting.spawn_seq
+                                }
+                                None => false,
+                            };
+                            if d < bd - 1e-9 || (d - bd).abs() <= 1e-9 && earlier {
+                                bd = d;
+                                best = Some(e);
+                            }
+                        }
+                        let Some(victim) = best else {
+                            break;
+                        };
+                        seen.push(victim);
+                        h.chain_link(prev, victim, w)?;
+                        let amount =
+                            atk * scale * p.skill_damage_mul * powi(1.0 - chain.falloff, k)?;
+                        let mut r = single_hit(id, victim, attack_id, kind, amount, p.is_skill);
+                        r.tags.push("chain".into());
+                        let dealt = h.damage(w, &mut r)?;
+                        total += dealt;
+                        if chain.sluggish != 0.0 && w.unit(victim)?.stats.alive {
+                            h.sluggish(id, victim, chain.sluggish, w)?;
+                        }
+                        h.each_hit(
+                            Impact {
+                                attacker: id,
+                                target: Some(victim),
+                                attack_id,
+                                amount: dealt,
+                                is_skill: p.is_skill,
+                                heal: false,
+                                kind: VictimKind::Chain,
+                                main: target,
+                                position,
+                            },
+                            skill.as_deref_mut(),
+                            w,
+                        )?;
+                        prev = victim;
+                        k += 1;
+                    }
+                    if chain.sluggish != 0.0 && w.unit(main)?.stats.alive {
+                        h.sluggish(id, main, chain.sluggish, w)?;
+                    }
                 }
                 (total, false)
             }
@@ -247,6 +478,9 @@ impl Executor {
                 amount,
                 is_skill: p.is_skill,
                 heal,
+                kind: VictimKind::Main,
+                main: target,
+                position,
             },
             skill,
             w,
@@ -274,22 +508,68 @@ impl Executor {
         id: Id,
         targets: &[Id],
         p: Direct,
+        skill: Option<&mut Runtime>,
+    ) -> Result<(), String> {
+        self.perform_area(w, h, id, targets, p, Area::default(), skill)
+    }
+    pub fn perform_area<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        id: Id,
+        targets: &[Id],
+        p: Direct,
+        area: Area,
         mut skill: Option<&mut Runtime>,
     ) -> Result<(), String> {
         let Some(prepared) = self.prepare(w, h, id, targets, p)? else {
             return Ok(());
         };
         for &target in &prepared.context.targets {
-            self.impact(
+            let position = w.unit(target)?.position;
+            self.impact_at(
                 w,
                 h,
                 id,
                 Some(target),
                 prepared.attack_id,
                 p,
+                area,
+                position,
                 skill.as_deref_mut(),
             )?;
         }
         self.finish(w, h, prepared, skill)
     }
+}
+fn single_hit(
+    source: Id,
+    target: Id,
+    attack_id: u64,
+    kind: DamageType,
+    amount: f64,
+    is_skill: bool,
+) -> Request {
+    let mut r = Request::new(
+        Hit {
+            target,
+            source: Some(source),
+            credit: Some(source),
+            damage_type: kind,
+            no_sp: false,
+            silent: false,
+            hp_loss: false,
+            on_applied: false,
+        },
+        Damage {
+            amount,
+            mul: 1.0,
+            penetration: Penetration::default(),
+            resolved: false,
+        },
+    );
+    r.attack_id = Some(attack_id);
+    r.is_attack = true;
+    r.is_skill = is_skill;
+    r
 }
