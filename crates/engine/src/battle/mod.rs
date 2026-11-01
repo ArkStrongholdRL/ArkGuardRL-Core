@@ -3,6 +3,7 @@
 pub mod ally;
 pub mod attacks;
 pub mod blocking;
+pub mod body;
 pub mod cadence;
 pub mod clock;
 pub mod damage;
@@ -16,5 +17,6 @@ pub mod projectiles;
 pub mod search;
 pub mod skills;
 pub mod sp;
+pub mod spatial;
 pub mod stats;
 pub mod targeting;

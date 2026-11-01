@@ -15,6 +15,7 @@ pub enum Side {
 pub struct Unit {
     pub deployment: super::deploy::State,
     pub targeting: super::targeting::State,
+    pub hit_area: Option<super::body::HitArea>,
     pub cadence: super::cadence::State,
     pub position: [f64; 2],
     pub ground: bool,
@@ -32,6 +33,9 @@ pub struct Unit {
     pub motion_fly: bool,
     pub hits_sleep: bool,
     pub elemental_resistance: f64,
+    /// burn, neural, necrosis, apoptosis, erosion; shared by healing selectors
+    /// and the elemental damage runtime, never inferred from HP damage.
+    pub element_buildup: [f64; 5],
     pub boss: bool,
     pub pool: Option<Id>,
     pub skill: bool,
@@ -56,6 +60,7 @@ impl Unit {
         Self {
             deployment: super::deploy::State::default(),
             targeting: super::targeting::State::default(),
+            hit_area: None,
             cadence: super::cadence::State::default(),
             position: [0.0, 0.0],
             ground: false,
@@ -73,6 +78,7 @@ impl Unit {
             motion_fly: false,
             hits_sleep: false,
             elemental_resistance: 0.0,
+            element_buildup: [0.0; 5],
             boss: false,
             pool: None,
             skill: false,
