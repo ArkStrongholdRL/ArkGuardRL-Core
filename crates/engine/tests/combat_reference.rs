@@ -2,7 +2,7 @@
 //! upstream updateAlly/performAttack/resolveDamage. Real spatial queries, scripted movement.
 use arkguard_engine::{
     battle::{
-        ally, attacks, blocking, body,
+        ally, attacks, blocking, body, buffs,
         damage::DamageType,
         health::{self, Side, Unit, World},
         hit,
@@ -35,6 +35,7 @@ struct Host {
     executor: Option<attacks::Executor>,
     flights: Option<System<(u64, u64, attacks::Direct, attacks::Area)>>,
     effects: Option<Effects>,
+    buffs: Option<buffs::Runtime>,
     rng: Rng,
 }
 impl Host {
@@ -152,6 +153,25 @@ impl health::Hooks for Host {
         Ok(())
     }
 }
+impl buffs::Hooks for Host {
+    fn status(&mut self, _: u64, _: &str, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn callback(
+        &mut self,
+        token: u64,
+        _: buffs::Event,
+        c: buffs::Context,
+        r: &mut buffs::Runtime,
+        w: &mut World,
+    ) -> Result<(), String> {
+        if token != 1 {
+            return Err("Unknown fixture buff callback".into());
+        }
+        self.trace.push(json!(["pulse"]));
+        r.edit(w, c.unit, c.buff, |b| b.stacks += 1)
+    }
+}
 impl hit::Hooks for Host {}
 impl skills::Hooks for Host {
     fn event(
@@ -162,15 +182,31 @@ impl skills::Hooks for Host {
         w: &mut World,
     ) -> Result<(), String> {
         match event {
-            Event::ApplyModifiers => w.unit_mut(1)?.stats.put_named_buff(
-                "skill",
-                Buff {
-                    mods: [("atkPct".into(), 0.5)].into_iter().collect(),
-                    ..Buff::default()
-                },
-                8,
-            )?,
-            Event::RemoveModifiers => w.unit_mut(1)?.stats.remove_named_buff("skill"),
+            Event::ApplyModifiers => {
+                let mut r = self.buffs.take().unwrap();
+                let result = r.add(
+                    w,
+                    self,
+                    1,
+                    buffs::Spec {
+                        buff: Buff {
+                            key: Some("skill".into()),
+                            mods: [("atkPct".into(), 0.5)].into_iter().collect(),
+                            ..Default::default()
+                        },
+                        mods_present: true,
+                        ..Default::default()
+                    },
+                );
+                self.buffs = Some(r);
+                result?;
+            }
+            Event::RemoveModifiers => {
+                let mut r = self.buffs.take().unwrap();
+                let result = r.remove(w, self, 1, "skill");
+                self.buffs = Some(r);
+                result?;
+            }
             Event::Start => self.trace.push(json!(["start"])),
             Event::End => self.trace.push(json!(["end"])),
             Event::SkillStart => self.trace.push(json!(["skillStart"])),
@@ -524,6 +560,7 @@ fn native_composition_matches_continuous_attacks() {
             executor: Some(attacks::Executor::new(8, 8).unwrap()),
             flights: Some(System::new(128).unwrap()),
             effects: Some(Effects::new(8).unwrap()),
+            buffs: Some(buffs::Runtime::new(16, 256, 64).unwrap()),
             rng: Rng::new(42),
         };
         h.move_target(&mut w, true).unwrap();
@@ -543,6 +580,33 @@ fn native_composition_matches_continuous_attacks() {
                 let e = w.unit_mut(2).unwrap();
                 e.stats.hp = (e.stats.hp - 3.0).max(1.0);
             }
+
+            let mut buffs = h.buffs.take().unwrap();
+            if d["i"].as_u64().unwrap() >= 36 && tick % 23 == 0 {
+                let mut b = Buff {
+                    key: Some("pulse".into()),
+                    mods: [("atkPct".into(), 0.1)].into_iter().collect(),
+                    ..Default::default()
+                };
+                b.runtime.duration = 0.4;
+                b.runtime.interval = 0.1;
+                b.runtime.on_tick = Some(1);
+                buffs
+                    .add(
+                        &mut w,
+                        &mut h,
+                        1,
+                        buffs::Spec {
+                            buff: b,
+                            mods_present: true,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+            }
+            let units: Vec<_> = (1..=if extra_ids.is_empty() { 2 } else { 6 }).collect();
+            buffs.tick(&mut w, &mut h, &units, 1.0 / 30.0).unwrap();
+            h.buffs = Some(buffs);
 
             h.move_target(&mut w, tick % 17 < 12).unwrap();
             w.unit_mut(1)

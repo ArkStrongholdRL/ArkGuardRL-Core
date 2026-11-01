@@ -76,6 +76,7 @@ fn stats_and_damage_match_bits() {
                     stacks: b["stacks"].as_u64().unwrap() as u32,
                     shield: b["shield"].as_f64().unwrap(),
                     permanent: b["permanent"] == true,
+                    ..Buff::default()
                 })
                 .collect(),
         );

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub type Numbers = BTreeMap<String, f64>;
 #[derive(Clone, Debug)]
 pub struct Buff {
+    pub runtime: super::buffs::State,
     pub key: Option<String>,
     pub mods: Numbers,
     pub flags: BTreeSet<String>,
@@ -15,6 +16,7 @@ pub struct Buff {
 impl Default for Buff {
     fn default() -> Self {
         Self {
+            runtime: super::buffs::State::default(),
             key: None,
             mods: Numbers::new(),
             flags: BTreeSet::new(),
@@ -349,6 +351,12 @@ pub struct UnitStats {
     pub rate_dirty: bool,
 }
 impl UnitStats {
+    pub fn buffs(&self) -> &[Buff] {
+        &self.buffs
+    }
+    pub(crate) fn buffs_mut(&mut self) -> &mut Vec<Buff> {
+        &mut self.buffs
+    }
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
