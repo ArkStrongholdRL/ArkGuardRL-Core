@@ -338,6 +338,7 @@ impl Deployment {
         u.deployed = true;
         u.removed = false;
         u.hidden = false;
+        u.cadence.cooldown = 0.0;
         u.deployment.body = None;
         u.deployment.down_at_home = false;
         u.deployment.tile = tile;
@@ -693,8 +694,10 @@ mod tests {
         d.check_redeploys(&mut w, &mut h).unwrap();
         assert!(!w.unit(1).unwrap().stats.alive);
         d.set_dp(1, 7.0).unwrap();
+        w.unit_mut(1).unwrap().cadence.cooldown = 9.0;
         d.check_redeploys(&mut w, &mut h).unwrap();
         assert!(w.unit(1).unwrap().stats.alive);
         assert_eq!(d.dp(1), Some(0.0));
+        assert_eq!(w.unit(1).unwrap().cadence.cooldown, 0.0);
     }
 }

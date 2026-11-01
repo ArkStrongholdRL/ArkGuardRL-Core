@@ -28,6 +28,31 @@ pub fn release<H: Hooks>(w: &mut World, h: &mut H, blocker: Id) -> Result<(), St
     }
     Ok(())
 }
+/// ai.js enforceBlockCapacity: release the newest relationship first. Capacity
+/// depends on the current stats and becomes zero for an undeployed/dead blocker.
+pub fn enforce_capacity<H: Hooks>(w: &mut World, h: &mut H, blocker: Id) -> Result<(), String> {
+    let u = w.unit_mut(blocker)?;
+    let cap = if u.stats.alive && u.deployed {
+        u.stats.stats().map_err(str::to_string)?.n("blockCnt")
+    } else {
+        0.0
+    };
+    let mut used = 0.0;
+    for &id in w.unit(blocker)?.blocking() {
+        used += w.unit(id)?.block_weight;
+    }
+    while used > cap {
+        let Some(id) = w.unit_mut(blocker)?.blocking.pop() else {
+            break;
+        };
+        if w.unit(id)?.blocked_by() == Some(blocker) {
+            w.unit_mut(id)?.blocked_by = None;
+            h.ended(id, w)?;
+        }
+        used -= w.unit(id)?.block_weight;
+    }
+    Ok(())
+}
 pub fn blocker_for(
     w: &mut World,
     g: &Grid,
@@ -226,5 +251,30 @@ mod tests {
         d.retreat(&mut w, &mut h, 1, "retreat", false).unwrap();
         assert_eq!(h.ended, vec![2, 2]);
         assert_eq!(w.unit(2).unwrap().blocked_by(), None);
+    }
+    #[test]
+    fn falling_capacity_releases_latest_first_and_dead_blocker_releases_all() {
+        let mut w = World::new(3, 1, 1).unwrap();
+        let mut a = Unit::new(UnitStats::new(Base::default()), Side::Ally);
+        a.deployed = true;
+        a.stats.edit_base(|b| {
+            b.0.insert("blockCnt".into(), 1.0);
+        });
+        a.blocking = vec![2, 3];
+        w.insert_unit(1, a).unwrap();
+        for id in [2, 3] {
+            let mut e = Unit::new(UnitStats::new(Base::default()), Side::Enemy);
+            e.blocked_by = Some(1);
+            w.insert_unit(id, e).unwrap();
+        }
+        let mut h = Host::default();
+        enforce_capacity(&mut w, &mut h, 1).unwrap();
+        assert_eq!(h.ended, vec![3]);
+        assert_eq!(w.unit(1).unwrap().blocking(), &[2]);
+        assert_eq!(w.unit(3).unwrap().blocked_by(), None);
+        w.unit_mut(1).unwrap().stats.alive = false;
+        enforce_capacity(&mut w, &mut h, 1).unwrap();
+        assert_eq!(h.ended, vec![3, 2]);
+        assert!(w.unit(1).unwrap().blocking().is_empty());
     }
 }

@@ -14,6 +14,8 @@ pub enum Side {
 }
 pub struct Unit {
     pub deployment: super::deploy::State,
+    pub targeting: super::targeting::State,
+    pub cadence: super::cadence::State,
     pub position: [f64; 2],
     pub ground: bool,
     pub profile_block_fly: bool,
@@ -49,6 +51,8 @@ impl Unit {
     pub fn new(stats: UnitStats, side: Side) -> Self {
         Self {
             deployment: super::deploy::State::default(),
+            targeting: super::targeting::State::default(),
+            cadence: super::cadence::State::default(),
             position: [0.0, 0.0],
             ground: false,
             profile_block_fly: false,
