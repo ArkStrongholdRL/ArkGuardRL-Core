@@ -332,10 +332,18 @@ impl InjuryResult {
         apply: impl FnOnce(f64) -> Result<T, String>,
         zero: T,
     ) -> Result<T, String> {
+        self.settle_with(hooks, |_, amount| apply(amount), zero)
+    }
+    pub fn settle_with<T, H: Hooks>(
+        self,
+        hooks: &mut H,
+        apply: impl FnOnce(&mut H, f64) -> Result<T, String>,
+        zero: T,
+    ) -> Result<T, String> {
         let result = if self.cancelled && !self.notify_zero {
             Ok(zero)
         } else {
-            apply(self.amount)
+            apply(hooks, self.amount)
         };
         let mut error = None;
         for token in self.deferred {

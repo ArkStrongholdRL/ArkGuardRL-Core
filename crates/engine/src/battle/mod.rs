@@ -4,5 +4,6 @@ pub mod damage;
 pub mod direction;
 pub mod grid;
 pub mod health;
+pub mod hit;
 pub mod injury;
 pub mod stats;
