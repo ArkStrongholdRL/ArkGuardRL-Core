@@ -43,6 +43,7 @@ pub struct Unit {
     pub last_attack_at: f64,
     pub attacks: u64,
     pub engaged: bool,
+    pins: usize,
 }
 impl Unit {
     pub fn blocking(&self) -> &[Id] {
@@ -83,6 +84,7 @@ impl Unit {
             last_attack_at: f64::NEG_INFINITY,
             attacks: 0,
             engaged: false,
+            pins: 0,
         }
     }
 }
@@ -105,6 +107,25 @@ pub struct World {
     pub boss_battle: bool,
 }
 impl World {
+    pub fn pin_unit(&mut self, id: Id) -> Result<(), String> {
+        let u = unit_mut(self, id)?;
+        u.pins = u
+            .pins
+            .checked_add(1)
+            .ok_or("Unit retention count exhausted")?;
+        Ok(())
+    }
+    pub fn unpin_unit(&mut self, id: Id) -> Result<(), String> {
+        let u = unit_mut(self, id)?;
+        u.pins = u
+            .pins
+            .checked_sub(1)
+            .ok_or("Unit retention count underflow")?;
+        Ok(())
+    }
+    pub fn unit_pins(&self, id: Id) -> Result<usize, String> {
+        Ok(unit(self, id)?.pins)
+    }
     pub fn unit_capacity(&self) -> usize {
         self.capacities[0]
     }
@@ -155,7 +176,7 @@ impl World {
     /// End-of-tick release: knocked-out operators remain registered for redeployment.
     pub fn release_removed(&mut self, id: Id) -> Result<(), String> {
         let u = unit(self, id)?;
-        if !u.removed || u.blocked_by.is_some() || !u.blocking.is_empty() {
+        if !u.removed || u.pins > 0 || u.blocked_by.is_some() || !u.blocking.is_empty() {
             return Err("Cannot release a retained or still linked unit".into());
         }
         self.units.remove(&id);

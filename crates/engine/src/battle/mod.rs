@@ -12,6 +12,7 @@ pub mod grid;
 pub mod health;
 pub mod hit;
 pub mod injury;
+pub mod projectiles;
 pub mod search;
 pub mod skills;
 pub mod sp;

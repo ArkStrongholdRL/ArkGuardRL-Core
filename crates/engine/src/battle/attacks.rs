@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Direct main-target payload path of ai.js performAttack/resolveHit/doHeal.
-// Projectile, splash, chain and profession-specific payloads must use their own
-// dispatch paths; this type cannot represent them and never approximates them.
+// Main-target payload path of ai.js performAttack/resolveHit/doHeal.
+// Projectile delivery uses prepare -> impact callback -> finish; finish follows
+// launch, not arrival. Splash/chain/profession payloads need separate dispatch.
 use super::{
     damage::{Damage, DamageType, Penetration},
     health::{self, HealOptions, Hit, Id, Side, World},
@@ -34,11 +34,16 @@ pub struct Context {
 #[derive(Clone, Copy, Debug)]
 pub struct Impact {
     pub attacker: Id,
-    pub target: Id,
+    pub target: Option<Id>,
     pub attack_id: u64,
     pub amount: f64,
     pub is_skill: bool,
     pub heal: bool,
+}
+pub struct Prepared {
+    pub context: Context,
+    pub attack_id: u64,
+    pub payload: Direct,
 }
 pub trait Hooks: super::skills::Hooks + health::Hooks {
     fn has_before_attack(&self) -> bool;
@@ -86,17 +91,23 @@ impl Executor {
             max_hits,
         })
     }
-    pub fn perform<H: Hooks>(
+    fn validate(&self, p: Direct) -> Result<(), String> {
+        if p.hits == 0 || p.hits > self.max_hits {
+            return Err("Attack payload capacity exceeded; no instances dropped".into());
+        }
+        Ok(())
+    }
+    pub fn prepare<H: Hooks>(
         &mut self,
         w: &mut World,
         h: &mut H,
         id: Id,
         targets: &[Id],
         p: Direct,
-        mut skill: Option<&mut Runtime>,
-    ) -> Result<(), String> {
-        if targets.len() > self.max_targets || p.hits == 0 || p.hits > self.max_hits {
-            return Err("Attack payload capacity exceeded; no instances dropped".into());
+    ) -> Result<Option<Prepared>, String> {
+        self.validate(p)?;
+        if targets.len() > self.max_targets {
+            return Err("Attack target capacity exceeded; no instances dropped".into());
         }
         let mut c = Context {
             attacker: id,
@@ -117,21 +128,22 @@ impl Executor {
             }
             c.targets = live;
             if c.targets.is_empty() || !w.unit(id)?.stats.alive {
-                return Ok(());
+                return Ok(None);
             }
         }
-        self.sequence = self
+        let next = self
             .sequence
             .checked_add(1)
             .ok_or("Attack identity exhausted")?;
-        let attack_id = self.sequence;
         let time = w.time;
         let u = w.unit_mut(id)?;
-        u.last_attack_at = time;
-        u.attacks = u
+        let count = u
             .attacks
             .checked_add(1)
             .ok_or("Unit attack count exhausted")?;
+        u.last_attack_at = time;
+        u.attacks = count;
+        self.sequence = next;
         if !matches!(p.mode, Mode::Heal)
             && u.side == Side::Ally
             && !u.engaged
@@ -142,26 +154,43 @@ impl Executor {
             w.unit_mut(id)?.engaged = true;
             h.engage(id, w)?;
         }
-        for &target in &c.targets {
-            let (atk, scale) = {
-                let s = w.unit_mut(id)?.stats.stats().map_err(str::to_string)?;
-                (s.n("atk"), p.atk_scale * s.n("atkScaleMul"))
-            };
-            let (amount, heal) = match p.mode {
-                Mode::Heal => {
-                    let amount = atk
-                        * (p.atk_scale
-                            * p.heal_scale
-                            * w.unit_mut(id)?
-                                .stats
-                                .stats()
-                                .map_err(str::to_string)?
-                                .n("atkScaleMul"));
-                    health::heal(w, h, Some(id), target, amount, HealOptions::default())?;
-                    (amount, true)
-                }
-                Mode::Damage(kind) => {
-                    let mut total = 0.0;
+        Ok(Some(Prepared {
+            context: c,
+            attack_id: next,
+            payload: p,
+        }))
+    }
+    /// Read current ATK at impact while retaining the launch-time profile/skill scale.
+    pub fn impact<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        id: Id,
+        target: Option<Id>,
+        attack_id: u64,
+        p: Direct,
+        mut skill: Option<&mut Runtime>,
+    ) -> Result<(), String> {
+        self.validate(p)?;
+        let (atk, atk_mul) = {
+            let s = w.unit_mut(id)?.stats.stats().map_err(str::to_string)?;
+            (s.n("atk"), s.n("atkScaleMul"))
+        };
+        let scale = p.atk_scale * atk_mul;
+        let (amount, heal) = match p.mode {
+            Mode::Heal => {
+                let target = target.ok_or("A direct heal requires a target")?;
+                let amount = atk * (p.atk_scale * p.heal_scale * atk_mul);
+                health::heal(w, h, Some(id), target, amount, HealOptions::default())?;
+                (amount, true)
+            }
+            Mode::Damage(kind) => {
+                let mut total = 0.0;
+                let live_target = match target {
+                    Some(id) if w.unit(id)?.stats.alive => Some(id),
+                    _ => None,
+                };
+                if let Some(target) = live_target {
                     let mut mul = p.skill_damage_mul;
                     if p.target_damage_mul.is_finite() && p.target_damage_mul != 0.0 {
                         mul *= p.target_damage_mul;
@@ -194,36 +223,73 @@ impl Executor {
                         request.is_skill = p.is_skill;
                         total += h.damage(w, &mut request)?;
                     }
-                    let impact = Impact {
-                        attacker: id,
-                        target,
-                        attack_id,
-                        amount: total,
-                        is_skill: p.is_skill,
-                        heal: false,
-                    };
-                    h.each_hit(impact, skill.as_deref_mut(), w)?;
-                    (total, false)
+                    h.each_hit(
+                        Impact {
+                            attacker: id,
+                            target: Some(target),
+                            attack_id,
+                            amount: total,
+                            is_skill: p.is_skill,
+                            heal: false,
+                        },
+                        skill.as_deref_mut(),
+                        w,
+                    )?;
                 }
-            };
-            h.after_hit(
-                Impact {
-                    attacker: id,
-                    target,
-                    attack_id,
-                    amount,
-                    is_skill: p.is_skill,
-                    heal,
-                },
-                skill.as_deref_mut(),
+                (total, false)
+            }
+        };
+        h.after_hit(
+            Impact {
+                attacker: id,
+                target,
+                attack_id,
+                amount,
+                is_skill: p.is_skill,
+                heal,
+            },
+            skill,
+            w,
+        )?;
+        Ok(())
+    }
+    pub fn finish<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        mut prepared: Prepared,
+        mut skill: Option<&mut Runtime>,
+    ) -> Result<(), String> {
+        let c = &mut prepared.context;
+        h.attack(c, skill.as_deref_mut(), w)?;
+        if let Some(s) = skill.as_deref_mut() {
+            s.after_attack(w, h, &c.targets, prepared.payload.is_skill, c.no_ammo)?;
+        }
+        h.after_attack(c, skill, w)
+    }
+    pub fn perform<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        id: Id,
+        targets: &[Id],
+        p: Direct,
+        mut skill: Option<&mut Runtime>,
+    ) -> Result<(), String> {
+        let Some(prepared) = self.prepare(w, h, id, targets, p)? else {
+            return Ok(());
+        };
+        for &target in &prepared.context.targets {
+            self.impact(
                 w,
+                h,
+                id,
+                Some(target),
+                prepared.attack_id,
+                p,
+                skill.as_deref_mut(),
             )?;
         }
-        h.attack(&mut c, skill.as_deref_mut(), w)?;
-        if let Some(s) = skill.as_deref_mut() {
-            s.after_attack(w, h, &c.targets, p.is_skill, c.no_ammo)?;
-        }
-        h.after_attack(&c, skill, w)?;
-        Ok(())
+        self.finish(w, h, prepared, skill)
     }
 }

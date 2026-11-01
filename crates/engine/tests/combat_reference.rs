@@ -7,7 +7,8 @@ use arkguard_engine::{
         health::{self, Side, Unit, World},
         hit,
         injury::Effects,
-        search::{self, AttackProfile, Commitments, Selection},
+        projectiles::{self, Launch, Projectile, System},
+        search::{self, AttackProfile, Commitments, Heal, Selection},
         skills::{self, Condition, Context, Event, Rule, Runtime, SpType, Spec},
         sp::{Bank, Kind},
         stats::{Base, Buff, UnitStats},
@@ -30,8 +31,27 @@ struct Host {
     in_range: bool,
     stored: u32,
     executor: Option<attacks::Executor>,
+    flights: Option<System<(u64, u64, attacks::Direct)>>,
     effects: Option<Effects>,
     rng: Rng,
+}
+impl Host {
+    fn base_profile(&self) -> AttackProfile {
+        AttackProfile {
+            heal: if self.d["healer"] == true {
+                Some(Heal {
+                    multi: false,
+                    count: 1.0,
+                    hp_at_most: 0.0,
+                    element_heal: false,
+                })
+            } else {
+                None
+            },
+            heal_attack: self.d["healer"] == true,
+            ..AttackProfile::default()
+        }
+    }
 }
 impl Queries for Host {
     fn enemy_stealthed(&mut self, _: u64, _: &mut World) -> Result<bool, String> {
@@ -69,10 +89,18 @@ impl search::Host for Host {
         _: u64,
         _: &[usize],
         _: bool,
-        _: &mut World,
+        w: &mut World,
         _: usize,
     ) -> Result<Vec<u64>, String> {
-        Ok(vec![])
+        let e = w.unit_mut(2)?;
+        let max = e.stats.stats().map_err(str::to_string)?.n("maxHp");
+        Ok(
+            if self.d["healer"] == true && e.stats.alive && e.stats.hp < max {
+                vec![2]
+            } else {
+                vec![]
+            },
+        )
     }
     fn has_ally_targets(&self) -> bool {
         false
@@ -87,7 +115,7 @@ impl search::Host for Host {
         Ok(vec![])
     }
     fn profile(&mut self, _: u64, _: &mut World) -> Result<Option<AttackProfile>, String> {
-        Ok(Some(AttackProfile::default()))
+        Ok(Some(self.base_profile()))
     }
     fn range(&mut self, _: u64, _: &World) -> Result<Vec<usize>, String> {
         Ok(vec![1])
@@ -149,7 +177,7 @@ impl skills::Hooks for Host {
         Ok(self.in_range && w.unit(2)?.stats.alive)
     }
     fn profile(&mut self, _: u64, _: &mut World) -> Result<Option<AttackProfile>, String> {
-        Ok(Some(AttackProfile::default()))
+        Ok(Some(self.base_profile()))
     }
     fn has_sp_hook(&self) -> bool {
         false
@@ -162,7 +190,7 @@ impl ally::Host for Host {
         _: Option<&Runtime>,
         _: &mut World,
     ) -> Result<Option<AttackProfile>, String> {
-        Ok(Some(AttackProfile::default()))
+        Ok(Some(self.base_profile()))
     }
     fn range_changed(&mut self, _: u64, _: &mut World) -> Result<bool, String> {
         Ok(false)
@@ -194,7 +222,11 @@ impl ally::Host for Host {
             .map(|s| s.attack_override() || s.targeting_override())
             .unwrap_or(false);
         let payload = attacks::Direct {
-            mode: attacks::Mode::Damage(DamageType::Physical),
+            mode: if self.d["healer"] == true {
+                attacks::Mode::Heal
+            } else {
+                attacks::Mode::Damage(DamageType::Physical)
+            },
             hits: self.d["hits"].as_u64().unwrap() as u32,
             atk_scale: if used { 1.5 } else { 1.0 },
             skill_damage_mul: 1.0,
@@ -204,7 +236,38 @@ impl ally::Host for Host {
             is_skill: used,
         };
         let mut executor = self.executor.take().ok_or("Reentrant test executor")?;
-        let result = executor.perform(w, self, id, &selected.targets, payload, skill);
+        let result = if self.d["ranged"] == true && self.d["healer"] != true {
+            let Some(prepared) = executor.prepare(w, self, id, &selected.targets, payload)? else {
+                self.executor = Some(executor);
+                return Ok(());
+            };
+            for &target in &prepared.context.targets {
+                let from = w.unit(id)?.position;
+                self.flights
+                    .as_mut()
+                    .ok_or("Reentrant fixture flight queue")?
+                    .add(
+                        w,
+                        Launch {
+                            from,
+                            source: Some(id),
+                            target: Some(target),
+                            to: None,
+                            speed: 14.0,
+                            hit_dead: false,
+                            max_age: 10.0,
+                            on_hit: true,
+                            visual: "arrow".into(),
+                            speed_changeable: None,
+                            removable: None,
+                            payload: (id, prepared.attack_id, payload),
+                        },
+                    )?;
+            }
+            executor.finish(w, self, prepared, skill)
+        } else {
+            executor.perform(w, self, id, &selected.targets, payload, skill)
+        };
         self.executor = Some(executor);
         result
     }
@@ -260,6 +323,43 @@ impl attacks::Hooks for Host {
         Ok(())
     }
 }
+struct FlightHost<'a> {
+    host: &'a mut Host,
+    skill: &'a mut Runtime,
+}
+impl projectiles::Hooks<(u64, u64, attacks::Direct)> for FlightHost<'_> {
+    fn has_step(&self) -> bool {
+        false
+    }
+    fn step(
+        &mut self,
+        _: &mut Projectile<(u64, u64, attacks::Direct)>,
+        _: &mut System<(u64, u64, attacks::Direct)>,
+        _: &mut World,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn impact(
+        &mut self,
+        p: &mut Projectile<(u64, u64, attacks::Direct)>,
+        target: Option<u64>,
+        _: &mut System<(u64, u64, attacks::Direct)>,
+        w: &mut World,
+    ) -> Result<(), String> {
+        let mut executor = self.host.executor.take().unwrap();
+        let result = executor.impact(
+            w,
+            self.host,
+            p.payload.0,
+            target,
+            p.payload.1,
+            p.payload.2,
+            Some(self.skill),
+        );
+        self.host.executor = Some(executor);
+        result
+    }
+}
 #[test]
 #[ignore = "Requires ARKGUARD_REFERENCE_ROOT and Node; continuous 240-tick combat fixtures"]
 fn native_composition_matches_continuous_attacks() {
@@ -281,6 +381,7 @@ fn native_composition_matches_continuous_attacks() {
         }
         let mut u = Unit::new(UnitStats::new(base), Side::Ally);
         u.deployed = true;
+        u.position = [10.0, 4.0];
         w.insert_unit(1, u).unwrap();
         let mut base = Base::default();
         base.0.insert(
@@ -288,7 +389,17 @@ fn native_composition_matches_continuous_attacks() {
             if d["dead"] == true { 500.0 } else { 100000.0 },
         );
         base.0.insert("def".into(), 20.0);
-        let mut e = Unit::new(UnitStats::new(base), Side::Enemy);
+        let mut e = Unit::new(
+            UnitStats::new(base),
+            if d["healer"] == true {
+                Side::Ally
+            } else {
+                Side::Enemy
+            },
+        );
+        if d["healer"] == true {
+            e.stats.hp = 100.0;
+        }
         e.deployed = true;
         e.position = [10.0, 6.0];
         e.targeting.spawn_seq = 1;
@@ -321,6 +432,7 @@ fn native_composition_matches_continuous_attacks() {
             in_range: true,
             stored: 0,
             executor: Some(attacks::Executor::new(8, 8).unwrap()),
+            flights: Some(System::new(128).unwrap()),
             effects: Some(Effects::new(8).unwrap()),
             rng: Rng::new(42),
         };
@@ -329,6 +441,18 @@ fn native_composition_matches_continuous_attacks() {
         let mut states = vec![];
         for tick in 0..240 {
             w.time = tick as f64 / 30.0;
+            if d["shooterDeath"] == true && tick == 2 {
+                let u = w.unit_mut(1).unwrap();
+                u.stats.alive = false;
+                u.deployed = false;
+                u.removed = true;
+                s.end(&mut w, &mut h, "death").unwrap();
+            }
+            if d["healer"] == true {
+                let e = w.unit_mut(2).unwrap();
+                e.stats.hp = (e.stats.hp - 3.0).max(1.0);
+            }
+
             h.in_range = tick % 17 < 12;
             w.unit_mut(1)
                 .unwrap()
@@ -348,15 +472,29 @@ fn native_composition_matches_continuous_attacks() {
                 .unwrap();
             cache.capture(&mut w, &mut h, &[1], 1.0 / 30.0).unwrap();
             h.in_range = (tick + 1) % 17 < 12;
-            s.tick(&mut w, &mut h, 1.0 / 30.0).unwrap();
+            if w.unit(1).unwrap().stats.alive && w.unit(1).unwrap().deployed {
+                s.tick(&mut w, &mut h, 1.0 / 30.0).unwrap();
+            }
             ally::update(&mut w, &mut h, &cache, 1, Some(&mut s), 1.0 / 30.0, 8).unwrap();
+            let mut flights = h.flights.take().unwrap();
+            flights
+                .update(
+                    &mut w,
+                    &mut FlightHost {
+                        host: &mut h,
+                        skill: &mut s,
+                    },
+                    1.0 / 30.0,
+                )
+                .unwrap();
+            h.flights = Some(flights);
             if d["stop"] == true && tick == 100 {
                 s.end(&mut w, &mut h, "stopped").unwrap();
             }
             let atk = w.unit_mut(1).unwrap().stats.stats().unwrap().n("atk");
             let u = w.unit(1).unwrap();
             let e = w.unit(2).unwrap();
-            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
+            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
         }
         for (tick, (a, b)) in states
             .iter()
@@ -366,6 +504,9 @@ fn native_composition_matches_continuous_attacks() {
             assert_eq!(a, b, "tick {tick} case {d}");
         }
         assert_eq!(json!(h.trace), v["trace"], "events {d}");
+        h.flights.as_mut().unwrap().clear(&mut w).unwrap();
+        assert_eq!(w.unit_pins(1).unwrap(), 0);
+        assert_eq!(w.unit_pins(2).unwrap(), 0);
         count += 1;
     }
     assert!(child.wait().unwrap().success());

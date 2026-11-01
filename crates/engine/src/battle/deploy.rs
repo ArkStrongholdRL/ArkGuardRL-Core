@@ -27,6 +27,7 @@ pub struct State {
     pub respawn_at: f64,
     pub remove_reason: Option<String>,
     pub removing: bool,
+    pub release_notified: bool,
     pub redeploy_mul: f64,
     pub counted: bool,
     pub in_total: bool,
@@ -48,6 +49,7 @@ impl Default for State {
             respawn_at: f64::INFINITY,
             remove_reason: None,
             removing: false,
+            release_notified: false,
             redeploy_mul: 1.0,
             counted: false,
             in_total: false,
@@ -337,6 +339,7 @@ impl Deployment {
         u.stats.alive = true;
         u.deployed = true;
         u.removed = false;
+        u.deployment.release_notified = false;
         u.hidden = false;
         u.cadence.cooldown = 0.0;
         u.last_attack_at = f64::NEG_INFINITY;
@@ -565,8 +568,11 @@ impl Deployment {
             })
             .collect();
         for id in release {
-            h.event(Event::Release, id, None, w, self)?;
-            if w.unit(id)?.removed && !w.unit(id)?.stats.alive {
+            if !w.unit(id)?.deployment.release_notified {
+                h.event(Event::Release, id, None, w, self)?;
+                w.unit_mut(id)?.deployment.release_notified = true;
+            }
+            if w.unit(id)?.removed && !w.unit(id)?.stats.alive && w.unit_pins(id)? == 0 {
                 self.order.retain(|&x| x != id);
                 w.release_removed(id)?;
             }
@@ -700,5 +706,20 @@ mod tests {
         assert!(w.unit(1).unwrap().stats.alive);
         assert_eq!(d.dp(1), Some(0.0));
         assert_eq!(w.unit(1).unwrap().cadence.cooldown, 0.0);
+    }
+    #[test]
+    fn retained_corpse_cleans_hooks_once_then_releases_after_flight() {
+        let (mut w, mut d, mut h) = setup();
+        w.pin_unit(2).unwrap();
+        d.retreat(&mut w, &mut h, 2, "expired", true).unwrap();
+        d.release_removed(&mut w, &mut h).unwrap();
+        assert_eq!(h.releases, 1);
+        assert!(w.unit(2).is_ok());
+        d.release_removed(&mut w, &mut h).unwrap();
+        assert_eq!(h.releases, 1);
+        w.unpin_unit(2).unwrap();
+        d.release_removed(&mut w, &mut h).unwrap();
+        assert_eq!(h.releases, 1);
+        assert!(w.unit(2).is_err());
     }
 }
