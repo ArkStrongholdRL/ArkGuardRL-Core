@@ -14,6 +14,13 @@ pub enum Side {
 }
 pub struct Unit {
     pub deployment: super::deploy::State,
+    pub position: [f64; 2],
+    pub ground: bool,
+    pub profile_block_fly: bool,
+    pub block_weight: f64,
+    pub moving: bool,
+    pub(crate) blocking: Vec<Id>,
+    pub(crate) blocked_by: Option<Id>,
     pub stats: UnitStats,
     pub side: Side,
     pub owner: Option<Id>,
@@ -33,9 +40,22 @@ pub struct Unit {
     pub last_hit_at: f64,
 }
 impl Unit {
+    pub fn blocking(&self) -> &[Id] {
+        &self.blocking
+    }
+    pub fn blocked_by(&self) -> Option<Id> {
+        self.blocked_by
+    }
     pub fn new(stats: UnitStats, side: Side) -> Self {
         Self {
             deployment: super::deploy::State::default(),
+            position: [0.0, 0.0],
+            ground: false,
+            profile_block_fly: false,
+            block_weight: 1.0,
+            moving: false,
+            blocking: vec![],
+            blocked_by: None,
             stats,
             side,
             owner: None,
@@ -121,8 +141,9 @@ impl World {
     }
     /// End-of-tick release: knocked-out operators remain registered for redeployment.
     pub fn release_removed(&mut self, id: Id) -> Result<(), String> {
-        if !unit(self, id)?.removed {
-            return Err("Cannot release a retained unit".into());
+        let u = unit(self, id)?;
+        if !u.removed || u.blocked_by.is_some() || !u.blocking.is_empty() {
+            return Err("Cannot release a retained or still linked unit".into());
         }
         self.units.remove(&id);
         Ok(())

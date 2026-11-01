@@ -17,6 +17,14 @@ struct Host {
     revive: bool,
     trace: Vec<Value>,
 }
+impl arkguard_engine::battle::blocking::Hooks for Host {
+    fn blocked(&mut self, _: u64, _: u64, _: &mut World) -> Result<(), String> {
+        Ok(())
+    }
+    fn ended(&mut self, _: u64, _: &mut World) -> Result<(), String> {
+        Ok(())
+    }
+}
 impl Hooks for Host {
     fn initialize(
         &mut self,

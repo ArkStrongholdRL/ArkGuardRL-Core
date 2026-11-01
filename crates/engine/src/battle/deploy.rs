@@ -76,7 +76,7 @@ pub enum Event {
 }
 /// Concrete skill state, effect removal, body animation and content hooks live in
 /// the host. Required methods avoid silently dropping those steps during migration.
-pub trait Hooks {
+pub trait Hooks: super::blocking::Hooks {
     /// Reset attack/element/skill state and apply initial-deployment cooldown.
     /// Carry and retained SP require the future skill runtime and are not inferred here.
     fn initialize(
@@ -185,8 +185,10 @@ impl Deployment {
         if Grid::in_bounds(old) && self.occupants[key(old)] == Some(id) {
             self.occupants[key(old)] = None;
         }
+        super::blocking::release(w, h, id)?;
         h.event(Event::ReleaseBlocked, id, None, w, self)?;
         w.unit_mut(id)?.deployment.tile = tile;
+        w.unit_mut(id)?.position = [tile[0] as f64, tile[1] as f64];
         self.occupants[key(tile)] = Some(id);
         h.event(Event::RefreshRange, id, None, w, self)?;
         Ok(true)
@@ -200,6 +202,13 @@ impl Deployment {
         }
         self.dp.insert(id, dp);
         Ok(())
+    }
+    pub fn occupant(&self, tile: [i32; 2]) -> Option<Id> {
+        if Grid::in_bounds(tile) {
+            self.occupants[key(tile)]
+        } else {
+            None
+        }
     }
     pub fn dp(&self, id: Id) -> Option<f64> {
         self.dp.get(&id).copied()
@@ -332,6 +341,7 @@ impl Deployment {
         u.deployment.body = None;
         u.deployment.down_at_home = false;
         u.deployment.tile = tile;
+        u.position = [tile[0] as f64, tile[1] as f64];
         u.deployment.deploy_seq = sequence;
         u.deployment.aggro_seq = opts.aggro_seq.unwrap_or(sequence);
         u.deployment.deployed_at = time;
@@ -409,6 +419,7 @@ impl Deployment {
         w.unit_mut(id)?.deployment.removing = false;
         result?;
         if w.unit(id)?.side == Side::Ally {
+            super::blocking::release(w, h, id)?;
             h.event(Event::ReleaseBlocked, id, None, w, self)?;
             let tile = w.unit(id)?.deployment.tile;
             if Grid::in_bounds(tile) && self.occupants[key(tile)] == Some(id) {
@@ -430,6 +441,7 @@ impl Deployment {
             }
         } else {
             w.unit_mut(id)?.removed = true;
+            super::blocking::unblock(w, h, id)?;
             h.event(Event::Unblock, id, None, w, self)?;
             if reason == "killed" {
                 let d = &w.unit(id)?.deployment;
@@ -573,6 +585,14 @@ mod tests {
         blocked_reentrant: bool,
         reenter: bool,
         releases: usize,
+    }
+    impl super::super::blocking::Hooks for Host {
+        fn blocked(&mut self, _: Id, _: Id, _: &mut World) -> Result<(), String> {
+            Ok(())
+        }
+        fn ended(&mut self, _: Id, _: &mut World) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl Hooks for Host {
         fn initialize(
