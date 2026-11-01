@@ -13,6 +13,7 @@ pub enum Side {
     Enemy,
 }
 pub struct Unit {
+    pub deployment: super::deploy::State,
     pub stats: UnitStats,
     pub side: Side,
     pub owner: Option<Id>,
@@ -34,6 +35,7 @@ pub struct Unit {
 impl Unit {
     pub fn new(stats: UnitStats, side: Side) -> Self {
         Self {
+            deployment: super::deploy::State::default(),
             stats,
             side,
             owner: None,

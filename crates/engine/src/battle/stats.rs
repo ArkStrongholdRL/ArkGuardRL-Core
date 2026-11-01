@@ -347,6 +347,12 @@ pub struct UnitStats {
     pub rate_dirty: bool,
 }
 impl UnitStats {
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+    pub fn base_number(&self, key: &str) -> f64 {
+        self.base.n(key)
+    }
     pub fn new(base: Base) -> Self {
         let hp = base.n("maxHp");
         Self {
