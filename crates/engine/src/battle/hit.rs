@@ -25,6 +25,9 @@ pub enum Phase {
     HpDamage,
 }
 pub struct Request {
+    pub attack_id: Option<u64>,
+    pub is_attack: bool,
+    pub is_skill: bool,
     pub hit: Hit,
     pub damage: Damage,
     pub calculation: Calculation,
@@ -42,6 +45,9 @@ impl Request {
             Calculation::Formula
         };
         Self {
+            attack_id: None,
+            is_attack: false,
+            is_skill: false,
             hit,
             damage,
             calculation,

@@ -339,6 +339,7 @@ impl Deployment {
         u.removed = false;
         u.hidden = false;
         u.cadence.cooldown = 0.0;
+        u.last_attack_at = f64::NEG_INFINITY;
         u.deployment.body = None;
         u.deployment.down_at_home = false;
         u.deployment.tile = tile;

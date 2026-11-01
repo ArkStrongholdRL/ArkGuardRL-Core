@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub type Numbers = BTreeMap<String, f64>;
 #[derive(Clone, Debug)]
 pub struct Buff {
+    pub key: Option<String>,
     pub mods: Numbers,
     pub flags: BTreeSet<String>,
     pub stacks: u32,
@@ -14,6 +15,7 @@ pub struct Buff {
 impl Default for Buff {
     fn default() -> Self {
         Self {
+            key: None,
             mods: Numbers::new(),
             flags: BTreeSet::new(),
             stacks: 1,
@@ -373,6 +375,33 @@ impl UnitStats {
     }
     pub fn set_buffs(&mut self, buffs: Vec<Buff>) {
         self.buffs = buffs;
+        self.dirty = true;
+    }
+    /// Replacement retains acquisition position, as a named skill buff does.
+    pub fn put_named_buff(
+        &mut self,
+        key: &str,
+        mut buff: Buff,
+        capacity: usize,
+    ) -> Result<(), String> {
+        buff.key = Some(key.into());
+        if let Some(slot) = self
+            .buffs
+            .iter_mut()
+            .find(|b| b.key.as_deref() == Some(key))
+        {
+            *slot = buff;
+        } else {
+            if self.buffs.len() >= capacity {
+                return Err("Unit modifier capacity exceeded".into());
+            }
+            self.buffs.push(buff);
+        }
+        self.dirty = true;
+        Ok(())
+    }
+    pub fn remove_named_buff(&mut self, key: &str) {
+        self.buffs.retain(|b| b.key.as_deref() != Some(key));
         self.dirty = true;
     }
     pub fn set_cultivation(&mut self, c: Cultivation) {

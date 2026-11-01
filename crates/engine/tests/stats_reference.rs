@@ -64,6 +64,7 @@ fn stats_and_damage_match_bits() {
                 .unwrap()
                 .iter()
                 .map(|b| Buff {
+                    key: None,
                     mods: numbers(&b["mods"]),
                     flags: b["flags"]
                         .as_object()

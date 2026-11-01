@@ -207,6 +207,14 @@ impl Bank {
         }
         Ok(amt)
     }
+    pub(crate) fn apply_gain(&mut self, cost: f64, amount: f64) -> Result<(), String> {
+        self.sp += amount;
+        self.fill(cost)?;
+        if self.charges >= self.max_charges as f64 {
+            self.sp = cost;
+        }
+        Ok(())
+    }
     pub fn set_total(&mut self, w: &mut World, total: f64) -> Result<(), String> {
         if self.no_skill
             || self.kind == Kind::Passive

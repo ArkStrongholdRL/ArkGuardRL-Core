@@ -40,6 +40,9 @@ pub struct Unit {
     pub damage_taken: f64,
     pub healing_done: f64,
     pub last_hit_at: f64,
+    pub last_attack_at: f64,
+    pub attacks: u64,
+    pub engaged: bool,
 }
 impl Unit {
     pub fn blocking(&self) -> &[Id] {
@@ -77,6 +80,9 @@ impl Unit {
             damage_taken: 0.0,
             healing_done: 0.0,
             last_hit_at: f64::NEG_INFINITY,
+            last_attack_at: f64::NEG_INFINITY,
+            attacks: 0,
+            engaged: false,
         }
     }
 }
@@ -99,6 +105,9 @@ pub struct World {
     pub boss_battle: bool,
 }
 impl World {
+    pub fn unit_capacity(&self) -> usize {
+        self.capacities[0]
+    }
     pub fn new(
         unit_capacity: usize,
         pool_capacity: usize,

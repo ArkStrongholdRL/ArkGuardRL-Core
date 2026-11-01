@@ -1,5 +1,7 @@
 //! Battle foundations ported from Stronghold Protocol 41bbca57.
 //! Combat units, content and tick execution are still under migration.
+pub mod ally;
+pub mod attacks;
 pub mod blocking;
 pub mod cadence;
 pub mod clock;
@@ -11,6 +13,7 @@ pub mod health;
 pub mod hit;
 pub mod injury;
 pub mod search;
+pub mod skills;
 pub mod sp;
 pub mod stats;
 pub mod targeting;
