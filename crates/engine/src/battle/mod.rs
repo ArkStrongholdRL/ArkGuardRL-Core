@@ -11,5 +11,6 @@ pub mod health;
 pub mod hit;
 pub mod injury;
 pub mod search;
+pub mod sp;
 pub mod stats;
 pub mod targeting;
