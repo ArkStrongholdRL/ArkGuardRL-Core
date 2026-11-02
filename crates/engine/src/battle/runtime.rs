@@ -82,7 +82,7 @@ struct Host {
     roster: Option<super::operators::Roster>,
     index: Option<spatial::Index>,
     executor: Option<super::attacks::Executor>,
-    flights: Option<super::projectiles::System<enemy::Delivery>>,
+    flights: Option<super::projectiles::System<allies::Shot>>,
     spawns: Option<super::spawns::Runtime>,
     content: Option<content::Runtime>,
     buffs: Option<buffs::Runtime>,
@@ -781,6 +781,37 @@ impl buffs::Hooks for Host {
     }
 }
 impl settlement::Hooks for Host {
+    fn phase_enabled(&self, p: hit::Phase) -> bool {
+        p == hit::Phase::Hit
+    }
+    fn damage_phase(
+        &mut self,
+        p: hit::Phase,
+        q: &mut hit::Request,
+        _: &mut f64,
+        _: &mut buffs::Runtime,
+        w: &mut World,
+        _: &mut Rng,
+    ) -> Result<(), String> {
+        if p == hit::Phase::Hit && q.is_attack && w.unit(q.hit.target)?.side == health::Side::Enemy
+        {
+            if let Some(id) = q.hit.source {
+                if w.unit(id)?.side == health::Side::Ally
+                    && w.unit(q.hit.target)?.blocked_by().is_none()
+                {
+                    q.damage.amount *= self
+                        .roster
+                        .as_ref()
+                        .ok_or("Missing operator hit context")?
+                        .entry(id)?
+                        .definition
+                        .combat
+                        .unblocked_scale;
+                }
+            }
+        }
+        Ok(())
+    }
     fn health_kill(
         &mut self,
         id: Id,
@@ -1057,7 +1088,7 @@ impl enemy::Hooks for Host {
                         visual: "enemy".into(),
                         speed_changeable: None,
                         removable: None,
-                        payload: d,
+                        payload: allies::Shot::Enemy(d),
                     },
                 )?;
         } else {

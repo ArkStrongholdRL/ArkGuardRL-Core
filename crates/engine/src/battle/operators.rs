@@ -4,6 +4,7 @@
 //! Only explicitly compiled kits are admitted; no generic unimplemented fallback.
 use super::{
     blocking, buffs,
+    content::operators::Kit,
     deploy::{self, Deployment},
     direction::Direction,
     grid::{Grid, COLS},
@@ -23,9 +24,36 @@ pub struct Definition {
     pub key: String,
     base: Base,
     modifiers: Numbers,
-    resistance: f64,
+    permanent: Option<Buff>,
+    range_grid: Vec<[i32; 2]>,
+    pub(crate) combat: Combat,
     spec: skills::Spec,
     cost: f64,
+}
+#[derive(Clone, Copy)]
+pub(crate) struct Combat {
+    pub profile: AttackProfile,
+    pub damage: super::damage::DamageType,
+    pub projectile: Option<&'static str>,
+    pub area: super::attacks::Area,
+    pub skill_area: super::attacks::Area,
+    pub sluggish: f64,
+    pub skill_sluggish: f64,
+    pub unblocked_scale: f64,
+}
+impl Default for Combat {
+    fn default() -> Self {
+        Self {
+            profile: AttackProfile::default(),
+            damage: super::damage::DamageType::Physical,
+            projectile: None,
+            area: Default::default(),
+            skill_area: Default::default(),
+            sluggish: 0.,
+            skill_sluggish: 0.,
+            unblocked_scale: 1.,
+        }
+    }
 }
 impl Definition {
     pub(crate) fn skill_event<H: buffs::Hooks>(
@@ -56,10 +84,9 @@ impl Definition {
     /// Defaults only: no selected skill/module, potential, items or custom data
     /// composition is inferred. Raw records already contain default module stats.
     pub fn compile(key: &str, raw: &Value) -> Result<Self, String> {
-        if !matches!(key, "chess_char_1_02_a" | "chess_char_1_02_b") {
-            return Err(format!("Operator kit not implemented: {key}"));
-        }
-        if !raw.is_object() || raw["skill"]["skillId"] != "skchr_yak_2" {
+        let kit = Kit::resolve(key)?;
+        let (skill_id, profession, branch) = kit.identity();
+        if !raw.is_object() || raw["skill"]["skillId"] != skill_id {
             return Err(format!("Unsupported default operator definition: {key}"));
         }
         let st = &raw["stats"];
@@ -110,26 +137,31 @@ impl Definition {
         }
         base.0.insert("moveSpeed".into(), 0.);
         let skill = &raw["skill"];
-        // These two original kits have no profile, immunity or range overrides.
-        // Refuse altered content instead of silently executing a partial kit.
-        if raw["rangeGrid"] != serde_json::json!([[0, 0]])
-            || raw["position"] != "MELEE"
-            || raw["profession"] != "TANK"
-            || raw["subProfessionId"] != "protector"
+        let ranged = kit.ranged();
+        let rule = if ranged { "DEFAULT" } else { "TAKE_DAMAGE" };
+        if raw["position"] != if ranged { "RANGED" } else { "MELEE" }
+            || raw["profession"] != profession
+            || raw["subProfessionId"] != branch
             || raw["immunities"]
                 .as_object()
                 .is_some_and(|o| o.values().any(|v| *v == true))
             || skill["spType"] != "INCREASE_WITH_TIME"
-            || skill["trigger"]["rule"] != "TAKE_DAMAGE"
+            || skill["trigger"]["rule"] != rule
             || number(&skill["maxChargeTime"], 1.) != 1.
         {
             return Err(format!("Unsupported operator mechanics: {key}"));
         }
         for (field, expected) in [
-            ("attackKind", Value::from("melee")),
-            ("dmgType", Value::from("phys")),
-            ("projectile", Value::from("none")),
-            ("canHitFly", Value::from(false)),
+            (
+                "attackKind",
+                Value::from(if ranged { "ranged" } else { "melee" }),
+            ),
+            ("dmgType", Value::from(if ranged { "arts" } else { "phys" })),
+            (
+                "projectile",
+                Value::from(if ranged { "bolt" } else { "none" }),
+            ),
+            ("canHitFly", Value::from(ranged)),
         ] {
             if !raw[field].is_null() && raw[field] != expected {
                 return Err(format!("Unsupported operator profile {field}: {key}"));
@@ -138,28 +170,43 @@ impl Definition {
         if !raw["targetPriority"].is_null() || !raw["splashRadius"].is_null() {
             return Err(format!("Unsupported operator targeting: {key}"));
         }
-        let bb = &skill["bb"];
-        let resistance = raw["talents"]
+        let grid = raw["rangeGrid"]
             .as_array()
-            .into_iter()
-            .flatten()
-            .find(|t| t["index"] != -1)
-            .map(|t| number(&t["bb"]["magic_resistance"], 0.))
-            .unwrap_or(0.);
+            .ok_or("Missing operator attack range")?;
+        if grid.is_empty()
+            || grid.len() > super::grid::N
+            || (kit == Kit::Yak && raw["rangeGrid"] != serde_json::json!([[0, 0]]))
+        {
+            return Err("Invalid or unsupported operator range".into());
+        }
+        let range_grid = grid
+            .iter()
+            .map(|p| {
+                if p.as_array().map(Vec::len) != Some(2) {
+                    return Err("Expected range offset pair".to_string());
+                }
+                let get = |i: usize| {
+                    p[i].as_i64()
+                        .and_then(|n| i32::try_from(n).ok())
+                        .filter(|n| n.unsigned_abs() <= super::grid::COLS as u32)
+                        .ok_or("Range offset outside field bound".to_string())
+                };
+                Ok([get(0)?, get(1)?])
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let content = kit.build(raw);
         Ok(Self {
             key: key.into(),
             base,
-            modifiers: [
-                ("hpPct".into(), number(&bb["max_hp"], 0.)),
-                ("defPct".into(), number(&bb["def"], 0.)),
-                ("resMul".into(), 1. + number(&bb["magic_resistance"], 0.)),
-            ]
-            .into(),
-            resistance,
+            modifiers: content.modifiers,
+            permanent: content.permanent,
+            range_grid,
+            combat: content.combat,
             spec: skills::Spec {
                 duration: number(&skill["duration"], 0.),
                 init_sp: number(&skill["initSp"], 0.).max(0.),
-                rule: skills::Rule::TakeDamage,
+                rule: skills::Rule::parse(rule),
+                attack: kit.attack_override(),
                 modifiers: true,
                 manual: skill["skillType"]
                     .as_str()
@@ -379,23 +426,19 @@ impl Roster {
             u.position = [home[0] as f64, home[1] as f64];
             w.insert_unit(id, u)?;
             self.deployment.register(id, w)?;
-            let mut buff = Buff {
-                key: Some("talent:yak".into()),
-                mods: [("resFlat".into(), def.resistance)].into(),
-                ..Default::default()
-            };
-            buff.runtime.persist = true;
-            r.add(
-                w,
-                h,
-                id,
-                buffs::Spec {
-                    buff,
-                    allow_dead: true,
-                    mods_present: true,
-                    ..Default::default()
-                },
-            )?;
+            if let Some(buff) = def.permanent.clone() {
+                r.add(
+                    w,
+                    h,
+                    id,
+                    buffs::Spec {
+                        buff,
+                        allow_dead: true,
+                        mods_present: true,
+                        ..Default::default()
+                    },
+                )?;
+            }
             self.entries.insert(
                 id,
                 Entry {
@@ -618,9 +661,13 @@ impl Roster {
         self.finish(result)
     }
     pub fn range(&self, w: &World, id: Id) -> Result<Vec<usize>, String> {
-        self.entry(id)?;
-        let [row, col] = w.unit(id)?.deployment.tile;
-        Ok(vec![row as usize * COLS + col as usize])
+        let entry = self.entry(id)?;
+        Ok(super::targeting::absolute_range(
+            &entry.definition.range_grid,
+            w.unit(id)?.deployment.tile,
+            entry.direction,
+            0,
+        ))
     }
 }
 struct Skill<'a, H> {

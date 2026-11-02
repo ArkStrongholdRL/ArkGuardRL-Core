@@ -41,9 +41,43 @@ fn fixture_data() -> Arc<Catalog> {
         let value = if key == "enemies" {
             json!({"enemy_1007_slime":{"hp":100,"atk":10,"moveSpeed":1},"enemy_1005_yokai_2":{"hp":1000,"atk":10,"range":5,"applyWay":"RANGED","bat":0.1,"moveSpeed":0.1},"enemy_1200_msfjin":{"hp":30},"enemy_9011_acrefr":{"hp":100,"talents":{"bb":{"Refracting.max_hp":1,"Refracting.magic_resistance":70}}},"enemy_unported":{}})
         } else if key == "chess" {
-            json!({"chess_char_1_02_a":{"stats":{"maxHp":100,"atk":20,"def":5,"bat":1.2,"blockCnt":3,"cost":5,"respawnTime":3},
+            let mut chess = json!({"chess_char_1_02_a":{"stats":{"maxHp":100,"atk":20,"def":5,"bat":1.2,"blockCnt":3,"cost":5,"respawnTime":3},
                 "skill":{"skillId":"skchr_yak_2","duration":2,"initSp":1,"spCost":1,"spType":"INCREASE_WITH_TIME","trigger":{"rule":"TAKE_DAMAGE"},"bb":{"max_hp":0.3,"def":0.1,"magic_resistance":0.6}},
-                "talents":[{"index":0,"bb":{"magic_resistance":7}}],"rangeGrid":[[0,0]],"position":"MELEE","profession":"TANK","subProfessionId":"protector"}})
+                "talents":[{"index":0,"bb":{"magic_resistance":7}}],"rangeGrid":[[0,0]],"position":"MELEE","profession":"TANK","subProfessionId":"protector"}});
+            for (id, skill, profession, branch, bb, talent, tb) in [
+                (
+                    "chess_char_1_03_a",
+                    "skchr_leizi_2",
+                    "CASTER",
+                    "chain",
+                    json!({"atk":0.8}),
+                    json!({"atk_scale":1.2}),
+                    json!({"attack@max_target":3,"attack@sluggish":0.5}),
+                ),
+                (
+                    "chess_char_1_11_a",
+                    "skcom_atk_up[2]",
+                    "SUPPORT",
+                    "slower",
+                    json!({"atk":0.35}),
+                    json!({"sluggish":0.1}),
+                    json!({"sluggish":0.8}),
+                ),
+                (
+                    "chess_char_1_14_a",
+                    "skchr_greyy_2",
+                    "CASTER",
+                    "splashcaster",
+                    json!({"attack_speed":50,"talent_scale":1.6}),
+                    json!({"sluggish":0.4}),
+                    json!({}),
+                ),
+            ] {
+                chess[id] = json!({"stats":{"maxHp":100,"atk":20,"bat":1.,"cost":5,"respawnTime":3},
+                    "skill":{"skillId":skill,"duration":2,"initSp":1,"spCost":1,"spType":"INCREASE_WITH_TIME","trigger":{"rule":"DEFAULT"},"bb":bb},
+                    "talents":[{"index":0,"bb":talent}],"trait":{"bb":tb},"rangeGrid":[[0,0],[0,1],[0,2]],"position":"RANGED","profession":profession,"subProfessionId":branch});
+            }
+            chess
         } else {
             json!({})
         };
@@ -266,7 +300,7 @@ fn combat_view(f: &mut Field) -> Value {
     let enemies:Vec<_>=f.enemy_states().unwrap().into_iter().map(|e|json!({
         "id":e.id,"key":e.key,"pos":e.position,"hp":e.hp,"maxHp":e.max_hp,"atk":e.atk,"res":e.res,"cd":e.cooldown,
         "moving":e.moving,"hidden":e.hidden,"leg":e.route_leg,"spawn":e.spawn_sequence,"deploy":e.deployment_sequence,
-        "element":e.element,"flags":e.flags
+        "element":e.element,"flags":e.flags,"buffs":f.unit(e.id).unwrap().stats.buffs().iter().map(|b|json!({"key":b.key,"left":b.runtime.time_left,"stacks":b.stacks,"persist":b.runtime.persist})).collect::<Vec<_>>()
     })).collect();
     let reason = f.reason().map(|r| match r {
         arkguard_engine::battle::clock::End::Cleared => "cleared",
@@ -311,6 +345,63 @@ fn operator_home(home: [i32; 2]) -> arkguard_engine::battle::operators::Placemen
         home,
         direction: arkguard_engine::battle::direction::Direction::Right,
     }
+}
+#[test]
+fn ranged_fields_share_native_delivery_and_keep_main_hit_status_scope() {
+    let data = fixture_data();
+    for (key, victims, status_victims) in [
+        ("chess_char_1_03_a", 3, 3),
+        ("chess_char_1_11_a", 1, 1),
+        ("chess_char_1_14_a", 4, 1),
+    ] {
+        let mut f = Field::new(
+            Arc::clone(&data),
+            &stage(),
+            template("enemy_1007_slime", 4),
+            42,
+            30.,
+            Limits::default(),
+        )
+        .unwrap();
+        f.add_operator(key, operator_home([10, 8])).unwrap();
+        f.run(1).unwrap();
+        assert_eq!(f.unit(1).unwrap().attacks, 1);
+        assert_eq!(f.projectile_count(), 1);
+        let output = f.ally_states().unwrap();
+        f.run(7).unwrap();
+        assert_eq!(
+            f.enemies()
+                .iter()
+                .filter(|id| f.unit(**id).unwrap().damage_taken > 0.)
+                .count(),
+            victims,
+            "{key}"
+        );
+        assert_eq!(
+            f.enemies()
+                .iter()
+                .filter(|id| !f.unit(**id).unwrap().stats.buffs().is_empty())
+                .count(),
+            status_victims,
+            "{key}"
+        );
+        assert_eq!(output[0]["activations"], 0);
+        f.run(100).unwrap();
+        assert!(
+            f.ally_states().unwrap()[0]["activations"].as_u64().unwrap() >= 1,
+            "{key}"
+        );
+    }
+}
+#[test]
+fn unsupported_range_offsets_fail_before_operator_installation() {
+    use arkguard_engine::battle::operators::Definition;
+    let data = fixture_data();
+    let mut raw = data.table("chess").unwrap()["chess_char_1_03_a"].clone();
+    raw["rangeGrid"] = json!([[i32::MIN, 0]]);
+    assert!(Definition::compile("chess_char_1_03_a", &raw).is_err());
+    raw["rangeGrid"] = json!(vec![[0, 0]; 400]);
+    assert!(Definition::compile("chess_char_1_03_a", &raw).is_err());
 }
 #[test]
 fn allied_field_pauses_rejects_invalid_setup_and_preserves_output_ownership() {
@@ -472,7 +563,13 @@ fn allied_fields_match_full_battle() {
                             u["row"].as_i64().unwrap() as i32,
                             u["col"].as_i64().unwrap() as i32,
                         ],
-                        direction: Direction::Right,
+                        direction: match u["dir"].as_str().unwrap_or("RIGHT") {
+                            "RIGHT" => Direction::Right,
+                            "UP" => Direction::Up,
+                            "LEFT" => Direction::Left,
+                            "DOWN" => Direction::Down,
+                            _ => panic!("Unknown reference direction"),
+                        },
                     },
                 )
                 .unwrap();
@@ -484,7 +581,29 @@ fn allied_fields_match_full_battle() {
                 .iter()
                 .filter(|op| op["tick"].as_u64() == Some(i as u64))
             {
-                field.retreat_operator(op["id"].as_u64().unwrap()).unwrap();
+                if op["op"] == "retreat" {
+                    field.retreat_operator(op["id"].as_u64().unwrap()).unwrap();
+                } else {
+                    let mut q = hit::Request::new(
+                        Hit {
+                            source: None,
+                            credit: None,
+                            target: op["id"].as_u64().unwrap(),
+                            damage_type: DamageType::True,
+                            no_sp: true,
+                            silent: false,
+                            hp_loss: false,
+                            on_applied: false,
+                        },
+                        Damage {
+                            amount: op["amount"].as_f64().unwrap(),
+                            mul: 1.,
+                            resolved: false,
+                            penetration: Penetration::default(),
+                        },
+                    );
+                    field.damage(&mut q).unwrap();
+                }
             }
             field.run(1).unwrap_or_else(|e| {
                 panic!(
@@ -503,7 +622,7 @@ fn allied_fields_match_full_battle() {
         cases += 1;
     }
     assert!(child.wait().unwrap().success());
-    assert_eq!(cases, 84);
+    assert_eq!(cases, 108);
     eprintln!("Compared {cases} allied fields / {ticks} ticks");
 }
 #[test]

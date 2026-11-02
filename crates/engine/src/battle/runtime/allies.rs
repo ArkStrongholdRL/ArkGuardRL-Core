@@ -1,8 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Concrete default protector combat dispatch. Unsupported operator definitions
+//! Concrete original operator combat dispatch. Unsupported operator definitions
 //! are rejected by the roster before this host can execute them.
 use super::super::{ally, attacks, projectiles, search, skills, targeting};
 use super::*;
+#[derive(Clone, Copy)]
+pub(super) enum Shot {
+    Enemy(enemy::Delivery),
+    Ally {
+        source: Id,
+        attack_id: u64,
+        payload: attacks::Direct,
+        area: attacks::Area,
+    },
+}
 
 pub(super) struct Blocking<'a> {
     pub host: &'a mut Host,
@@ -102,15 +112,45 @@ impl skills::Hooks for Host {
     }
     fn condition(
         &mut self,
-        _: skills::Condition,
-        _: &skills::Runtime,
-        _: &mut World,
+        which: skills::Condition,
+        skill: &skills::Runtime,
+        w: &mut World,
     ) -> Result<bool, String> {
-        Err("Default TAKE_DAMAGE kit has no geometric trigger".into())
+        if which != skills::Condition::Default {
+            return Err("Unsupported operator trigger condition".into());
+        }
+        let id = skill.unit();
+        let keys = search::Host::range(self, id, w)?;
+        let p = self
+            .roster
+            .as_ref()
+            .unwrap()
+            .entry(id)?
+            .definition
+            .combat
+            .profile;
+        let limit = w.unit_capacity();
+        if !search::Host::enemies(self, id, &keys, p.selection, w, limit)?.is_empty() {
+            return Ok(true);
+        }
+        let held = w.unit(id)?.blocking().to_vec();
+        for target in held {
+            if targeting::can_target_enemy(w, self, Some(id), target, p.selection)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     fn profile(&mut self, id: Id, _: &mut World) -> Result<Option<search::AttackProfile>, String> {
-        self.roster.as_ref().unwrap().entry(id)?;
-        Ok(Some(search::AttackProfile::default()))
+        Ok(Some(
+            self.roster
+                .as_ref()
+                .unwrap()
+                .entry(id)?
+                .definition
+                .combat
+                .profile,
+        ))
     }
     fn has_sp_hook(&self) -> bool {
         false
@@ -201,7 +241,7 @@ impl ally::Host for Host {
         _: search::AttackProfile,
         _: &mut World,
     ) -> Result<bool, String> {
-        Err("Protector has no stored attack energy".into())
+        Err("No stored attack energy implemented for this operator".into())
     }
     fn perform(
         &mut self,
@@ -211,25 +251,62 @@ impl ally::Host for Host {
         skill: Option<&mut skills::Runtime>,
         w: &mut World,
     ) -> Result<(), String> {
+        let combat = self.roster.as_ref().unwrap().entry(id)?.definition.combat;
+        let is_skill = skill.as_deref().is_some_and(|s| s.attack_override());
+        let area = if is_skill {
+            combat.skill_area
+        } else {
+            combat.area
+        };
+        let payload = attacks::Direct {
+            mode: attacks::Mode::Damage(combat.damage),
+            hits: 1,
+            atk_scale: 1.,
+            skill_damage_mul: 1.,
+            target_damage_mul: 1.,
+            split_mul: None,
+            heal_scale: 1.,
+            is_skill,
+        };
         let mut executor = self.executor.take().ok_or("Reentrant attack executor")?;
-        let result = executor.perform_area(
-            w,
-            self,
-            id,
-            &selected.targets,
-            attacks::Direct {
-                mode: attacks::Mode::Damage(super::super::damage::DamageType::Physical),
-                hits: 1,
-                atk_scale: 1.,
-                skill_damage_mul: 1.,
-                target_damage_mul: 1.,
-                split_mul: None,
-                heal_scale: 1.,
-                is_skill: false,
-            },
-            attacks::Area::default(),
-            skill,
-        );
+        let result = (|| {
+            if let Some(projectile) = combat.projectile {
+                let Some(prepared) = executor.prepare(w, self, id, &selected.targets, payload)?
+                else {
+                    return Ok(());
+                };
+                for &target in &prepared.context.targets {
+                    self.flights
+                        .as_mut()
+                        .ok_or("Reentrant projectile launch")?
+                        .add(
+                            w,
+                            projectiles::Launch {
+                                from: w.unit(id)?.position,
+                                source: Some(id),
+                                target: Some(target),
+                                to: None,
+                                speed: 11.,
+                                hit_dead: area.splash.is_some(),
+                                max_age: 10.,
+                                on_hit: true,
+                                visual: projectile.into(),
+                                speed_changeable: None,
+                                removable: None,
+                                payload: Shot::Ally {
+                                    source: id,
+                                    attack_id: prepared.attack_id,
+                                    payload,
+                                    area,
+                                },
+                            },
+                        )?;
+                }
+                executor.finish(w, self, prepared, skill)
+            } else {
+                executor.perform_area(w, self, id, &selected.targets, payload, area, skill)
+            }
+        })();
         self.executor = Some(executor);
         result
     }
@@ -254,26 +331,83 @@ impl attacks::Hooks for Host {
     }
     fn radius_targets(
         &mut self,
-        _: [f64; 2],
-        _: f64,
-        _: bool,
-        _: &mut World,
-        _: usize,
+        origin: [f64; 2],
+        radius: f64,
+        splash: bool,
+        w: &mut World,
+        limit: usize,
     ) -> Result<Vec<Id>, String> {
-        Err("No protector area attack implemented".into())
+        let ids = self.spawns.as_ref().unwrap().live().to_vec();
+        spatial::enemies_in_radius(
+            w,
+            self,
+            &ids,
+            origin,
+            radius,
+            if splash {
+                spatial::RadiusRule::Centre
+            } else {
+                spatial::RadiusRule::Body
+            },
+            splash,
+            limit,
+        )
     }
     fn chain_link(&mut self, _: Id, _: Id, _: &mut World) -> Result<(), String> {
-        Err("No protector chain attack implemented".into())
+        Ok(()) // The source event is display-only.
     }
-    fn sluggish(&mut self, _: Id, _: Id, _: f64, _: &mut World) -> Result<(), String> {
-        Err("No protector attack status implemented".into())
+    fn sluggish(
+        &mut self,
+        source: Id,
+        target: Id,
+        duration: f64,
+        w: &mut World,
+    ) -> Result<(), String> {
+        let mut r = self.buffs.take().ok_or("Missing attack status context")?;
+        let result = super::super::status::apply(
+            w,
+            self,
+            &mut r,
+            Rect::NORMAL,
+            target,
+            "sluggish",
+            super::super::status::Options {
+                duration,
+                source: Some(source),
+                ..Default::default()
+            },
+        );
+        self.buffs = Some(r);
+        result.map(|_| ())
     }
     fn each_hit(
         &mut self,
-        _: attacks::Impact,
+        impact: attacks::Impact,
         _: Option<&mut skills::Runtime>,
-        _: &mut World,
+        w: &mut World,
     ) -> Result<(), String> {
+        if impact.kind == attacks::VictimKind::Main {
+            if let Some(target) = impact
+                .target
+                .filter(|id| w.unit(*id).is_ok_and(|u| u.stats.alive))
+            {
+                let combat = self
+                    .roster
+                    .as_ref()
+                    .unwrap()
+                    .entry(impact.attacker)?
+                    .definition
+                    .combat;
+                let duration = if impact.is_skill {
+                    combat.skill_sluggish
+                } else {
+                    combat.sluggish
+                };
+                if duration > 0. {
+                    attacks::Hooks::sluggish(self, impact.attacker, target, duration, w)?;
+                }
+            }
+        }
         Ok(())
     }
     fn after_hit(
@@ -301,30 +435,50 @@ impl attacks::Hooks for Host {
         Ok(())
     }
 }
-impl projectiles::Hooks<enemy::Delivery> for Host {
+impl projectiles::Hooks<Shot> for Host {
     fn has_step(&self) -> bool {
         false
     }
     fn step(
         &mut self,
-        _: &mut projectiles::Projectile<enemy::Delivery>,
-        _: &mut projectiles::System<enemy::Delivery>,
+        _: &mut projectiles::Projectile<Shot>,
+        _: &mut projectiles::System<Shot>,
         _: &mut World,
     ) -> Result<bool, String> {
         Err("No projectile step content installed".into())
     }
     fn impact(
         &mut self,
-        p: &mut projectiles::Projectile<enemy::Delivery>,
+        p: &mut projectiles::Projectile<Shot>,
         target: Option<Id>,
-        _: &mut projectiles::System<enemy::Delivery>,
+        _: &mut projectiles::System<Shot>,
         w: &mut World,
     ) -> Result<(), String> {
-        let mut r = self.buffs.take().ok_or("Missing projectile buff context")?;
-        let mut rng = self.rng.clone();
-        let result = enemy::impact(w, &mut r, &mut rng, self, p.payload, target);
-        self.buffs = Some(r);
-        self.rng = rng;
-        result.map(|_| ())
+        match p.payload {
+            Shot::Ally {
+                source,
+                attack_id,
+                payload,
+                area,
+            } => {
+                let mut executor = self
+                    .executor
+                    .take()
+                    .ok_or("Reentrant projectile executor")?;
+                let result = executor.impact_at(
+                    w, self, source, target, attack_id, payload, area, p.position, None,
+                );
+                self.executor = Some(executor);
+                result
+            }
+            Shot::Enemy(delivery) => {
+                let mut r = self.buffs.take().ok_or("Missing projectile buff context")?;
+                let mut rng = self.rng.clone();
+                let result = enemy::impact(w, &mut r, &mut rng, self, delivery, target);
+                self.buffs = Some(r);
+                self.rng = rng;
+                result.map(|_| ())
+            }
+        }
     }
 }
