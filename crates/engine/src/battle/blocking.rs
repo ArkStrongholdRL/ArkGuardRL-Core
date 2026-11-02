@@ -10,6 +10,63 @@ pub trait Hooks {
     /// Content host updates stealth restoration after a block ends.
     fn ended(&mut self, enemy: Id, w: &mut World) -> Result<(), String>;
 }
+/// Called by the concrete host's `ended` hook, once the relationship is cleared.
+/// Each concealment source has an independent restoration timer.
+pub fn restore_stealth<H: super::buffs::Hooks>(
+    w: &mut World,
+    runtime: &mut super::buffs::Runtime,
+    h: &mut H,
+    id: Id,
+) -> Result<(), String> {
+    runtime.call(|runtime| {
+        let u = w.unit_mut(id)?;
+        if u.side != super::health::Side::Enemy
+            || !u.stats.alive
+            || !u
+                .stats
+                .stats()
+                .map_err(str::to_string)?
+                .flags
+                .contains("stealth")
+        {
+            return Ok(());
+        }
+        let sources: Vec<_> = u
+            .stats
+            .buffs()
+            .iter()
+            .filter(|b| b.flags.contains("stealth"))
+            .map(|b| {
+                (
+                    format!("stealthOff:{}", b.key.as_deref().unwrap_or("null")),
+                    b.runtime
+                        .stealth_restore
+                        .filter(|n| n.is_finite())
+                        .unwrap_or(3.),
+                )
+            })
+            .collect();
+        for (key, duration) in sources {
+            if duration > 0. {
+                let mut b = super::stats::Buff::default();
+                b.key = Some(key);
+                b.flags.insert("stealthOff".into());
+                b.runtime.duration = duration;
+                runtime.add(
+                    w,
+                    h,
+                    id,
+                    super::buffs::Spec {
+                        buff: b,
+                        flags_present: true,
+                        ..Default::default()
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    })
+}
 pub fn unblock<H: Hooks>(w: &mut World, h: &mut H, enemy: Id) -> Result<(), String> {
     let Some(blocker) = w.unit(enemy)?.blocked_by else {
         return Ok(());

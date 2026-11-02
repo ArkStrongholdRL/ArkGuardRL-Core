@@ -7,6 +7,7 @@ pub mod body;
 pub mod buffs;
 pub mod cadence;
 pub mod clock;
+pub mod content;
 pub mod damage;
 pub mod definitions;
 pub mod deploy;

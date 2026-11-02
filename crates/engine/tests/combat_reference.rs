@@ -3,6 +3,7 @@
 use arkguard_engine::{
     battle::{
         ally, attacks, blocking, body, buffs,
+        content::enemies as enemy_content,
         damage::DamageType,
         element::{self, Element},
         enemy,
@@ -74,9 +75,6 @@ impl Host {
     }
 }
 impl Queries for Host {
-    fn enemy_stealthed(&mut self, _: u64, _: &mut World) -> Result<bool, String> {
-        Ok(false)
-    }
     fn skip_enemy(&mut self, _: Option<u64>, _: u64, _: &mut World) -> Result<bool, String> {
         Ok(false)
     }
@@ -773,12 +771,27 @@ fn native_composition_matches_continuous_attacks() {
             rng: Rng::new(42),
         };
         h.move_target(&mut w, true).unwrap();
+        let mut content = enemy_content::Runtime::new(6).unwrap();
+        if let Some(key) = d["contentKey"].as_str() {
+            let mut buffs = h.buffs.take().unwrap();
+            content
+                .spawn(
+                    &mut w,
+                    &mut buffs,
+                    &mut h,
+                    2,
+                    enemy_content::Kit::compile(key, &d["contentRaw"], &Value::Null, None).unwrap(),
+                    &Value::Null,
+                )
+                .unwrap();
+            h.buffs = Some(buffs);
+        }
         s.reset(&mut w, &mut h, None).unwrap();
         let mut cache = Commitments::new(1, 8, 8).unwrap();
         let mut states = vec![];
         for tick in 0..240 {
             w.time = tick as f64 / 30.0;
-            if d["i"].as_u64().unwrap() >= 40 && d["healer"] != true && tick == 0 {
+            if (40..60).contains(&d["i"].as_u64().unwrap()) && d["healer"] != true && tick == 0 {
                 let el = [
                     Element::Burn,
                     Element::Neural,
@@ -924,6 +937,30 @@ fn native_composition_matches_continuous_attacks() {
                         .unwrap();
                 }
             }
+            if d.get("contentKey").is_some() {
+                for (at, key, duration) in [
+                    (12, "reveal", 0.8),
+                    (90, "reveal", 0.8),
+                    (40, "silence", 0.3),
+                    (120, "silence", 0.3),
+                ] {
+                    if tick == at {
+                        status::apply(
+                            &mut w,
+                            &mut h,
+                            &mut buffs,
+                            Rect::FULL,
+                            2,
+                            key,
+                            status::Options {
+                                duration,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                    }
+                }
+            }
             buffs.tick(&mut w, &mut h, &units, 1.0 / 30.0).unwrap();
             h.buffs = Some(buffs);
 
@@ -981,6 +1018,11 @@ fn native_composition_matches_continuous_attacks() {
                 )
                 .unwrap();
             h.flights = Some(flights);
+            let mut buffs = h.buffs.take().unwrap();
+            content
+                .tick(&mut w, &mut buffs, &mut h, &[2], 1. / 30.)
+                .unwrap();
+            h.buffs = Some(buffs);
             if d["stop"] == true && tick == 100 {
                 s.end(&mut w, &mut h, "stopped").unwrap();
             }
@@ -1011,5 +1053,5 @@ fn native_composition_matches_continuous_attacks() {
         count += 1;
     }
     assert!(child.wait().unwrap().success());
-    assert_eq!(count, 60);
+    assert_eq!(count, 84);
 }

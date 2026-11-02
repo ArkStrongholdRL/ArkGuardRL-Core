@@ -26,7 +26,9 @@ pub struct State {
 /// Content-specific exclusion, per-source stealth restoration and geometric route
 /// distances are resolved by the concrete battle host, without executing actions.
 pub trait Queries {
-    fn enemy_stealthed(&mut self, id: Id, w: &mut World) -> Result<bool, String>;
+    fn enemy_stealthed(&mut self, id: Id, w: &mut World) -> Result<bool, String> {
+        enemy_stealthed(w, id)
+    }
     fn skip_enemy(
         &mut self,
         attacker: Option<Id>,
@@ -35,6 +37,29 @@ pub trait Queries {
     ) -> Result<bool, String>;
     fn remaining_distance(&mut self, id: Id, w: &mut World) -> Result<f64, String>;
     fn body_distance(&mut self, id: Id, origin: [f64; 2], w: &mut World) -> Result<f64, String>;
+}
+/// The same per-source concealment rule for direct picks, radius queries and AI.
+pub fn enemy_stealthed(w: &mut World, id: Id) -> Result<bool, String> {
+    let u = w.unit_mut(id)?;
+    let blocked = u.blocked_by().is_some();
+    let flags = &u.stats.stats().map_err(str::to_string)?.flags;
+    if !flags.contains("stealth") || flags.contains("reveal") || blocked {
+        return Ok(false);
+    }
+    if !flags.contains("stealthOff") {
+        return Ok(true);
+    }
+    Ok(u.stats
+        .buffs()
+        .iter()
+        .filter(|b| b.flags.contains("stealth"))
+        .any(|b| {
+            let key = format!("stealthOff:{}", b.key.as_deref().unwrap_or("null"));
+            !u.stats
+                .buffs()
+                .iter()
+                .any(|off| off.key.as_deref() == Some(key.as_str()))
+        }))
 }
 fn snapshot(w: &mut World, id: Id) -> Result<Stats, String> {
     w.unit_mut(id)?

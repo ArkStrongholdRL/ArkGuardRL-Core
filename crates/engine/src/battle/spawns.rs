@@ -34,6 +34,47 @@ pub struct Runtime {
     depth: usize,
 }
 impl Runtime {
+    /// The complete battle owner checks scheduled content before starting. The
+    /// explicit bare-engine oracle can still exercise unsupported definitions.
+    pub fn validate_content(&self, data: &Catalog) -> Result<(), String> {
+        for p in self.queue.pending() {
+            let key = p.spec["enemyKey"].as_str().ok_or("Missing enemy key")?;
+            let raw = &data.table("enemies").ok_or("Missing enemy data")?[key];
+            super::content::enemies::Kit::compile(
+                key,
+                raw,
+                self.content_overrides(key),
+                p.spec["tag"].as_str(),
+            )?;
+        }
+        Ok(())
+    }
+    /// Use from the required spawned callback, after deploy and before enemySpawn
+    /// consumers. No JS objects, source checkout or renderer enter this path.
+    pub fn install_content<H: super::buffs::Hooks>(
+        &self,
+        data: &Catalog,
+        w: &mut World,
+        buffs: &mut super::buffs::Runtime,
+        content: &mut super::content::enemies::Runtime,
+        h: &mut H,
+        id: Id,
+    ) -> Result<(), String> {
+        let key = &self.definition(id)?.key;
+        let entry = self
+            .ledger
+            .alive()
+            .get(&id)
+            .ok_or("Missing spawned enemy ledger entry")?;
+        let raw = &data.table("enemies").ok_or("Missing enemy data")?[key];
+        let kit = super::content::enemies::Kit::compile(
+            key,
+            raw,
+            self.content_overrides(key),
+            entry.tag.as_str(),
+        )?;
+        content.spawn(w, buffs, h, id, kit, &entry.mods)
+    }
     pub fn new(
         data: &Catalog,
         template: Template,

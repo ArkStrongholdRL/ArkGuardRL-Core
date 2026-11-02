@@ -43,6 +43,7 @@ pub struct State {
     pub injury: Injury,
     pub mods_present: bool,
     pub flags_present: bool,
+    pub stealth_restore: Option<f64>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -72,6 +73,7 @@ impl Default for State {
             injury: Injury::default(),
             mods_present: false,
             flags_present: false,
+            stealth_restore: None,
         }
     }
 }
