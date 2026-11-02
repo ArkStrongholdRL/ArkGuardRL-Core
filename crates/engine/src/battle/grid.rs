@@ -163,6 +163,19 @@ pub struct Rect {
     pub c1: i32,
 }
 impl Rect {
+    // Simulation bounds include the goal columns outside the deployable board.
+    pub const NORMAL: Self = Self {
+        r0: 9,
+        r1: 12,
+        c0: 0,
+        c1: 10,
+    };
+    pub const BOSS: Self = Self {
+        r0: 0,
+        r1: 5,
+        c0: 0,
+        c1: 20,
+    };
     pub const FULL: Self = Self {
         r0: 0,
         r1: 18,

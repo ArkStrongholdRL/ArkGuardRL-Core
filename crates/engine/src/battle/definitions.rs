@@ -25,6 +25,7 @@ pub struct Enemy {
     pub elemental_resistance: f64,
     pub not_count_in_total: bool,
     pub hit_area: Option<HitArea>,
+    pub static_body: bool,
 }
 impl Enemy {
     /// Normalization is independent of content dispatch. A normalized definition
@@ -200,6 +201,7 @@ impl Enemy {
             elemental_resistance: get("elementDmgRes", "epDamageResistance", 0.),
             not_count_in_total: raw["notCountInTotal"] == true,
             hit_area,
+            static_body: raw["staticBody"] == true,
         })
     }
     pub fn with_overrides(&self, value: &Value) -> Self {
@@ -266,6 +268,7 @@ impl Enemy {
         u.deployment.deployed_at = time;
         u.block_weight = self.block_weight;
         u.hit_area = self.hit_area;
+        u.static_body = self.static_body;
         u.immune = self.immune.clone();
         u.ep_resistance = self.ep_resistance;
         u.elemental_resistance = self.elemental_resistance;

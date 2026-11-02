@@ -1,6 +1,6 @@
 // Actual updateEnemy + blocking + buff/HP/projectile systems, no match assets.
 import path from'node:path';import{pathToFileURL}from'node:url';const root=path.resolve(process.argv[2]);const imp=p=>import(pathToFileURL(path.join(root,p)));
-const{BattleHooks}=await imp('server/sim/battle/hooks.js');const ai=await imp('server/sim/ai.js');const{Unit}=await imp('server/sim/units.js');const{Grid}=await imp('server/sim/grid.js');const{BattleStatus}=await imp('server/sim/battle/status.js');const{BattleBlocking}=await imp('server/sim/battle/blocking.js');const{BattleQueries}=await imp('server/sim/battle/queries.js');const{ProjectileSystem}=await imp('server/sim/projectiles.js');const{resolveDamage}=await imp('server/sim/attack/hit.js');const{makeDamageInfo}=await imp('server/sim/attack/helpers.js');const{heal}=await imp('server/sim/attack/heal.js');const{createRng}=await imp('server/sim/rng.js');
+const{BattleDisplacement}=await imp('server/sim/battle/displacement.js');const{BattleHooks}=await imp('server/sim/battle/hooks.js');const ai=await imp('server/sim/ai.js');const{Unit}=await imp('server/sim/units.js');const{Grid}=await imp('server/sim/grid.js');const{BattleStatus}=await imp('server/sim/battle/status.js');const{BattleBlocking}=await imp('server/sim/battle/blocking.js');const{BattleQueries}=await imp('server/sim/battle/queries.js');const{ProjectileSystem}=await imp('server/sim/projectiles.js');const{resolveDamage}=await imp('server/sim/attack/hit.js');const{makeDamageInfo}=await imp('server/sim/attack/helpers.js');const{heal}=await imp('server/sim/attack/heal.js');const{createRng}=await imp('server/sim/rng.js');
 const bits=x=>{const b=Buffer.alloc(8);b.writeDoubleBE(x);return b.toString('hex');};
 for(let i=0;i<144;i++){
  const cfg={i,mode:['phys','arts','true','heal','none'][i%5],melee:i%3===0,moves:i%7===0,deferred:i%11===0,blockFree:i%13===0,clip:i%4===0?null:{dur:[.4,.8,1.2][i%3],hit:i%7===0?null:.3},maxTargets:1+i%3,bat:[.4,.8,1][i%3],skip:i%17===0,keep:i%5===0,cancel:i%23===0,interrupt:i%29===0};
@@ -16,6 +16,7 @@ for(let i=0;i<144;i++){
  for(const a of allies)b._occ[a.tileR*21+a.tileC]=a;
  for(const key of['addBuff','removeBuff','_removeBuffAt','_tickBuffs','_applyValuedStatus','applyStatus','resistOf','_setAttractPoint'])b[key]=BattleStatus.prototype[key];
  for(const key of['_checkBlock','_blockerFor','_unblock','releaseBlocked'])b[key]=BattleBlocking.prototype[key];b._stealthSwitch=()=>{};
+ for(const key of ['forceLevel','push','pull','pullToFront','pushDistance','_displaceable','_staticForce','_unbalance','displace'])b[key]=BattleDisplacement.prototype[key];
  b.alliesInRadius=BattleQueries.prototype.alliesInRadius;b.enemiesInRadius=BattleQueries.prototype.enemiesInRadius;b.projectiles=new ProjectileSystem(b);b.addProjectile=p=>b.projectiles.add(p);
  const dispatch=b.emit;b._hooks=Object.create(null);b._emitDepth=0;b._frameName=[];b._frameOwner=[];b._frameCtx=[];b._handlerError=(label,owner,error)=>{throw error;};b.on=BattleHooks.prototype.on;b.off=BattleHooks.prototype.off;b.emit=BattleHooks.prototype.emit;for(const name of ['enemyAttackStart','palsyTrigger','beforeAttack','attack'])b.on(name,c=>dispatch.call(b,name,c),{owner:e});
  b.applyStatus(e,'palsy',{value:i%3+1,duration:2});const states=[];
@@ -28,6 +29,9 @@ for(let i=0;i<144;i++){
   if(tick===65)b.applyStatus(e,'disarm',{duration:.25});
   if(tick===90)b.applyStatus(e,'fear',{duration:.25,source:allies[0]});
   if(tick===110)b.applyStatus(e,'attract',{duration:.25,point:[10,8]});
+  if(tick===85)b.push(e,1,{from:allies[0]});
+  if(tick===115)b.pullToFront(e,allies[1],2);
+  if(tick===145)b.push(e,3,{from:allies[0],dir:{x:1,y:0},fixed:true});
   if(tick===100)e.unbalanceUntil=b.time+.3;
   if(tick===104)b.applyStatus(e,'levitate',{duration:.1});
   if(tick===80){e.profile.atkScale=1.5;e.base.atk+=3;e.markDirty();}

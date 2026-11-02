@@ -53,7 +53,7 @@ fn every_enemy_definition_and_spawn_match() {
             .map(|k| (k.clone(), json!(bits(u.stats.base_number(k)))))
             .collect();
         let fly = u.stats.is_flying(true, u.motion_fly).unwrap();
-        let actual = json!({"base":base,"hp":bits(u.stats.hp),"blockWeight":bits(u.block_weight),"fly":fly,"immune":u.immune,"position":u.position.map(bits)});
+        let actual = json!({"base":base,"hp":bits(u.stats.hp),"blockWeight":bits(u.block_weight),"fly":fly,"staticBody":u.static_body,"immune":u.immune,"position":u.position.map(bits)});
         assert_eq!(actual, c["unit"], "spawn {key}");
         count += 1;
     }
@@ -81,5 +81,5 @@ fn snapshot(d: &Enemy) -> Value {
     json!({"key":d.key,"base":d.base.0,"dmgType":mode,"melee":d.profile.melee,"motion":if d.fly{"FLY"}else{"WALK"},"leader":d.leader,
             "lpr":d.lpr,"blockWeight":d.block_weight,"immune":d.immune,"epResistance":d.ep_resistance,"elementalResistance":d.elemental_resistance,
             "notCountInTotal":d.not_count_in_total,"hitArea":d.hit_area.map(|a|json!({"w":a.width,"h":a.height,"dx":a.dx,"dy":a.dy})),
-            "attackAnim":d.profile.animation.map(|a|json!({"dur":a.duration,"hit":a.hit})),"attackMoves":d.profile.attack_moves})
+            "attackAnim":d.profile.animation.map(|a|json!({"dur":a.duration,"hit":a.hit})),"attackMoves":d.profile.attack_moves,"staticBody":d.static_body})
 }

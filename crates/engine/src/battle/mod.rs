@@ -11,6 +11,7 @@ pub mod damage;
 pub mod definitions;
 pub mod deploy;
 pub mod direction;
+pub mod displacement;
 pub mod element;
 pub mod enemy;
 pub mod events;

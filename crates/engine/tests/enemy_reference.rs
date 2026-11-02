@@ -4,6 +4,8 @@ use arkguard_engine::{
         buffs::{self, Runtime},
         damage::DamageType,
         deploy::{self, Deployment, Kind, Options},
+        direction::Direction,
+        displacement::{self, Origin, Push},
         enemy::{self, Animation, Context, Delivery, Event, Mode, Profile},
         events,
         grid::{Grid, Rect},
@@ -599,6 +601,27 @@ fn enemy_updates_match() {
             }
             if tick == 100 {
                 w.unit_mut(1).unwrap().motion.unbalance_until = w.time + 0.3;
+            }
+            if tick == 85 || tick == 145 {
+                let from = Origin::unit(&w, 2, Direction::Right).unwrap();
+                displacement::push(
+                    &mut w,
+                    &g,
+                    &mut h,
+                    1,
+                    if tick == 85 { 1. } else { 3. },
+                    Push {
+                        from: Some(from),
+                        direction: if tick == 145 { Some([0., 1.]) } else { None },
+                        fixed: tick == 145,
+                        ..Push::default()
+                    },
+                )
+                .unwrap();
+            }
+            if tick == 115 {
+                displacement::pull_to_front(&mut w, &g, &mut h, 1, 3, Direction::Right, 2.)
+                    .unwrap();
             }
             if tick == 80 {
                 let atk = w.unit(1).unwrap().stats.base_number("atk");

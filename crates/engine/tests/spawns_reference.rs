@@ -310,12 +310,7 @@ fn native_spawn_to_result_matches_headless_battle() {
         let o = &v["options"];
         let mut stage = data.table("stages").unwrap()[o["stageId"].as_str().unwrap()].clone();
         stage["legend"] = stage["tiles"].clone();
-        let rect = Rect {
-            r0: 9,
-            r1: 12,
-            c0: 2,
-            c1: 10,
-        };
+        let rect = Rect::NORMAL;
         let grid = Grid::new(&stage, rect).unwrap();
         let mut template = Template::parse(
             &json!({"spawns":o["spawns"],"routes":o["routes"],"overrides":o["enemyOverrides"]}),
