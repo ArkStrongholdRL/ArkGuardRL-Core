@@ -44,8 +44,14 @@ impl Route {
         let mut legs = vec![];
         let tile = |v: &Value| -> Result<[i32; 2], String> {
             let coord = |n: &Value| {
-                n.as_i64()
-                    .and_then(|n| i32::try_from(n).ok())
+                n.as_f64()
+                    .filter(|n| {
+                        n.is_finite()
+                            && n.fract() == 0.0
+                            && *n >= i32::MIN as f64
+                            && *n <= i32::MAX as f64
+                    })
+                    .map(|n| n as i32)
                     .ok_or_else(|| "Route coordinates must be i32 tiles".to_string())
             };
             Ok([
