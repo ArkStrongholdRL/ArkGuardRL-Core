@@ -5,6 +5,7 @@ use arkguard_engine::{
         damage::DamageType,
         deploy::{self, Deployment, Kind, Options},
         enemy::{self, Animation, Context, Delivery, Event, Mode, Profile},
+        events,
         grid::{Grid, Rect},
         health::{self, Side, Unit, World},
         motion,
@@ -37,6 +38,7 @@ fn dmg(k: DamageType) -> &'static str {
 struct Host {
     cfg: Value,
     tick: u32,
+    events: Option<events::Runtime<Event>>,
     trace: Vec<Value>,
     deployment: Option<Deployment>,
     flights: Option<System<Delivery>>,
@@ -250,8 +252,11 @@ impl enemy::Hooks for Host {
     fn can_target(&mut self, _: u64, ally: u64, _: &mut World) -> Result<bool, String> {
         Ok(self.cfg["skip"] != true || ally != 3)
     }
-    fn enemy_event_enabled(&self, _: Event) -> bool {
-        true
+    fn enemy_event_enabled(&self, event: Event) -> bool {
+        self.events
+            .as_ref()
+            .map(|bus| bus.has_hook(&event))
+            .unwrap_or(false)
     }
     fn enemy_event(
         &mut self,
@@ -261,6 +266,74 @@ impl enemy::Hooks for Host {
         w: &mut World,
         _: &mut Grid,
         _: &mut Rng,
+    ) -> Result<(), String> {
+        let mut bus = self.events.take().unwrap();
+        let result = bus.emit(
+            &event,
+            &mut events::Context::new(c),
+            &mut Handler { h: self, r, w },
+        );
+        self.events = Some(bus);
+        result
+    }
+    fn attack_visual(&mut self, source: u64, target: u64, visual: &str) -> Result<(), String> {
+        self.trace.push(json!(["atk", source, target, visual]));
+        Ok(())
+    }
+    fn palsy_visual(&mut self, _: u64, _: &World) -> Result<(), String> {
+        self.trace.push(json!(["palsy"]));
+        Ok(())
+    }
+    fn deliver(
+        &mut self,
+        d: Delivery,
+        r: &mut Runtime,
+        w: &mut World,
+        rng: &mut Rng,
+    ) -> Result<(), String> {
+        if d.projectile {
+            self.flights.as_mut().unwrap().add(
+                w,
+                Launch {
+                    from: w.unit(d.source)?.position,
+                    source: Some(d.source),
+                    target: Some(d.target),
+                    to: None,
+                    speed: 10.0,
+                    hit_dead: false,
+                    max_age: 10.0,
+                    on_hit: true,
+                    visual: "enemy".into(),
+                    speed_changeable: None,
+                    removable: None,
+                    payload: d,
+                },
+            )?;
+        } else {
+            enemy::impact(w, r, rng, self, d, Some(d.target))?;
+        }
+        Ok(())
+    }
+}
+fn callback_bus() -> events::Runtime<Event> {
+    let mut bus = events::Runtime::new(16, 16, 64, 256).unwrap();
+    for (event, token) in [
+        (Event::AttackStart, 1),
+        (Event::PalsyTrigger, 2),
+        (Event::BeforeAttack, 3),
+        (Event::Attack, 4),
+    ] {
+        bus.on(event, token, 0.0, Some(1), false).unwrap();
+    }
+    bus
+}
+impl Host {
+    fn dispatch(
+        &mut self,
+        event: Event,
+        c: &mut Context,
+        r: &mut Runtime,
+        w: &mut World,
     ) -> Result<(), String> {
         match event {
             Event::AttackStart => {
@@ -309,43 +382,28 @@ impl enemy::Hooks for Host {
         }
         Ok(())
     }
-    fn attack_visual(&mut self, source: u64, target: u64, visual: &str) -> Result<(), String> {
-        self.trace.push(json!(["atk", source, target, visual]));
-        Ok(())
-    }
-    fn palsy_visual(&mut self, _: u64, _: &World) -> Result<(), String> {
-        self.trace.push(json!(["palsy"]));
-        Ok(())
-    }
-    fn deliver(
+}
+struct Handler<'a> {
+    h: &'a mut Host,
+    r: &'a mut Runtime,
+    w: &'a mut World,
+}
+impl<'a, 'b> events::Host<Event, &'b mut Context> for Handler<'a> {
+    fn hook(
         &mut self,
-        d: Delivery,
-        r: &mut Runtime,
-        w: &mut World,
-        rng: &mut Rng,
+        _: u64,
+        token: u64,
+        c: &mut events::Context<&'b mut Context>,
+        _: &mut events::Runtime<Event>,
     ) -> Result<(), String> {
-        if d.projectile {
-            self.flights.as_mut().unwrap().add(
-                w,
-                Launch {
-                    from: w.unit(d.source)?.position,
-                    source: Some(d.source),
-                    target: Some(d.target),
-                    to: None,
-                    speed: 10.0,
-                    hit_dead: false,
-                    max_age: 10.0,
-                    on_hit: true,
-                    visual: "enemy".into(),
-                    speed_changeable: None,
-                    removable: None,
-                    payload: d,
-                },
-            )?;
-        } else {
-            enemy::impact(w, r, rng, self, d, Some(d.target))?;
-        }
-        Ok(())
+        let event = match token {
+            1 => Event::AttackStart,
+            2 => Event::PalsyTrigger,
+            3 => Event::BeforeAttack,
+            4 => Event::Attack,
+            _ => return Err("Unknown enemy callback token".into()),
+        };
+        self.h.dispatch(event, c.value, self.r, self.w)
     }
 }
 struct Flight<'a> {
@@ -400,6 +458,7 @@ fn enemy_updates_match() {
         let mut h = Host {
             cfg: c.clone(),
             tick: 0,
+            events: Some(callback_bus()),
             trace: vec![],
             deployment: Some(Deployment::new(Rect::FULL, 3, 1, 99.0).unwrap()),
             flights: Some(System::new(64).unwrap()),
@@ -639,6 +698,7 @@ fn boundary_fixture() -> (World, Grid, Runtime, Rng, Host) {
     let h = Host {
         cfg: json!({"i":1,"mode":"phys","melee":false,"moves":false,"deferred":false,"blockFree":false,"maxTargets":1,"clip":{"dur":1.0,"hit":0.5},"skip":false,"keep":false,"cancel":false,"interrupt":false}),
         tick: 0,
+        events: Some(callback_bus()),
         trace: vec![],
         deployment: Some(Deployment::new(Rect::FULL, 3, 1, 99.0).unwrap()),
         flights: Some(System::new(16).unwrap()),
