@@ -22,6 +22,7 @@ pub mod hit;
 pub mod injury;
 pub mod ledger;
 pub mod motion;
+pub mod operators;
 pub mod projectiles;
 pub mod runtime;
 pub mod search;

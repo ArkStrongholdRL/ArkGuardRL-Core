@@ -505,6 +505,31 @@ impl Runtime {
         }
         Ok(true)
     }
+    /// Deployment removal keeps persistent effects without running onRemove or
+    /// elemental-expiry callbacks (battle/deploy.js). Detached effects remain
+    /// accessible to an enclosing callback until the outer dispatch completes.
+    pub fn discard_temporary<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        unit: Id,
+    ) -> Result<(), String> {
+        self.call(|r| {
+            r.adopt(w, unit)?;
+            let ids: Vec<_> = w
+                .unit(unit)?
+                .stats
+                .buffs()
+                .iter()
+                .filter(|b| !b.runtime.persist)
+                .map(|b| b.runtime.id)
+                .collect();
+            for id in ids {
+                r.remove_one(w, h, unit, id, false)?;
+            }
+            Ok(())
+        })
+    }
     pub fn tick<H: Hooks>(
         &mut self,
         w: &mut World,
@@ -706,6 +731,29 @@ mod tests {
         let mut spec = Spec::default();
         spec.buff.key = Some(key.into());
         spec
+    }
+    #[test]
+    fn deployment_discard_keeps_persistent_effects_and_defers_record_release() {
+        let mut w = world();
+        let mut r = Runtime::new(4, 4, 8).unwrap();
+        let mut h = Host;
+        let mut temporary = named("temporary");
+        // This handler would remove b if normal onRemove dispatch ran.
+        temporary.buff.runtime.on_remove = Some(1);
+        let id = r.add(&mut w, &mut h, 1, temporary).unwrap().unwrap();
+        let mut persistent = named("b");
+        persistent.buff.runtime.persist = true;
+        r.add(&mut w, &mut h, 1, persistent).unwrap();
+        r.call(|r| {
+            r.discard_temporary(&mut w, &mut h, 1)?;
+            assert_eq!(r.get(&w, 1, id)?.key.as_deref(), Some("temporary"));
+            assert_eq!(w.unit(1)?.stats.buffs().len(), 1);
+            assert_eq!(w.unit(1)?.stats.buffs()[0].key.as_deref(), Some("b"));
+            Ok(())
+        })
+        .unwrap();
+        assert!(r.get(&w, 1, id).is_err());
+        assert!(r.retained.is_empty());
     }
     #[test]
     fn capacity_failure_preserves_existing_effect_and_faults_runtime() {

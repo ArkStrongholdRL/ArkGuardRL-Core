@@ -12,6 +12,17 @@ use super::{
 };
 use crate::deterministic::rng::Rng;
 pub trait Hooks: buffs::Hooks + Sized {
+    /// Death may synchronously end a skill or release a blocker. Keep the active
+    /// canonical buff runtime available instead of borrowing a second effect pool.
+    fn health_kill(
+        &mut self,
+        target: Id,
+        credit: Option<Id>,
+        _r: &mut Runtime,
+        w: &mut World,
+    ) -> HookResult {
+        self.kill(target, credit, w)
+    }
     fn phase_enabled(&self, _phase: Phase) -> bool {
         false
     }
@@ -276,7 +287,7 @@ impl<H: Hooks> health::Hooks for Pipeline<'_, H> {
         self.h.hit_cap(target, amount)
     }
     fn kill(&mut self, target: Id, credit: Option<Id>, w: &mut World) -> HookResult {
-        self.h.kill(target, credit, w)
+        self.h.health_kill(target, credit, self.r, w)
     }
     fn heal_through(&mut self, source: Id, target: Id, w: &World) -> bool {
         self.h.heal_through(source, target, w)
