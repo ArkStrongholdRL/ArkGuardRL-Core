@@ -1,4 +1,4 @@
-// Concrete native solo field oracle with original default protectors and all
+// Concrete native solo field oracle with original default operators and all
 // admitted enemy kits. Includes full Battle phases and long skill/redeploy fights.
 import fs from'node:fs';import path from'node:path';import{pathToFileURL}from'node:url';
 const root=path.resolve(process.argv[2]),imp=p=>import(pathToFileURL(path.join(root,p)));
@@ -10,7 +10,7 @@ const bits=x=>{const b=Buffer.alloc(8);b.writeDoubleBE(x);return b.toString('hex
 const encode=x=>typeof x==='number'?(Number.isFinite(x)?bits(x):null):Array.isArray(x)?x.map(encode):x&&typeof x==='object'?Object.fromEntries(Object.entries(x).map(([k,v])=>[k,encode(v)])):x;
 const stage={rows:Array(19).fill('r'.repeat(21)),legend:{}};
 const cases=[...keys.map((key,i)=>({key,seed:i+21,long:false})),...['enemy_1007_slime',keys.find(k=>k.includes('lurker')),'enemy_1148_dssbr','enemy_1305_mhslim','enemy_2021_syfish','enemy_1229_darmy'].map((key,i)=>({key,seed:i+600,long:true}))];
-const ranged=['1_03','1_11','1_14'].flatMap(k=>['a','b'].map(v=>'chess_char_'+k+'_'+v));
+const ranged=['1_03','1_11','1_14','1_07'].flatMap(k=>['a','b'].map(v=>'chess_char_'+k+'_'+v));
 for(const operator of ranged)for(const dir of ['RIGHT','UP','LEFT','DOWN'])cases.push({key:'enemy_1007_slime',operator,dir,seed:1000+cases.length,long:true});
 for(const c of cases){
  if(!data.enemies[c.key])throw Error('Missing oracle enemy '+c.key);
@@ -20,7 +20,8 @@ for(const c of cases){
  let units=[{chessId:'chess_char_1_02_a',uid:1,row:10,col:6},{chessId:'chess_char_1_02_b',uid:2,row:11,col:6}];
  if(c.operator){
   const home=c.dir==='DOWN'?[11,5]:[10,5],vec={RIGHT:[0,1],UP:[1,0],LEFT:[0,-1],DOWN:[-1,0]}[c.dir];
-  const target=[home[0]+2*vec[0],home[1]+2*vec[1]];
+  const distance=c.operator.includes('1_07')&&['UP','LEFT'].includes(c.dir)?1:2;
+  const target=[home[0]+distance*vec[0],home[1]+distance*vec[1]];
   units=[{chessId:c.operator,uid:1,row:home[0],col:home[1],dir:c.dir}];
   routes=[{start:target,end:[10,0],checkpoints:[{type:'WAIT',time:150}]}];
   spawns=[{enemyKey:c.key,time:c.dir==='UP'?70:0,count:4,interval:.2,mods:{hpMul:500,atkMul:.1}}];

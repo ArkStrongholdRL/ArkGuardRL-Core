@@ -77,6 +77,9 @@ fn fixture_data() -> Arc<Catalog> {
                     "skill":{"skillId":skill,"duration":2,"initSp":1,"spCost":1,"spType":"INCREASE_WITH_TIME","trigger":{"rule":"DEFAULT"},"bb":bb},
                     "talents":[{"index":0,"bb":talent}],"trait":{"bb":tb},"rangeGrid":[[0,0],[0,1],[0,2]],"position":"RANGED","profession":profession,"subProfessionId":branch});
             }
+            chess["chess_char_1_07_a"] = json!({"stats":{"maxHp":100,"atk":20,"bat":1.,"cost":5,"respawnTime":3},
+                "skill":{"skillId":"skchr_prove_1","skillType":"PASSIVE","duration":0,"initSp":0,"spCost":0,"maxChargeTime":0,"spType":"ON_DEPLOY","trigger":{"rule":"DEFAULT"},"bb":{"hp_ratio_drop":0.2,"atk_scale_up":0.12}},
+                "talents":[{"index":0,"bb":{"prob":1.,"prob2":1.,"atk_scale":1.5}}],"rangeGrid":[[0,0],[0,1],[0,2]],"position":"RANGED","profession":"SNIPER","subProfessionId":"closerange"});
             chess
         } else {
             json!({})
@@ -457,6 +460,62 @@ fn allied_field_pauses_rejects_invalid_setup_and_preserves_output_ownership() {
     assert_eq!(a.unit(1).unwrap().deployment.kills, 2);
 }
 #[test]
+fn passive_hit_callbacks_preserve_main_hit_rng_scope_and_continuous_hp_scaling() {
+    let mut f = Field::new(
+        fixture_data(),
+        &stage(),
+        template("enemy_1007_slime", 1),
+        42,
+        30.,
+        Limits::default(),
+    )
+    .unwrap();
+    f.add_operator("chess_char_1_07_a", operator_home([10, 8]))
+        .unwrap();
+    f.run(1).unwrap();
+    assert_eq!(f.ally_states().unwrap()[0]["active"], true);
+    assert!(f.unit(1).unwrap().stats.buffs().is_empty());
+    let mut q = hit::Request::new(
+        Hit {
+            source: Some(1),
+            credit: Some(1),
+            target: 2,
+            damage_type: DamageType::True,
+            no_sp: false,
+            silent: false,
+            hp_loss: false,
+            on_applied: false,
+        },
+        Damage {
+            amount: 10.,
+            mul: 1.,
+            resolved: false,
+            penetration: Penetration::default(),
+        },
+    );
+    let seed = f.rng_state();
+    q.is_attack = true;
+    q.tags.push("chain".into());
+    assert_eq!(f.damage(&mut q).unwrap(), 10.);
+    assert_eq!(f.rng_state(), seed);
+    q.damage.amount = 10.;
+    q.is_attack = false;
+    q.tags.clear();
+    assert_eq!(f.damage(&mut q).unwrap(), 10.);
+    assert_eq!(f.rng_state(), seed);
+    q.damage.amount = 10.;
+    q.is_attack = true;
+    q.is_splash = true;
+    let dealt = f.damage(&mut q).unwrap();
+    assert_eq!(f.rng_state(), seed);
+    assert_eq!(q.damage.amount, 11.2);
+    assert_eq!(dealt, 80. - (80. - 11.2));
+    q.damage.amount = 0.;
+    q.is_splash = false;
+    assert_eq!(f.damage(&mut q).unwrap(), 0.);
+    assert_ne!(f.rng_state(), seed);
+}
+#[test]
 fn external_field_commands_use_current_successor_time_for_death_and_respawn() {
     let mut f = Field::new(
         fixture_data(),
@@ -622,7 +681,7 @@ fn allied_fields_match_full_battle() {
         cases += 1;
     }
     assert!(child.wait().unwrap().success());
-    assert_eq!(cases, 108);
+    assert_eq!(cases, 116);
     eprintln!("Compared {cases} allied fields / {ticks} ticks");
 }
 #[test]

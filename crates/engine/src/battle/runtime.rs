@@ -791,22 +791,18 @@ impl settlement::Hooks for Host {
         _: &mut f64,
         _: &mut buffs::Runtime,
         w: &mut World,
-        _: &mut Rng,
+        rng: &mut Rng,
     ) -> Result<(), String> {
         if p == hit::Phase::Hit && q.is_attack && w.unit(q.hit.target)?.side == health::Side::Enemy
         {
             if let Some(id) = q.hit.source {
-                if w.unit(id)?.side == health::Side::Ally
-                    && w.unit(q.hit.target)?.blocked_by().is_none()
-                {
-                    q.damage.amount *= self
+                if w.unit(id)?.side == health::Side::Ally {
+                    let entry = self
                         .roster
                         .as_ref()
                         .ok_or("Missing operator hit context")?
-                        .entry(id)?
-                        .definition
-                        .combat
-                        .unblocked_scale;
+                        .entry(id)?;
+                    entry.definition.hit.apply(w, id, entry.direction, q, rng)?;
                 }
             }
         }

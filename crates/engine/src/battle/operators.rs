@@ -27,6 +27,8 @@ pub struct Definition {
     permanent: Option<Buff>,
     range_grid: Vec<[i32; 2]>,
     pub(crate) combat: Combat,
+    pub(crate) hit: super::content::operators::HitHandler,
+    kind: Kind,
     spec: skills::Spec,
     cost: f64,
 }
@@ -35,11 +37,11 @@ pub(crate) struct Combat {
     pub profile: AttackProfile,
     pub damage: super::damage::DamageType,
     pub projectile: Option<&'static str>,
+    pub projectile_speed: f64,
     pub area: super::attacks::Area,
     pub skill_area: super::attacks::Area,
     pub sluggish: f64,
     pub skill_sluggish: f64,
-    pub unblocked_scale: f64,
 }
 impl Default for Combat {
     fn default() -> Self {
@@ -47,11 +49,11 @@ impl Default for Combat {
             profile: AttackProfile::default(),
             damage: super::damage::DamageType::Physical,
             projectile: None,
+            projectile_speed: 0.,
             area: Default::default(),
             skill_area: Default::default(),
             sluggish: 0.,
             skill_sluggish: 0.,
-            unblocked_scale: 1.,
         }
     }
 }
@@ -145,9 +147,14 @@ impl Definition {
             || raw["immunities"]
                 .as_object()
                 .is_some_and(|o| o.values().any(|v| *v == true))
-            || skill["spType"] != "INCREASE_WITH_TIME"
+            || skill["spType"]
+                != if kit.passive() {
+                    "ON_DEPLOY"
+                } else {
+                    "INCREASE_WITH_TIME"
+                }
             || skill["trigger"]["rule"] != rule
-            || number(&skill["maxChargeTime"], 1.) != 1.
+            || number(&skill["maxChargeTime"], 1.).max(1.).floor() != 1.
         {
             return Err(format!("Unsupported operator mechanics: {key}"));
         }
@@ -156,11 +163,11 @@ impl Definition {
                 "attackKind",
                 Value::from(if ranged { "ranged" } else { "melee" }),
             ),
-            ("dmgType", Value::from(if ranged { "arts" } else { "phys" })),
             (
-                "projectile",
-                Value::from(if ranged { "bolt" } else { "none" }),
+                "dmgType",
+                Value::from(if kit.physical() { "phys" } else { "arts" }),
             ),
+            ("projectile", Value::from(kit.projectile())),
             ("canHitFly", Value::from(ranged)),
         ] {
             if !raw[field].is_null() && raw[field] != expected {
@@ -195,6 +202,7 @@ impl Definition {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let content = kit.build(raw);
+        let has_modifiers = !content.modifiers.is_empty();
         Ok(Self {
             key: key.into(),
             base,
@@ -202,12 +210,23 @@ impl Definition {
             permanent: content.permanent,
             range_grid,
             combat: content.combat,
+            hit: content.hit,
+            kind: if kit.passive() {
+                Kind::Passive
+            } else {
+                Kind::Duration
+            },
             spec: skills::Spec {
                 duration: number(&skill["duration"], 0.),
                 init_sp: number(&skill["initSp"], 0.).max(0.),
                 rule: skills::Rule::parse(rule),
                 attack: kit.attack_override(),
-                modifiers: true,
+                modifiers: has_modifiers,
+                sp_type: if kit.passive() {
+                    skills::SpType::None
+                } else {
+                    skills::SpType::Time
+                },
                 manual: skill["skillType"]
                     .as_str()
                     .unwrap_or("MANUAL")
@@ -413,7 +432,7 @@ impl Roster {
         }
         let result = (|| {
             let id = w.next_unit_id()?;
-            let bank = Bank::new(id, Kind::Duration, def.cost, 1, 1)?;
+            let bank = Bank::new(id, def.kind, def.cost, 1, 1)?;
             let skill = skills::Runtime::new(bank, def.spec.clone(), self.depth)?;
             let mut u = Unit::new(UnitStats::new(def.base.clone()), Side::Ally);
             u.stats.alive = false;
@@ -710,6 +729,7 @@ impl<H: buffs::Hooks> skills::Hooks for Skill<'_, H> {
             | skills::Event::SkillEnd
             | skills::Event::DisplayOn
             | skills::Event::DisplayOff => {}
+            skills::Event::PassiveWindow => {}
             _ => return Err("Unexpected callback in default operator kit".into()),
         }
         Ok(())

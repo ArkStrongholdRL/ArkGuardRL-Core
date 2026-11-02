@@ -286,7 +286,7 @@ impl ally::Host for Host {
                                 source: Some(id),
                                 target: Some(target),
                                 to: None,
-                                speed: 11.,
+                                speed: combat.projectile_speed,
                                 hit_dead: area.splash.is_some(),
                                 max_age: 10.,
                                 on_hit: true,
