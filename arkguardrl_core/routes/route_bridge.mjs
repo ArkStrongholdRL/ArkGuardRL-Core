@@ -1,4 +1,4 @@
-// Standalone experimental extension of the source-bound native bridge.
+// Standalone experimental extension of the native bridge.
 // Independent native-intent bridge for the frozen Stronghold Protocol 0.3.1 engine.
 // Engine implementation stays external; no legacy ArkGuardRL adapter is imported.
 import fs from 'node:fs';
@@ -15,6 +15,7 @@ const REVISION = 'c9d804f470b8d7422ae04eb66faf671cef21ad52';
 const SCHEMA = 'arkguardrl/native-session-v2';
 const PLAYER = 'agent';
 const root = fs.realpathSync(process.argv[2]);
+const inlineGeometry = process.argv[3] !== '--no-inline-geometry';
 const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
 if (git('rev-parse', 'HEAD') !== REVISION) throw new Error('Expected frozen 0.3.1 engine revision');
 if (git('status', '--porcelain', '--untracked-files=all')) throw new Error('Engine checkout must be clean');
@@ -90,7 +91,7 @@ function observe() {
 function stateReply(extra = {}) {
   const state = observe();
   // Geometry belongs to this exact decision revision, not an extra round trip.
-  return { ...extra, state, ...(state.decisionRequired && !state.personalEnded
+  return { ...extra, state, ...(inlineGeometry && state.decisionRequired && !state.personalEnded
     ? { geometry: geometry(match, match.players.get(PLAYER), bot, revision) } : {}) };
 }
 const ALLOWED = new Set(['g.infoReady', 'g.band', 'g.bandFocus', 'g.bandSkip', 'g.buy', 'g.refresh',

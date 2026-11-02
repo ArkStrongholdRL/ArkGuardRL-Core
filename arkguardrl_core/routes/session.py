@@ -13,6 +13,10 @@ from ..environment import DeadlineEnv
 
 
 class RouteSession(NativeSession):
+    def __init__(self, *args, inline_geometry=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inline_geometry = inline_geometry
+
     def __enter__(self):
         if self._process is not None:
             raise RuntimeError('Session already open')
@@ -26,8 +30,11 @@ class RouteSession(NativeSession):
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(('SP_', 'ARK_', 'COOP_', 'STRONGHOLD_'))
                and k not in ('NODE_OPTIONS', 'NODE_PATH')}
+        command = [node, str(Path(__file__).with_name('route_bridge.mjs')), str(self.engine_root)]
+        if not self.inline_geometry:
+            command.append('--no-inline-geometry')
         self._process = subprocess.Popen(
-            [node, str(Path(__file__).with_name('route_bridge.mjs')), str(self.engine_root)],
+            command,
             cwd=self.engine_root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, encoding='utf-8', bufsize=1)
         process = self._process
@@ -79,7 +86,8 @@ class RouteSessionPool:
     Only a collector worker owns this pool. An error invalidates the process;
     closing a successful lease disposes the match before another episode starts.
     """
-    def __init__(self):
+    def __init__(self, *, inline_geometry=True):
+        self.inline_geometry = inline_geometry
         self.session = None
         self.active = False
         self.starts = 0
@@ -98,7 +106,8 @@ class RouteSessionPool:
         else:
             started = time.monotonic()
             self.session = RouteSession(lease.engine_root, timeout=lease.timeout,
-                max_requests=lease.max_requests, expected_data_sha256=lease.expected_data_sha256)
+                max_requests=lease.max_requests, expected_data_sha256=lease.expected_data_sha256,
+                inline_geometry=self.inline_geometry)
             try:
                 self.session.__enter__()
             except BaseException:

@@ -1,0 +1,19 @@
+[package]
+name = "arkguardrl-route-kernels"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "_rust_routes"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "=0.27.2", features = ["extension-module"] }
+numpy = "=0.27.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

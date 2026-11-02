@@ -1,0 +1,9 @@
+[workspace]
+members = ["crates/engine", "crates/python"]
+exclude = ["arkguardrl_core/native"]
+resolver = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+

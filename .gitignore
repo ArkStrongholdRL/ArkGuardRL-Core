@@ -6,6 +6,7 @@ node_modules/
 .env.*
 results/
 artifacts/
+/artifacts
 checkpoints/
 datasets/
 game/
@@ -23,3 +24,12 @@ game/
 build/
 dist/
 .DS_Store
+target/
+*.so
+*.dylib
+*.pyd
+*.prof
+*.cpuprofile
+.cache/
+.local/
+benchmarks/local/

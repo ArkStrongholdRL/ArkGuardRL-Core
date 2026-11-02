@@ -151,7 +151,7 @@ def enemy_base(catalog, identifier):
 
 
 def project(state, catalog, history):
-    """Return inspectable public tables and binding maps. No Torch dependency."""
+    """Return the compact public observation and reference maps. No Torch dependency."""
     own, public, shop = state["own"], state["public"], state["own"]["shop"]
     progress = history.get("progress")
     if (not isinstance(progress, dict) or progress.get("schema") != PROGRESS_SCHEMA
@@ -194,10 +194,9 @@ def project(state, catalog, history):
         for identifier in catalog.band_ids:
             if identifier not in (public.get("draft") or {}).get("picks", {}).values():
                 band_refs[identifier] = add({"id": identifier, "kind": "band"}, "offer")
-    bank, _, definition_indices = catalog.definitions()
-    rows, ranges, mechanism_audit = [], [], []
-    mechs = bank["mechanisms"]
-    coverage, air_coverage = Counter(), Counter()
+    _, _, definition_indices = catalog.definitions()
+    from arkguardrl_core.env_observation import encoder, number
+    rows, board = [], []
     family_counts = {}
     from .dynamic import definition_key
     for row, area in entities:
@@ -206,66 +205,41 @@ def project(state, catalog, history):
             catalog.choice_record(kind, row)
         definition = definition_indices[definition_key(row)] - 1
         rec = catalog._views.get(kind, {}).get(identifier, {})
-        static = bank["entities"][definition]
-        encoded = list(static)
-        encoded[:5] = (1.0, static[1], uid_refs.get(row.get("ownerUid"), 0),
-                       *([uid_refs[item["uid"]] for item in row.get("items", [])] + [0, 0])[:2])
-        if len(row.get("items", [])) > 2:
+        equipment = [uid_refs[item["uid"]] for item in row.get("items", [])]
+        if len(equipment) > 2:
             raise ValueError("Public equipment reference capacity exceeded")
-        if kind == "effect":
-            encoded[ENTITY_PREFIX:ENTITY_PREFIX + len(KINDS)] = flags(kind, KINDS)
-        start = ENTITY_PREFIX + len(KINDS)
-        encoded[start:start + len(AREAS)] = flags(area, AREAS)
+        refs = (uid_refs.get(row.get("ownerUid"), 0), *(equipment + [0, 0])[:2])
         exposure = progress["pieces"].get(str(row.get("uid")), {})
-        dynamic = {"price": scalar(row.get("price", 0), 30), "row": scalar(row.get("row", -1), 20),
-                   "col": scalar(row.get("col", -1), 21), "count": scalar(row.get("count", 0), 10),
-                   "bounty_coin": scalar(row.get("coin", 0), 10), "bounty_count": scalar(row.get("count", 0), 10),
-                   "bounty_rounds": scalar(row.get("rounds", 0), 10),
-                   "visible_pre_refreshes": scalar(exposure.get("visible_pre_refreshes", 0), 10),
-                   "refresh_history_complete": float(exposure.get("history_complete", False)),
-                   "effect_counter": scalar(row.get("counter") or 0, 10),
-                   "effect_counter_known": float(type(row.get("counter")) in (int, float))}
-        for name, value in dynamic.items():
-            encoded[start + len(AREAS) + ENTITY_NUMBERS.index(name)] = value
-        direction_start = start + len(AREAS) + len(ENTITY_NUMBERS) + 2 * len(STATS) + len(BOND_IDS)
-        encoded[direction_start:direction_start + len(DIRECTIONS)] = flags(row.get("dir"), DIRECTIONS)
-        rows.append(tuple(encoded))
-        ranges.append(bank["ranges"][definition])
-        if kind == "chess" and area == "board":
-            air = static[start + len(AREAS) + ENTITY_NUMBERS.index("can_hit_fly")]
-            for dr, dc in catalog.attack_range({"kind": kind, "id": identifier}):
-                rr, cc = {"RIGHT": (dr, dc), "UP": (dc, -dr), "LEFT": (-dr, -dc), "DOWN": (-dc, dr)}[row["dir"]]
-                cell = row["row"] + rr, row["col"] + cc
-                coverage[cell] += 1
-                air_coverage[cell] += int(air)
+        numbers = (number(row.get("price", 0)), number(row.get("row", -1)),
+                   number(row.get("col", -1)), number(row.get("count", 0)),
+                   number(row.get("coin", 0)), number(row.get("count", 0)),
+                   number(row.get("rounds", 0)), number(exposure.get("visible_pre_refreshes", 0)),
+                   float(exposure.get("history_complete", False)), number(row.get("counter") or 0),
+                   float(type(row.get("counter")) in (int, float)))
+        direction = DIRECTIONS.index(row["dir"]) if row.get("dir") in DIRECTIONS else -1
+        rows.append((definition + 1, refs, AREAS.index(area), direction, numbers))
+        if area == "board":
+            board.append((definition + 1, row["row"], row["col"], direction, uid_refs[row["uid"]]))
         if kind == "chess" and area in ("board", "hand", "temp"):
             base = rec.get("baseId", identifier)
             counts = family_counts.setdefault(base, Counter())
             counts["golden" if rec.get("isGolden") else area] += 1
-    rules = catalog.bond_rules()
-    if set(rules) != set(BOND_IDS):
-        raise ValueError("Unknown public bond vocabulary")
     visible = {b["bondId"]: b for b in own["bonds"]}
     if set(visible) - set(BOND_IDS):
         raise ValueError("Unknown visible bond")
     bond_rows = []
     for key in BOND_IDS:
-        b, rule = visible.get(key, {}), rules[key]
-        thresholds = rule["thresholds"]
-        if len(thresholds) > 4:
-            raise ValueError("Unsupported bond threshold count")
+        b = visible.get(key, {})
         bond_rows.append((scalar(b.get("count", 0), 12), scalar(b.get("layers", 0), 100),
-                          float(b.get("active", False)), scalar(b.get("tier", 0), 3), float(b.get("off", False) or key in public["disabledBonds"]),
-                          float(rule["countsHand"]), float(rule["countsGoldenOnly"]), float(rule["noStack"]))
-                         + tuple(scalar(n, 12) for n in thresholds) + (0.0,) * (4 - len(thresholds)))
-    tiles = {(c["row"], c["col"]): c["kind"] for c in own["deployment"]["cells"]}
-    occupied = {(r["row"], r["col"]): uid_refs[r["uid"]] for r in own["board"]}
-    grid_rows = [(float(cell in tiles), float(tiles.get(cell) == "ranged"), occupied.get(cell, 0),
-                  scalar(coverage[cell], 6), scalar(air_coverage[cell], 6)) for cell in CELLS]
-    unresolved_effects = sum(row["kind"] == "effect" and row["definition"] is None for row, _ in entities)
-    enemy_rows = [(1.0, catalog.enemy_index(enemy["enemyKey"]), scalar(enemy.get("count", 0), 10), scalar(enemy.get("t", 0), 120),
-                   float(enemy.get("fly", False)), float(enemy.get("elite", False)), float(enemy.get("boss", False)),
-                   *flags(enemy.get("gate"), ("lower", "upper", "left", "right"))) for enemy in own["nextEnemies"]]
+                          float(b.get("active", False)), scalar(b.get("tier", 0), 3),
+                          float(b.get("off", False) or key in public["disabledBonds"])))
+    tiles = [(c["row"], c["col"], c["kind"] == "ranged") for c in own["deployment"]["cells"]]
+    enemy_rows = [(definition_indices[("enemy", enemy["enemyKey"])], catalog.enemy_index(enemy["enemyKey"]),
+                   (number(enemy.get("count", 0)), number(enemy.get("t", 0)), float(enemy.get("fly", False)),
+                    float(enemy.get("elite", False)), float(enemy.get("boss", False))),
+                   ("lower", "upper", "left", "right").index(enemy["gate"])
+                   if enemy.get("gate") in ("lower", "upper", "left", "right") else -1)
+                  for enemy in own["nextEnemies"]]
     economy = catalog.economy_rules(state)
     used, limit = history["used"], history["limit"]
     global_values = (scalar(state["round"], 20), scalar(public["lastRound"] - state["round"], 20),
@@ -303,19 +277,16 @@ def project(state, catalog, history):
     control += flags(intent.get("dir"), DIRECTIONS) + flags(to.get("area"), ("board", "hand"))
     control += tuple(v for value in values for v in
                      (scalar(value, 21) if value is not None else 0.0, float(value is not None)))
-    return {"global": global_values, "control": control, "raw_enemies": own["nextEnemies"],
-            "audit": {"blocked_count": history["blocked_count"], "unresolved_public_effects": unresolved_effects, "mechanisms": mechanism_audit,
-                      "skill_semantics": "typed scoped public configuration; conditional execution is not simulated", "effective_stats": "base values only",
-                      "engine_piece_trigger_counter": "unknown; visible pre-refresh exposure is not that counter"}, "entities": rows, "bonds": bond_rows, "mechanisms": mechs,
-            "grid": grid_rows, "enemies": enemy_rows, "ranges": ranges, "uid_refs": uid_refs, "shop_refs": shop_refs,
+    observation = encoder(catalog).encode(global_values, rows, bond_rows, tiles, board, enemy_rows, control)
+    return {"observation": observation, "uid_refs": uid_refs, "shop_refs": shop_refs,
             "offer_refs": offer_refs, "choice_refs": choice_refs, "band_refs": band_refs,
             "raw_entities": entities, "families": family_counts}
 
 
 def encode_decision(state, actions, catalog, history_snapshot):
     p = project(state, catalog, history_snapshot)
-    from .dynamic import pack, OBS_DIM as WIRE_DIM
-    obs = pack(p, catalog)
+    from .dynamic import OBS_DIM as WIRE_DIM
+    obs = p["observation"]
     from .domain import _locations
     from .actions import describe_action, descriptor
     locations = _locations(state)
@@ -324,7 +295,7 @@ def encode_decision(state, actions, catalog, history_snapshot):
     encoded, schedules, experts = [], [], []
     # A source appears in many placement candidates. Own one catalog projection
     # per definition for this decision instead of deep-copying it per action.
-    chess_records, number_templates, flag_templates, route_templates = {}, {}, {}, {}
+    chess_records, number_templates, slot_numbers, flag_templates, route_templates = {}, {}, {}, {}, {}
     cell_indices = {cell: index+1 for index, cell in enumerate(CELLS)}
     for action in actions:
         kind = action['t'][2:]
@@ -365,7 +336,7 @@ def encode_decision(state, actions, catalog, history_snapshot):
             if subject_row.get("kind") == "chess":
                 identifier = subject_row['id']
                 if identifier not in chess_records:
-                    chess_records[identifier] = catalog.record('chess', identifier)
+                    chess_records[identifier] = catalog._record('chess', identifier)
                 rec = chess_records[identifier]
             counts = p["families"].get(rec.get("baseId", subject_row.get("id")), {})
             needed = rec.get("upgradeNum", 0) or 0
@@ -373,7 +344,11 @@ def encode_decision(state, actions, catalog, history_snapshot):
                     scalar(row.get("rounds", 0), 10), *(scalar(counts.get(a, 0), 3) for a in ("board", "hand", "temp", "golden")),
                     scalar(needed, 3), scalar(max(0, needed - sum(counts.get(a, 0) for a in ("board", "hand", "temp"))), 3))
             number_templates[number_key] = base_numbers
-        nums = number_templates[number_key] + (float(to.get("area") == "hand"), scalar(to.get("idx", -1), 10))
+        slot = to.get("idx", -1)
+        slot_key = (type(slot), slot)
+        if slot_key not in slot_numbers:
+            slot_numbers[slot_key] = scalar(slot, 10)
+        nums = number_templates[number_key] + (float(to.get("area") == "hand"), slot_numbers[slot_key])
         cell = (to.get("row", action.get("row")), to.get("col", action.get("col")))
         destination = cell_indices.get(cell, 0)
         flag_key = (action.get("dir"), kind, semantic)
@@ -449,7 +424,8 @@ def main():
         observer.observe(state)
         tables = project(state, catalog, {"used": 0, "limit": 64, "blocked_count": 0,
                                          "progress": observer.snapshot(state)})
-        summary["snapshot"] = {key: tables[key] for key in ("global", "control", "entities", "bonds", "mechanisms", "grid", "enemies", "audit")}
+        summary["snapshot"] = {"observation": tables["observation"],
+                               "schema": FEATURE_SCHEMA, "dimension": WIRE_DIM}
         summary["snapshot"]["entity_bindings"] = [{"index": i + 1, "kind": row.get("kind"),
             "id": row.get("id"), "area": area} for i, (row, area) in enumerate(tables["raw_entities"])]
         summary["snapshot"]["history_note"] = "Single-snapshot partial progress and empty attempt history; not training evidence"

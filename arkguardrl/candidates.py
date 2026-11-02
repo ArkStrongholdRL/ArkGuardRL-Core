@@ -216,8 +216,6 @@ def build_decision(state, catalog, history):
     if not isinstance(history, DecisionHistory):
         raise ValueError("Explicit native DecisionHistory required")
     blocked, actions, seen = history.blocked(state), [], set()
-    sorted_cells = tuple(sorted(cells.items()))
-    allowed_terrain = {}
     def add(action):
         key = action_id(action)
         if key in blocked or key in seen:
@@ -286,59 +284,9 @@ def build_decision(state, catalog, history):
                 add({"t": "g.freeze"})
                 if shop["level"] < shop["maxLevel"] and own["funds"] >= shop["upgradePrice"]:
                     add({"t": "g.levelUp"})
-            if not recovery or not own["canReady"]:
-                for uid, (area, index, piece) in locations.items():
-                    if area == "equipped":
-                        continue
-                    if piece["kind"] == "chess":
-                        # Recovery may need space or removal of a token's carrier.
-                        add({"t": "g.sell", "uid": uid})
-                    elif piece["kind"] == "item" and (not recovery or uid in temp_uids):
-                        add({"t": "g.destroy", "uid": uid})
-                    if recovery and uid not in temp_uids:
-                        continue
-                    # Reserve slot rearrangement is outside the policy domain.
-                    # Keep board withdrawals and temp-to-hand overflow recovery.
-                    if area != "hand":
-                        for target_index in range(len(own["hand"])):
-                            if recovery and own["hand"][target_index] is not None:
-                                continue
-                            add({"t": "g.move", "uid": uid, "to": {"area": "hand", "idx": target_index}})
-                    if piece["kind"] in ("chess", "token"):
-                        for (row, col), tile_kind in sorted_cells:
-                            terrain_key = (piece['kind'], piece['id'], tile_kind)
-                            if terrain_key not in allowed_terrain:
-                                allowed_terrain[terrain_key] = terrain_allows(piece, tile_kind, catalog)
-                            if not allowed_terrain[terrain_key]:
-                                continue
-                            occupant = occupied.get((row, col))
-                            if area != "board":
-                                if piece["kind"] == "token":
-                                    if not empty_deployment_allowed(piece, (row, col), state, catalog, (locations, occupied, cells)):
-                                        continue
-                                elif (not occupant or occupant["kind"] != "chess") and own["deployCount"] >= own["deployCap"]:
-                                    continue
-                            for direction in DIRECTIONS:
-                                if area == "board" and (row, col, direction) == (piece["row"], piece["col"], piece["dir"]):
-                                    continue
-                                add({"t": "g.move", "uid": uid, "to": {"area": "board", "row": row, "col": col}, "dir": direction})
-                    elif piece["kind"] == "item":
-                        rec = catalog.record("item", piece["id"])
-                        if rec.get("itemType") == "EQUIP":
-                            for target_uid, (target_area, _, target) in locations.items():
-                                if target_area != "equipped" and target["kind"] == "chess":
-                                    intent = {"t": "g.equip", "itemUid": uid, "targetUid": target_uid}
-                                    add(intent)
-                                    if len(target["items"]) >= 2:
-                                        for old in target["items"]:
-                                            add({**intent, "replaceUid": old["uid"]})
-                        elif rec.get("itemType") == "MAGIC":
-                            # Arts target the WHOLE protocol field, including nondeployable tiles.
-                            for row, col in FIELD_CELLS:
-                                for direction in DIRECTIONS:
-                                    add({"t": "g.art", "itemUid": uid, "row": row, "col": col, "dir": direction})
-                        else:
-                            raise UnsupportedPublicState("Unknown item capability")
+            from arkguardrl_core.env_actions import piece_actions
+            for action in piece_actions(state, catalog, (locations, occupied, cells), recovery=recovery):
+                add(action)
         else:
             raise CandidateBlocked("Unsupported actionable native phase")
         if not actions:

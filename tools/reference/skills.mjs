@@ -1,0 +1,18 @@
+// Skill lifecycle oracle. Real runtime, explicit content/trigger fixtures; no matches/data.
+import path from'node:path';import{pathToFileURL}from'node:url';const root=path.resolve(process.argv[2]);const imp=p=>import(pathToFileURL(path.join(root,p)));
+const{Unit}=await imp('server/sim/units.js');const{SkillRuntime}=await imp('server/sim/skills.js');const bits=x=>{const b=Buffer.alloc(8);b.writeDoubleBE(x);return b.toString('hex');};
+for(let i=0;i<384;i++){
+ const d={i,kind:['instant','charges','duration','ammo','toggle','passive'][i%6],rule:['DEFAULT','SP_FULL','SEARCH','CUSTOM_RANGE','SKILL_RANGE','ACTIVE_RANGE','GDGLOW_SKILL_2','TAKE_DAMAGE','NEVER','AUTO_STOP'][Math.floor(i/6)%10],duration:i%3?.2:0,ammo:2,spType:['time','attack','hurt','none'][Math.floor(i/60)%4],attack:i%2===0,mod:i%3===0,targeting:i%4===0,allies:i%5===0,manual:i%7!==0,reactivate:i%17===0,freeAmmo:i%11===0,tickExtend:i%13===0,noSp:i%19===0,stun:i%23===0,silence:i%29===0,noAttack:i%31===0,condition:i%3!==0,deploy:i%37===0,noSkill:i%41===0};
+ const u=new Unit({id:1,side:'ally',kind:'op',base:{maxHp:100,atk:10}});u.deployed=true;u.profile={noAttack:d.noAttack};
+ const trace=[];let skill;let installed=false;let restarted=false;
+ const spec={kind:d.kind,duration:d.duration,ammo:d.ammo,spCost:3,initSp:6,charges:2,spType:d.spType,activateOnDeploy:d.deploy,trigger:{rule:d.rule,allies:d.allies},attack:d.attack?{}:null,mods:d.mod?{atkPct:.5}:null,targeting:d.targeting?{rangeGrid:[[0,0]]}:null,
+ onStart(c){trace.push(['start',c.reason]);},onEnd(c){trace.push(['end',c.reason,installed]);if(d.reactivate&&!restarted&&c.reason==='stopped'){restarted=true;skill.activate('restart',{free:true});}},onTick(c){trace.push(['tick',bits(c.dt)]);if(d.tickExtend)skill.extend(.1);},onAttack(c){trace.push(['attack']);if(d.freeAmmo)c.noAmmo=true;}};
+ const b={time:0,_hooks:{skillStart:true,skillEnd:true,ammoUsed:true,spGain:true},_safe:fn=>fn(),_ev(e){trace.push(['display',e[2]]);},after(){trace.push(['after']);},addBuff(){installed=true;trace.push(['add']);},removeBuff(){installed=false;trace.push(['remove']);},_refreshRange(){trace.push(['range']);},emit(name,c){if(name==='spGain'){trace.push(['gain',c.reason,bits(c.amount)]);c.amount*=.75;}else{trace.push([name]);if(name==='skillStart'&&d.kind==='ammo')skill.addAmmo(1);}},rangeChanged:()=>false,anyEnemyInKeys:()=>d.condition};
+ skill=new SkillRuntime(b,u,{skillType:d.manual?'MANUAL':'AUTO',spCost:3,maxCharges:2},d.noSkill?null:spec);
+ skill._defaultCondition=()=>d.condition;skill._allyTriggerSatisfied=()=>d.condition;skill._tickRuleSatisfied=()=>skill.rule==='SP_FULL'||d.condition;
+ const states=[];const snap=()=>states.push({sp:bits(skill.sp),charges:bits(skill.charges),active:skill.active,pending:skill.pending,time:bits(skill.timeLeft),ammo:bits(skill.ammoLeft),maxAmmo:bits(skill.ammoMax),activations:skill.activations,last:bits(skill.lastStart),op:bits(skill.opReadyAt),next:bits(skill.nextCastAt),attack:!!skill.attackOverride(),targeting:!!skill.targetingOverride(),total:bits(skill.spTotal)});
+ skill.reset();u.buffs=[{stacks:1,mods:{},flags:{noSp:d.noSp,stun:d.stun,silence:d.silence},shield:0}];u.markDirty();snap();
+ const actions=[()=>skill.activate('manual'),()=>{b.time=1/30;skill.tick(1/30);},()=>skill.onAttackPerformed([u],true,true),()=>skill.onAttackPerformed([u],true,false),()=>{skill.addAmmo(2);skill.extend(.2);},()=>{b.time=.5;skill.tick(.5);},()=>skill.end('stopped'),()=>skill.activate('free',{free:true}),()=>skill.onDamaged(),()=>skill.onAboutToAttack(),()=>{b.time=4;skill.tick(.1);},()=>{b.time=5;skill.tick(3);},()=>skill.end('death')];
+ for(const action of actions){action();snap();}
+ process.stdout.write(JSON.stringify({scenario:d,states,trace})+'\n');
+}
