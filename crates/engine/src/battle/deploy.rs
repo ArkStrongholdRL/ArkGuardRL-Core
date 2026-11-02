@@ -104,7 +104,6 @@ pub struct Deployment {
     board_homes: Vec<(Id, [i32; 2])>,
     capacity: usize,
     occupants: [Option<Id>; N],
-    sequence: u64,
     dp: BTreeMap<Id, f64>,
     player_capacity: usize,
     pub dp_max: f64,
@@ -138,7 +137,6 @@ impl Deployment {
             board_homes: vec![],
             capacity,
             occupants: [None; N],
-            sequence: 0,
             dp: BTreeMap::new(),
             player_capacity,
             dp_max,
@@ -328,12 +326,8 @@ impl Deployment {
         if self.down_on(w, tile, Some(id))?.is_some() {
             return Ok(false);
         }
-        let sequence = self
-            .sequence
-            .checked_add(1)
-            .ok_or("Deployment sequence exhausted")?;
         let first = u.deployment.deploy_seq == 0;
-        self.sequence = sequence;
+        let sequence = w.next_deployment_sequence()?;
         let time = w.time;
         let u = w.unit_mut(id)?;
         u.stats.alive = true;

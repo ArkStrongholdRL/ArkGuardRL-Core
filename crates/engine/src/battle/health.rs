@@ -123,6 +123,8 @@ pub struct Pool {
     pub max_hp: f64,
 }
 pub struct World {
+    unit_sequence: u64,
+    deployment_sequence: u64,
     attack_sequence: u64,
     units: BTreeMap<Id, Unit>,
     pools: BTreeMap<Id, Pool>,
@@ -132,6 +134,20 @@ pub struct World {
     pub boss_battle: bool,
 }
 impl World {
+    pub fn next_unit_id(&mut self) -> Result<Id, String> {
+        self.unit_sequence = self
+            .unit_sequence
+            .checked_add(1)
+            .ok_or("Unit identity exhausted")?;
+        Ok(self.unit_sequence)
+    }
+    pub fn next_deployment_sequence(&mut self) -> Result<u64, String> {
+        self.deployment_sequence = self
+            .deployment_sequence
+            .checked_add(1)
+            .ok_or("Deployment sequence exhausted")?;
+        Ok(self.deployment_sequence)
+    }
     pub fn attack_sequence(&self) -> u64 {
         self.attack_sequence
     }
@@ -173,6 +189,8 @@ impl World {
             return Err("Health registry limits must be positive".into());
         }
         Ok(Self {
+            unit_sequence: 0,
+            deployment_sequence: 0,
             attack_sequence: 0,
             units: BTreeMap::new(),
             pools: BTreeMap::new(),
@@ -186,6 +204,8 @@ impl World {
         if self.units.contains_key(&id) || self.units.len() >= self.capacities[0] {
             return Err("Duplicate unit or unit capacity exceeded".into());
         }
+        self.unit_sequence = self.unit_sequence.max(id);
+        self.deployment_sequence = self.deployment_sequence.max(value.deployment.deploy_seq);
         self.units.insert(id, value);
         Ok(())
     }
