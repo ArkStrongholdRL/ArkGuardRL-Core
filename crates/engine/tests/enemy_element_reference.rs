@@ -382,3 +382,68 @@ fn damage_callback_failure_preserves_real_state_and_rejects_continuation() {
     assert!(settlement::resolve(&mut w, &mut r, &mut rng, &mut h, &mut req).is_err());
     assert_eq!(w.unit(2).unwrap().stats.hp, 90.);
 }
+
+#[test]
+fn enemy_element_rider_does_not_trigger_on_friendly_fire() {
+    let mut w = World::new(3, 1, 1).unwrap();
+    for (id, side) in [(1, Side::Enemy), (2, Side::Enemy), (3, Side::Ally)] {
+        let mut base = Base::default();
+        base.0.insert("atk".into(), 100.);
+        let mut u = Unit::new(UnitStats::new(base), side);
+        u.deployed = true;
+        w.insert_unit(id, u).unwrap();
+    }
+    let mut content = Runtime::new(3).unwrap();
+    let mut r = buffs::Runtime::new(4, 8, 8).unwrap();
+    let mut host = Host {
+        content: Runtime::new(3).unwrap(),
+        rng: Rng::new(42),
+        trace: vec![],
+        fail: false,
+    };
+    content
+        .spawn(
+            &mut w,
+            &mut r,
+            &mut host,
+            1,
+            Kit::Element {
+                kind: Element::Burn,
+                ratio: 0.5,
+            },
+            &Value::Null,
+        )
+        .unwrap();
+    let hit = Hit {
+        source: Some(1),
+        credit: Some(1),
+        target: 2,
+        damage_type: DamageType::Physical,
+        no_sp: false,
+        silent: false,
+        hp_loss: false,
+        on_applied: false,
+    };
+    let mut req = hit::Request::new(
+        hit,
+        Damage {
+            amount: 0.,
+            mul: 1.,
+            resolved: false,
+            penetration: Penetration::default(),
+        },
+    );
+    req.is_attack = true;
+    assert!(content.damaged(&mut w, &req).unwrap().is_none());
+    req.hit.target = 3;
+    assert_eq!(
+        content
+            .damaged(&mut w, &req)
+            .unwrap()
+            .unwrap()
+            .damage
+            .damage
+            .amount,
+        50.
+    );
+}

@@ -212,7 +212,7 @@ impl Runtime {
         let Some(source) = request.hit.source else {
             return Ok(None);
         };
-        if w.unit(source)?.side != Side::Enemy {
+        if w.unit(source)?.side != Side::Enemy || w.unit(request.hit.target)?.side != Side::Ally {
             return Ok(None);
         }
         let Some(state) = self.units.get(&source) else {
