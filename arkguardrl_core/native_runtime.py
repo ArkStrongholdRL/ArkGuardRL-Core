@@ -11,7 +11,7 @@ def kernel():
     except ImportError as exc:
         raise RuntimeError(
             'Rust runtime unavailable. Install a platform wheel or rebuild '
-            'with a Rust toolchain: python -m pip install -e ".[vector]". '
+            'with a Rust toolchain: python -m pip install -e ".[gym]". '
             'The runtime does not silently fall back to Python.') from exc
     if _rust_routes.ABI != ABI:
         raise RuntimeError('Rust runtime ABI mismatch; rebuild required')
