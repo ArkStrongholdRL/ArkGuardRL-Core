@@ -1,6 +1,7 @@
 """Decision-oriented native solo environment, without reward or model compatibility claims."""
 from copy import deepcopy
 from dataclasses import dataclass
+import json
 
 from .contracts import action_id, decision_id
 from .engine import NativeSession
@@ -79,7 +80,11 @@ class SoloEnv:
         return self.trace_path is not None
 
     def _result(self, *, accepted=None, metrics=None, action_id=None, execution=None):
-        return Transition(deepcopy(self._state), bool(self._state["personalEnded"]),
+        # Transport-owned state contains JSON values. The C encoder/decoder
+        # copies those containers without deepcopy's per-scalar memo dispatch.
+        observation = json.loads(json.dumps(self._state, ensure_ascii=False,
+                                            allow_nan=False, separators=(",", ":")))
+        return Transition(observation, bool(self._state["personalEnded"]),
                           self._reason is not None and not self._state["personalEnded"],
                           self._reason, accepted, metrics, action_id, deepcopy(execution),
                           self._progress_state.snapshot(self._state))

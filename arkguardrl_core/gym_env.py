@@ -48,7 +48,9 @@ class ArkGuardEnv(gym.Env):
             "action_mask": spaces.MultiBinary(max_candidates),
         })
         self.catalog = None
-        self._pool = RouteSessionPool()
+        # Gym inputs do not consume route geometry. Keep explicit geometry()
+        # available on demand without projecting paths on every decision.
+        self._pool = RouteSessionPool(inline_geometry=False)
         self._session = self._decision = self._result = None
         self._done = True
 

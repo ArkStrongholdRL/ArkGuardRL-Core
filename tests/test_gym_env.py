@@ -11,6 +11,7 @@ from gymnasium.utils.env_checker import check_reset_seed_determinism
 from gymnasium.utils.passive_env_checker import env_step_passive_checker
 
 from arkguardrl_core.gym_env import ArkGuardEnv
+from arkguardrl.observation import SCHEMA, validate_state
 
 ENGINE = os.environ.get('ARKGUARD_ENGINE_ROOT')
 
@@ -19,6 +20,21 @@ def equal_observations(test, first, second):
     test.assertEqual(first.keys(), second.keys())
     for key in first:
         np.testing.assert_array_equal(first[key], second[key])
+
+
+class ObservationValidationTests(unittest.TestCase):
+    def test_nested_mutation_is_checked_after_successful_validation(self):
+        state = dict(schema=SCHEMA, revision=0, phase='PREP', round=1,
+                     gameEnded=False, personalEnded=False, decisionRequired=True,
+                     public={'phase': 'PREP', 'round': 1, 'players': [{'playerId': 'p'}]},
+                     own={'playerId': 'p', 'seat': 0, 'alive': True, 'extension': []})
+        expected = validate_state(state)
+        for key in ('masterSEED', 'rNgState', 'hiddenBossId', 'x'*256+'Seed'):
+            state['own']['extension'].append({'nested': [{key: 1}]})
+            with self.assertRaisesRegex(ValueError, 'Forbidden hidden identity'):
+                validate_state(state)
+            state['own']['extension'].clear()
+            self.assertEqual(validate_state(state), expected)
 
 
 @unittest.skipUnless(ENGINE, 'Set ARKGUARD_ENGINE_ROOT for native integration tests')
@@ -42,6 +58,11 @@ class GymEnvTests(unittest.TestCase):
             equal_observations(self, continued, repeated)
             self.assertEqual(info_continued, info_repeated)
             env.reset(seed=2**80)
+            raw = env._result.observation
+            native = env._session.environment._state
+            count = len(native['own']['shop']['slots'])
+            raw['own']['shop']['slots'].append({'mutated': True})
+            self.assertEqual(len(native['own']['shop']['slots']), count)
         env.close()
 
     def test_mask_rejection_does_not_advance(self):
@@ -109,6 +130,9 @@ class GymEnvTests(unittest.TestCase):
                 reward.reset(result.observation)
                 for _ in range(16):
                     decision = session.decision()
+                    if _ % 4 == 0:
+                        self.assertIsNone(env._pool.session._geometry)
+                        self.assertEqual(env._session.environment.geometry(), session.environment.geometry())
                     count = len(decision.actions)
                     np.testing.assert_array_equal(observation['observation'], np.asarray(decision.observation_features, np.float32))
                     np.testing.assert_array_equal(observation['candidates'][:count], np.asarray(decision.candidate_features, np.float32))

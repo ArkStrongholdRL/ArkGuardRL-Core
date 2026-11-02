@@ -1,0 +1,131 @@
+{
+  "date": "2026-11-02",
+  "hardware": "Apple M5, 16 GiB RAM",
+  "python": "3.12.13",
+  "node": "26.7.0",
+  "gymnasium": "1.4.0",
+  "numpy": "2.5.4",
+  "runtime": "Node 0.3.1 with Rust action/observation kernels",
+  "policy": "uniform random valid candidates; no model or training",
+  "steps_per_env_per_repeat": 1024,
+  "warmup": 64,
+  "repeats_per_variant": 6,
+  "seed": 42,
+  "rng_seed": 123,
+  "max_candidates": 16384,
+  "order": [
+    "before",
+    "after",
+    "after",
+    "before"
+  ],
+  "metric": "loop resets included; initial reset/setup excluded; each invocation has 3 repeats",
+  "measurements": {
+    "sync-1": {
+      "medians": {
+        "before": 480.5725027636286,
+        "after": 494.751934814316
+      },
+      "throughput_gain": 0.029505292061334565,
+      "behavior_matches": true,
+      "before_rates": [
+        440.322,
+        476.841,
+        489.307,
+        451.665,
+        484.305,
+        491.801
+      ],
+      "before_phase_seconds": {
+        "engine_seconds": 1.059749,
+        "encoding_seconds": 0.765675,
+        "reward_seconds": 0.137276
+      },
+      "after_rates": [
+        487.925,
+        518.04,
+        523.882,
+        417.226,
+        501.579,
+        472.65
+      ],
+      "after_phase_seconds": {
+        "engine_seconds": 1.04231,
+        "encoding_seconds": 0.742854,
+        "reward_seconds": 0.115152
+      }
+    },
+    "async-4": {
+      "medians": {
+        "before": 899.1351019490955,
+        "after": 937.1912411887954
+      },
+      "throughput_gain": 0.04232527365153893,
+      "behavior_matches": true,
+      "before_rates": [
+        890.512,
+        845.055,
+        920.52,
+        864.838,
+        907.758,
+        946.257
+      ],
+      "before_phase_seconds": {
+        "engine_seconds": 5.891483,
+        "encoding_seconds": 4.061104,
+        "reward_seconds": 0.671339
+      },
+      "after_rates": [
+        866.573,
+        941.073,
+        964.884,
+        892.078,
+        985.314,
+        933.309
+      ],
+      "after_phase_seconds": {
+        "engine_seconds": 5.541165,
+        "encoding_seconds": 3.926794,
+        "reward_seconds": 0.554044
+      }
+    }
+  },
+  "parity": {
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "decisions_per_seed": 1024,
+    "matched": "all observation/candidate arrays, selected intents, rewards, acceptance, phases, rounds, terminal observations and done flags",
+    "details": [
+      {
+        "seed": 42,
+        "sha256": "6382a4dd09702a72c44844d1c0a48e98c0b53fc7ffc3a230b3daf98c8f635df0",
+        "terminated": 6,
+        "truncated": 0,
+        "rejected": 0
+      },
+      {
+        "seed": 43,
+        "sha256": "e4941102a43ee9cf3bfb1a65a219b8c0e756d8145dc1342a0e1b65342519f31f",
+        "terminated": 5,
+        "truncated": 0,
+        "rejected": 0
+      },
+      {
+        "seed": 44,
+        "sha256": "45d7c22fa52406bf455c93376c74a1aa383917fd2651d6c370e35322a99e2b76",
+        "terminated": 5,
+        "truncated": 0,
+        "rejected": 0
+      }
+    ]
+  },
+  "validation": {
+    "gym_tests_passed": 8,
+    "rust_tests_passed": 83,
+    "rust_reference_tests_ignored": 35
+  },
+  "limitation": "Short measurements on a shared desktop vary with load. Small gains do not establish a stable training speedup. This is not the incomplete pure-Rust 0.3.3 environment."
+}

@@ -2,6 +2,7 @@
 from .contracts import canonical
 
 SCHEMA = "arkguardrl/native-session-v2"
+_VISIBLE_KEYS = set()
 
 
 def validate_state(state):
@@ -35,7 +36,16 @@ def validate_state(state):
         if isinstance(value, list):
             stack.extend(value)
         elif isinstance(value, dict):
-            if any("seed" in k.lower() or "rng" in k.lower() or "hiddenbossid" in k.lower() for k in value):
-                raise ValueError("Forbidden hidden identity in observation")
+            # Cache key text only, never the validation of a mutable observation.
+            # The usual subset check stays in C instead of calling Python per key.
+            if not value.keys() <= _VISIBLE_KEYS:
+                for key in value:
+                    if key in _VISIBLE_KEYS:
+                        continue
+                    lowered = key.lower()
+                    if "seed" in lowered or "rng" in lowered or "hiddenbossid" in lowered:
+                        raise ValueError("Forbidden hidden identity in observation")
+                    if type(key) is str and len(key) <= 128 and len(_VISIBLE_KEYS) < 1024:
+                        _VISIBLE_KEYS.add(key)
             stack.extend(value.values())
     return canonical(state)

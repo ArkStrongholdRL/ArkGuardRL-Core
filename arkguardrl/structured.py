@@ -295,7 +295,7 @@ def encode_decision(state, actions, catalog, history_snapshot):
     encoded, schedules, experts = [], [], []
     # A source appears in many placement candidates. Own one catalog projection
     # per definition for this decision instead of deep-copying it per action.
-    chess_records, number_templates, flag_templates, route_templates = {}, {}, {}, {}
+    chess_records, number_templates, slot_numbers, flag_templates, route_templates = {}, {}, {}, {}, {}
     cell_indices = {cell: index+1 for index, cell in enumerate(CELLS)}
     for action in actions:
         kind = action['t'][2:]
@@ -344,7 +344,11 @@ def encode_decision(state, actions, catalog, history_snapshot):
                     scalar(row.get("rounds", 0), 10), *(scalar(counts.get(a, 0), 3) for a in ("board", "hand", "temp", "golden")),
                     scalar(needed, 3), scalar(max(0, needed - sum(counts.get(a, 0) for a in ("board", "hand", "temp"))), 3))
             number_templates[number_key] = base_numbers
-        nums = number_templates[number_key] + (float(to.get("area") == "hand"), scalar(to.get("idx", -1), 10))
+        slot = to.get("idx", -1)
+        slot_key = (type(slot), slot)
+        if slot_key not in slot_numbers:
+            slot_numbers[slot_key] = scalar(slot, 10)
+        nums = number_templates[number_key] + (float(to.get("area") == "hand"), slot_numbers[slot_key])
         cell = (to.get("row", action.get("row")), to.get("col", action.get("col")))
         destination = cell_indices.get(cell, 0)
         flag_key = (action.get("dir"), kind, semantic)
