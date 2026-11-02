@@ -20,4 +20,6 @@ pub mod skills;
 pub mod sp;
 pub mod spatial;
 pub mod stats;
+pub mod status;
 pub mod targeting;
+pub mod valued;

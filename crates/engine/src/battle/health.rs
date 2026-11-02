@@ -37,6 +37,7 @@ pub struct Unit {
     /// and the elemental damage runtime, never inferred from HP damage.
     pub element_buildup: [f64; 5],
     pub boss: bool,
+    pub immune: std::collections::BTreeSet<String>,
     pub pool: Option<Id>,
     pub skill: bool,
     pub profile_no_heal: bool,
@@ -81,6 +82,7 @@ impl Unit {
             elemental_resistance: 0.0,
             element_buildup: [0.0; 5],
             boss: false,
+            immune: Default::default(),
             pool: None,
             skill: false,
             profile_no_heal: false,

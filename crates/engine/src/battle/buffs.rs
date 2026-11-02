@@ -33,6 +33,11 @@ pub struct State {
     pub on_tick: Option<u64>,
     pub on_remove: Option<u64>,
     pub on_expire: Option<u64>,
+    pub valued: Option<super::valued::Effect>,
+    pub valued_expire: bool,
+    pub resist_decay: bool,
+    pub attract: Option<[i32; 2]>,
+    pub fear: Option<super::status::FearStamp>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -52,6 +57,11 @@ impl Default for State {
             on_tick: None,
             on_remove: None,
             on_expire: None,
+            valued: None,
+            valued_expire: false,
+            resist_decay: false,
+            attract: None,
+            fear: None,
         }
     }
 }
@@ -98,6 +108,7 @@ pub struct Runtime {
     max_retained: usize,
     retained: BTreeMap<BuffId, (Id, Buff)>,
     faulted: bool,
+    fear_sequence: u64,
 }
 impl Runtime {
     pub fn new(max_buffs: usize, max_retained: usize, max_depth: usize) -> Result<Self, String> {
@@ -112,12 +123,30 @@ impl Runtime {
             max_retained,
             retained: BTreeMap::new(),
             faulted: false,
+            fear_sequence: 0,
         })
     }
     pub fn faulted(&self) -> bool {
         self.faulted
     }
-    fn call<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
+    pub(crate) fn next_fear(&mut self) -> Result<u64, String> {
+        self.fear_sequence = self
+            .fear_sequence
+            .checked_add(1)
+            .ok_or("Fear identity exhausted")?;
+        Ok(self.fear_sequence)
+    }
+    pub(crate) fn check_tail(&self, len: usize) -> Result<(), String> {
+        if len > self.max_buffs {
+            Err("Waiting status capacity exceeded; no effects dropped".into())
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn call<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
         if self.faulted {
             return Err("Buff runtime is faulted".into());
         }
@@ -146,7 +175,7 @@ impl Runtime {
             .ok_or("Buff identity exhausted")?;
         Ok(self.sequence)
     }
-    fn adopt(&mut self, w: &mut World, unit: Id) -> Result<(), String> {
+    pub(crate) fn adopt(&mut self, w: &mut World, unit: Id) -> Result<(), String> {
         let s = &mut w.unit_mut(unit)?.stats;
         if s.buffs().len() > self.max_buffs {
             return Err("Unit buff capacity exceeded".into());
@@ -463,7 +492,7 @@ impl Runtime {
                         continue;
                     }
                     let b = r.get(w, unit, id)?;
-                    if b.runtime.on_tick.is_some() {
+                    if b.runtime.on_tick.is_some() || b.runtime.resist_decay {
                         if b.runtime.interval > 0.0 {
                             r.edit_timer(w, unit, id, |b| b.runtime.accumulator += dt)?;
                             for _ in 0..8 {
@@ -472,26 +501,11 @@ impl Runtime {
                                     break;
                                 }
                                 let interval = b.runtime.interval;
-                                let token = b
-                                    .runtime
-                                    .on_tick
-                                    .ok_or("Buff tick callback removed during interval loop")?;
                                 r.edit_timer(w, unit, id, |b| b.runtime.accumulator -= interval)?;
-                                h.callback(
-                                    token,
-                                    Event::Tick,
-                                    Context {
-                                        unit,
-                                        buff: id,
-                                        dt: interval,
-                                    },
-                                    r,
-                                    w,
-                                )?;
+                                r.fire_tick(w, h, unit, id, interval)?;
                             }
                         } else {
-                            let token = b.runtime.on_tick.unwrap();
-                            h.callback(token, Event::Tick, Context { unit, buff: id, dt }, r, w)?;
+                            r.fire_tick(w, h, unit, id, dt)?;
                         }
                     }
                     if r.get(w, unit, id)?.runtime.time_left != f64::INFINITY {
@@ -500,6 +514,9 @@ impl Runtime {
                             && Self::attached(w, unit, id)?
                         {
                             r.remove_one(w, h, unit, id, false)?;
+                            if r.get(w, unit, id)?.runtime.valued_expire {
+                                super::valued::expire(w, h, r, unit, id)?;
+                            }
                             if let Some(token) = r.get(w, unit, id)?.runtime.on_expire {
                                 h.callback(
                                     token,
@@ -545,6 +562,25 @@ impl Runtime {
             }
             Ok(())
         })
+    }
+    fn fire_tick<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        unit: Id,
+        id: BuffId,
+        dt: f64,
+    ) -> Result<(), String> {
+        if self.get(w, unit, id)?.runtime.resist_decay {
+            super::valued::decay_palsy(w, h, self, unit)
+        } else {
+            let token = self
+                .get(w, unit, id)?
+                .runtime
+                .on_tick
+                .ok_or("Buff tick callback removed during interval loop")?;
+            h.callback(token, Event::Tick, Context { unit, buff: id, dt }, self, w)
+        }
     }
 }
 fn status_key(b: &Buff) -> String {
