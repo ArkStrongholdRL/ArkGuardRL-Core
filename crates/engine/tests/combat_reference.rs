@@ -4,6 +4,8 @@ use arkguard_engine::{
     battle::{
         ally, attacks, blocking, body, buffs,
         damage::DamageType,
+        element::{self, Element},
+        grid::Rect,
         health::{self, Side, Unit, World},
         hit,
         injury::Effects,
@@ -13,6 +15,7 @@ use arkguard_engine::{
         sp::{Bank, Kind},
         spatial::{self, Index},
         stats::{Base, Buff, UnitStats},
+        status,
         targeting::{Profile, Queries},
     },
     deterministic::rng::Rng,
@@ -154,6 +157,14 @@ impl health::Hooks for Host {
     }
 }
 impl buffs::Hooks for Host {
+    fn burst_damage(
+        &mut self,
+        r: &mut hit::Request,
+        _: &mut buffs::Runtime,
+        w: &mut World,
+    ) -> Result<f64, String> {
+        attacks::Hooks::damage(self, w, r)
+    }
     fn status(&mut self, _: u64, _: &str, _: bool) -> Result<(), String> {
         Ok(())
     }
@@ -170,6 +181,55 @@ impl buffs::Hooks for Host {
         }
         self.trace.push(json!(["pulse"]));
         r.edit(w, c.unit, c.buff, |b| b.stacks += 1)
+    }
+}
+impl status::Hooks for Host {
+    fn has_before_status(&self) -> bool {
+        false
+    }
+    fn before_status(
+        &mut self,
+        _: &mut status::Context,
+        _: &mut buffs::Runtime,
+        _: &mut World,
+    ) -> Result<(), String> {
+        Err("Unexpected status hook".into())
+    }
+    fn has_status_applied(&self) -> bool {
+        false
+    }
+    fn status_applied(
+        &mut self,
+        _: &status::Context,
+        _: &mut buffs::Runtime,
+        _: &mut World,
+    ) -> Result<(), String> {
+        Err("Unexpected status hook".into())
+    }
+}
+impl element::Hooks for Host {
+    fn battle_rect(&self) -> Rect {
+        Rect::FULL
+    }
+    fn element_enabled(&self, _: element::Phase) -> bool {
+        false
+    }
+    fn element_event(
+        &mut self,
+        _: element::Phase,
+        _: &mut element::Request,
+        _: f64,
+        _: f64,
+        _: &mut buffs::Runtime,
+        _: &mut World,
+    ) -> Result<(), String> {
+        Err("Unexpected element hook".into())
+    }
+    fn element_number(&mut self, _: u64, _: f64, _: Element) -> Result<(), String> {
+        Ok(())
+    }
+    fn burst_visual(&mut self, _: u64, _: Element, _: &World) -> Result<(), String> {
+        Ok(())
     }
 }
 impl hit::Hooks for Host {}
@@ -492,6 +552,8 @@ fn native_composition_matches_continuous_attacks() {
             if d["dead"] == true { 500.0 } else { 100000.0 },
         );
         base.0.insert("def".into(), 20.0);
+        base.0.insert("atk".into(), 30.0);
+        base.0.insert("res".into(), 30.0);
         let mut e = Unit::new(
             UnitStats::new(base),
             if d["healer"] == true {
@@ -569,6 +631,24 @@ fn native_composition_matches_continuous_attacks() {
         let mut states = vec![];
         for tick in 0..240 {
             w.time = tick as f64 / 30.0;
+            if d["i"].as_u64().unwrap() >= 40 && d["healer"] != true && tick == 0 {
+                let el = [
+                    Element::Burn,
+                    Element::Neural,
+                    Element::Necrosis,
+                    Element::Apoptosis,
+                    Element::Erosion,
+                ][d["i"].as_u64().unwrap() as usize % 5];
+                let mut r = h.buffs.take().unwrap();
+                element::apply(
+                    &mut w,
+                    &mut h,
+                    &mut r,
+                    &mut element::Request::new(Some(1), Some(1), 2, el, 1100.0),
+                )
+                .unwrap();
+                h.buffs = Some(r);
+            }
             if d["shooterDeath"] == true && tick == 2 {
                 let u = w.unit_mut(1).unwrap();
                 u.stats.alive = false;
@@ -647,9 +727,12 @@ fn native_composition_matches_continuous_attacks() {
                 s.end(&mut w, &mut h, "stopped").unwrap();
             }
             let atk = w.unit_mut(1).unwrap().stats.stats().unwrap().n("atk");
+            let element_lock = element::locked(&mut w, 2).unwrap();
+            let enemy_stats = w.unit_mut(2).unwrap().stats.stats().unwrap();
+            let (enemy_atk, enemy_res) = (enemy_stats.n("atk"), enemy_stats.n("res"));
             let u = w.unit(1).unwrap();
             let e = w.unit(2).unwrap();
-            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
+            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
         }
         for (tick, (a, b)) in states
             .iter()

@@ -369,6 +369,7 @@ impl Executor {
                         let amount = atk * scale * splash.scale * p.skill_damage_mul;
                         let mut r = single_hit(id, victim, attack_id, kind, amount, p.is_skill);
                         r.is_splash = true;
+                        r.attack_type = super::hit::AttackType::Splash;
                         let dealt = h.damage(w, &mut r)?;
                         total += dealt;
                         h.each_hit(

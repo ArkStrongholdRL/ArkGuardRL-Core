@@ -24,7 +24,17 @@ pub enum Phase {
     Applying,
     HpDamage,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttackType {
+    None,
+    Normal,
+    Splash,
+    Buff,
+    Addition,
+}
 pub struct Request {
+    pub attack_type: AttackType,
+    pub element: Option<super::element::Element>,
     pub attack_id: Option<u64>,
     pub is_attack: bool,
     pub is_skill: bool,
@@ -47,6 +57,8 @@ impl Request {
             Calculation::Formula
         };
         Self {
+            attack_type: AttackType::Normal,
+            element: None,
             attack_id: None,
             is_attack: false,
             is_skill: false,

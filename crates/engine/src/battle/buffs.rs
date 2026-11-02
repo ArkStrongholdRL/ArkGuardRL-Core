@@ -38,6 +38,7 @@ pub struct State {
     pub resist_decay: bool,
     pub attract: Option<[i32; 2]>,
     pub fear: Option<super::status::FearStamp>,
+    pub element_burst: Option<super::element::Burst>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -62,6 +63,7 @@ impl Default for State {
             resist_decay: false,
             attract: None,
             fear: None,
+            element_burst: None,
         }
     }
 }
@@ -90,6 +92,17 @@ pub struct Context {
     pub dt: f64,
 }
 pub trait Hooks: health::Hooks {
+    fn burst_damage(
+        &mut self,
+        _request: &mut super::hit::Request,
+        _runtime: &mut Runtime,
+        _w: &mut World,
+    ) -> Result<f64, String> {
+        Err("Element burst damage handler not installed".into())
+    }
+    fn burst_sp_loss(&mut self, _unit: Id, _amount: f64, _w: &mut World) -> Result<(), String> {
+        Err("Element burst SP handler not installed".into())
+    }
     fn status(&mut self, unit: Id, key: &str, on: bool) -> Result<(), String>;
     fn callback(
         &mut self,
@@ -440,6 +453,9 @@ impl Runtime {
         if off {
             h.status(unit, &key, false)?;
         }
+        if call_remove && self.get(w, unit, id)?.runtime.element_burst.is_some() {
+            w.unit_mut(unit)?.element_buildup = [0.0; 5];
+        }
         if call_remove {
             if let Some(token) = token {
                 h.callback(
@@ -492,7 +508,13 @@ impl Runtime {
                         continue;
                     }
                     let b = r.get(w, unit, id)?;
-                    if b.runtime.on_tick.is_some() || b.runtime.resist_decay {
+                    if b.runtime.on_tick.is_some()
+                        || b.runtime.resist_decay
+                        || b.runtime
+                            .element_burst
+                            .map(|b| b.periodic())
+                            .unwrap_or(false)
+                    {
                         if b.runtime.interval > 0.0 {
                             r.edit_timer(w, unit, id, |b| b.runtime.accumulator += dt)?;
                             for _ in 0..8 {
@@ -514,6 +536,9 @@ impl Runtime {
                             && Self::attached(w, unit, id)?
                         {
                             r.remove_one(w, h, unit, id, false)?;
+                            if r.get(w, unit, id)?.runtime.element_burst.is_some() {
+                                w.unit_mut(unit)?.element_buildup = [0.0; 5];
+                            }
                             if r.get(w, unit, id)?.runtime.valued_expire {
                                 super::valued::expire(w, h, r, unit, id)?;
                             }
@@ -571,7 +596,15 @@ impl Runtime {
         id: BuffId,
         dt: f64,
     ) -> Result<(), String> {
-        if self.get(w, unit, id)?.runtime.resist_decay {
+        if self
+            .get(w, unit, id)?
+            .runtime
+            .element_burst
+            .map(|b| b.periodic())
+            .unwrap_or(false)
+        {
+            super::element::tick(w, h, self, unit, id)
+        } else if self.get(w, unit, id)?.runtime.resist_decay {
             super::valued::decay_palsy(w, h, self, unit)
         } else {
             let token = self

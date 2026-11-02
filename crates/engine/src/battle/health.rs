@@ -36,6 +36,11 @@ pub struct Unit {
     /// burn, neural, necrosis, apoptosis, erosion; shared by healing selectors
     /// and the elemental damage runtime, never inferred from HP damage.
     pub element_buildup: [f64; 5],
+    pub burst_pending: [bool; 5],
+    pub enemy_entity: bool,
+    pub element_leader: bool,
+    pub ep_resistance: f64,
+    pub element_damage_dealt: f64,
     pub boss: bool,
     pub immune: std::collections::BTreeSet<String>,
     pub pool: Option<Id>,
@@ -81,6 +86,11 @@ impl Unit {
             hits_sleep: false,
             elemental_resistance: 0.0,
             element_buildup: [0.0; 5],
+            burst_pending: [false; 5],
+            enemy_entity: side == Side::Enemy,
+            element_leader: false,
+            ep_resistance: 0.0,
+            element_damage_dealt: 0.0,
             boss: false,
             immune: Default::default(),
             pool: None,

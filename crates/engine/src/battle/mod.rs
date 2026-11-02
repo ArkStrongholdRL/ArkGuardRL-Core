@@ -10,6 +10,7 @@ pub mod clock;
 pub mod damage;
 pub mod deploy;
 pub mod direction;
+pub mod element;
 pub mod grid;
 pub mod health;
 pub mod hit;
