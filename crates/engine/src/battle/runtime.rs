@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Concrete, headless solo field owner. This first entry supports an empty allied
-//! roster and the implemented enemy kits; it is not the complete match/env API.
+//! Concrete, headless solo field owner with explicitly supported original kits.
+//! This is not the complete match/env API.
 //! All mutation, tick phases, RNG and failure state live here, not in a test host.
 use super::{
     blocking, buffs,
@@ -17,6 +17,7 @@ use super::{
 use crate::{data::Catalog, deterministic::rng::Rng};
 use serde_json::{json, Value};
 use std::sync::Arc;
+mod allies;
 
 #[derive(Clone, Copy)]
 pub struct Limits {
@@ -25,6 +26,7 @@ pub struct Limits {
     pub route_legs: usize,
     pub buffs_per_unit: usize,
     pub callback_depth: usize,
+    pub projectiles: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -34,6 +36,7 @@ impl Default for Limits {
             route_legs: 512,
             buffs_per_unit: 64,
             callback_depth: 32,
+            projectiles: 4096,
         }
     }
 }
@@ -68,13 +71,18 @@ pub struct Field {
 }
 struct Core {
     world: World,
-    grid: Grid,
     host: Host,
+    commitments: super::search::Commitments,
     time_limit: f64,
     unit_limit: usize,
 }
 struct Host {
     data: Arc<Catalog>,
+    grid: Option<Grid>,
+    roster: Option<super::operators::Roster>,
+    index: Option<spatial::Index>,
+    executor: Option<super::attacks::Executor>,
+    flights: Option<super::projectiles::System<enemy::Delivery>>,
     spawns: Option<super::spawns::Runtime>,
     content: Option<content::Runtime>,
     buffs: Option<buffs::Runtime>,
@@ -118,6 +126,7 @@ impl Field {
             limits.route_legs,
             limits.buffs_per_unit,
             limits.callback_depth,
+            limits.projectiles,
         ]
         .contains(&0)
             || limits.units > 65536
@@ -125,6 +134,7 @@ impl Field {
             || limits.route_legs > 4096
             || limits.buffs_per_unit > 4096
             || limits.callback_depth > 128
+            || limits.projectiles > 65536
             || !(time_limit > 0.)
             || time_limit.is_nan()
         {
@@ -199,18 +209,48 @@ impl Field {
             limits.callback_depth,
         )?;
         let content = content::Runtime::new(limits.units)?;
+        let ally_limit = limits.units.min(36);
+        let roster = super::operators::Roster::new(
+            &grid,
+            1,
+            super::operators::Limits {
+                units: ally_limit,
+                callback_depth: limits.callback_depth,
+                deploy_order: if data
+                    .table("config")
+                    .is_some_and(|d| d["version"]["rules"]["deployOrder"] == "rowBottomUp")
+                {
+                    super::operators::DeployOrder::RowBottomUp
+                } else {
+                    super::operators::DeployOrder::Column
+                },
+                ..Default::default()
+            },
+        )?;
         Ok(Self {
             clock: Clock::new(),
             core: Core {
                 world: World::new(limits.units, 1, 1)?,
-                grid,
                 host: Host {
                     data,
+                    grid: Some(grid),
+                    roster: Some(roster),
+                    index: Some(spatial::Index::new(
+                        limits.units,
+                        limits.units * super::grid::N,
+                    )?),
+                    executor: Some(super::attacks::Executor::new(limits.units, 1)?),
+                    flights: Some(super::projectiles::System::new(limits.projectiles)?),
                     spawns: Some(spawns),
                     content: Some(content),
                     buffs: Some(buffs),
                     rng: Rng::new(if seed == 0 { 1 } else { seed }),
                 },
+                commitments: super::search::Commitments::new(
+                    ally_limit,
+                    limits.units,
+                    ally_limit * limits.units,
+                )?,
                 time_limit,
                 unit_limit: limits.units,
             },
@@ -241,6 +281,41 @@ impl Field {
     }
     pub fn enemies(&self) -> &[Id] {
         self.core.host.spawns.as_ref().unwrap().live()
+    }
+    pub fn allies(&self) -> &[Id] {
+        self.core.host.roster.as_ref().unwrap().ids()
+    }
+    /// Install an explicitly supported default operator before the first tick.
+    pub fn add_operator(
+        &mut self,
+        key: &str,
+        placement: super::operators::Placement,
+    ) -> Result<Id, String> {
+        self.healthy()?;
+        if self.ticks() != 0 || self.clock.started() || self.finished() {
+            return Err("Operators must be installed before field start".into());
+        }
+        let def = super::operators::Definition::load(&self.core.host.data, key)?;
+        let grid = self.core.host.grid.take().unwrap();
+        if grid.obstacle(placement.home) != 0 {
+            self.core.host.grid = Some(grid);
+            return Err("Operator deployment on a combat device is not implemented".into());
+        }
+        let mut roster = self.core.host.roster.take().unwrap();
+        let mut r = self.core.host.buffs.take().unwrap();
+        let result = roster.add(
+            &mut self.core.world,
+            &mut r,
+            &mut self.core.host,
+            &grid,
+            def,
+            placement,
+        );
+        self.faulted |= roster.faulted();
+        self.core.host.roster = Some(roster);
+        self.core.host.buffs = Some(r);
+        self.core.host.grid = Some(grid);
+        result
     }
     pub fn unit(&self, id: Id) -> Result<&Unit, String> {
         self.core.world.unit(id)
@@ -340,6 +415,7 @@ impl Field {
         {
             self.core.world.unit(id)?;
         }
+        self.core.world.time = self.clock.time();
         let mut buffs = self.core.host.buffs.take().unwrap();
         let mut rng = self.core.host.rng.clone();
         let result = settlement::resolve(
@@ -381,12 +457,14 @@ impl Field {
                 .content_overrides(key),
             options["tag"].as_str(),
         )?;
+        self.core.world.time = self.clock.time();
         let mut spawns = self.core.host.spawns.take().unwrap();
         let mut buffs = self.core.host.buffs.take().unwrap();
         let mut content = self.core.host.content.take().unwrap();
+        let grid = self.core.host.grid.take().unwrap();
         let result = spawns.spawn(
             &mut self.core.world,
-            &self.core.grid,
+            &grid,
             &mut Spawn {
                 host: &mut self.core.host,
                 buffs: &mut buffs,
@@ -398,6 +476,7 @@ impl Field {
         self.core.host.spawns = Some(spawns);
         self.core.host.buffs = Some(buffs);
         self.core.host.content = Some(content);
+        self.core.host.grid = Some(grid);
         if result.is_err() {
             self.faulted = true;
         }
@@ -429,14 +508,25 @@ impl clock::Host for Core {
     fn phase(&mut self, phase: Phase, c: &mut Clock) -> Result<(), String> {
         self.world.time = c.time();
         match phase {
-            Phase::Start => c.mark_started(),
+            Phase::Start => {
+                let grid = self.host.grid.take().unwrap();
+                let mut roster = self.host.roster.take().unwrap();
+                let mut r = self.host.buffs.take().unwrap();
+                let result = roster.deploy_initial(&mut self.world, &mut r, &mut self.host, &grid);
+                self.host.roster = Some(roster);
+                self.host.buffs = Some(r);
+                self.host.grid = Some(grid);
+                result?;
+                c.mark_started();
+            }
             Phase::Spawns => {
                 let mut spawns = self.host.spawns.take().unwrap();
                 let mut buffs = self.host.buffs.take().unwrap();
                 let mut content = self.host.content.take().unwrap();
+                let grid = self.host.grid.take().unwrap();
                 let result = spawns.process(
                     &mut self.world,
-                    &self.grid,
+                    &grid,
                     &mut Spawn {
                         host: &mut self.host,
                         buffs: &mut buffs,
@@ -446,10 +536,13 @@ impl clock::Host for Core {
                 self.host.spawns = Some(spawns);
                 self.host.buffs = Some(buffs);
                 self.host.content = Some(content);
+                self.host.grid = Some(grid);
                 result?;
             }
+            Phase::Dp => self.host.roster.as_mut().unwrap().recover_dp(DT)?,
             Phase::Buffs => {
-                let ids = self.host.spawns.as_ref().unwrap().live().to_vec();
+                let mut ids = self.host.roster.as_ref().unwrap().ids().to_vec();
+                ids.extend_from_slice(self.host.spawns.as_ref().unwrap().live());
                 let mut r = self.host.buffs.take().unwrap();
                 let result = r.tick(&mut self.world, &mut self.host, &ids, DT);
                 self.host.buffs = Some(r);
@@ -459,11 +552,12 @@ impl clock::Host for Core {
                 let ids = self.host.spawns.as_ref().unwrap().live().to_vec();
                 let mut r = self.host.buffs.take().unwrap();
                 let mut rng = self.host.rng.clone();
+                let mut grid = self.host.grid.take().unwrap();
                 let result = (|| {
                     for id in ids {
                         enemy::update(
                             &mut self.world,
-                            &mut self.grid,
+                            &mut grid,
                             &mut r,
                             &mut rng,
                             &mut self.host,
@@ -472,7 +566,7 @@ impl clock::Host for Core {
                             self.unit_limit,
                         )?;
                         let u = self.world.unit_mut(id)?;
-                        let rect = self.grid.rect();
+                        let rect = grid.rect();
                         let m = 0.5 - 1. / 1048576.;
                         u.position[0] = u.position[0]
                             .max(rect.r0 as f64 - m)
@@ -485,6 +579,54 @@ impl clock::Host for Core {
                 })();
                 self.host.buffs = Some(r);
                 self.host.rng = rng;
+                self.host.grid = Some(grid);
+                result?;
+            }
+            Phase::AttackCommit => {
+                self.host.rebuild_index(&self.world)?;
+                let ids = self.host.roster.as_ref().unwrap().ids().to_vec();
+                self.commitments
+                    .capture(&mut self.world, &mut self.host, &ids, DT)?;
+            }
+            Phase::EnemyIndex => self.host.rebuild_index(&self.world)?,
+            Phase::Allies => {
+                let ids = self.host.roster.as_ref().unwrap().ids().to_vec();
+                for id in ids {
+                    if !self.world.unit(id)?.stats.alive || !self.world.unit(id)?.deployed {
+                        continue;
+                    }
+                    let mut skill = self.host.roster.as_mut().unwrap().take_skill(id)?;
+                    let result = (|| {
+                        skill.tick(&mut self.world, &mut self.host, DT)?;
+                        super::ally::update(
+                            &mut self.world,
+                            &mut self.host,
+                            &self.commitments,
+                            id,
+                            Some(&mut skill),
+                            DT,
+                            self.unit_limit,
+                        )
+                    })();
+                    let restore = self.host.roster.as_mut().unwrap().restore_skill(id, skill);
+                    result?;
+                    restore?;
+                }
+            }
+            Phase::Projectiles => {
+                let mut flights = self.host.flights.take().unwrap();
+                let result = flights.update(&mut self.world, &mut self.host, DT);
+                self.host.flights = Some(flights);
+                result?;
+            }
+            Phase::Redeploy => {
+                let grid = self.host.grid.take().unwrap();
+                let mut roster = self.host.roster.take().unwrap();
+                let mut r = self.host.buffs.take().unwrap();
+                let result = roster.check_redeploys(&mut self.world, &mut r, &mut self.host, &grid);
+                self.host.roster = Some(roster);
+                self.host.buffs = Some(r);
+                self.host.grid = Some(grid);
                 result?;
             }
             Phase::TickHook => {
@@ -496,8 +638,7 @@ impl clock::Host for Core {
                 self.host.content = Some(content);
                 result?;
             }
-            // No allied roster, timers, projectiles, boss pool or custom hooks can
-            // be installed through this entry. Their phases are therefore empty.
+            // Timers, boss pools and custom content hooks are not admitted here.
             _ => {}
         }
         Ok(())
@@ -547,11 +688,29 @@ impl clock::Host for Core {
             let r = self.host.spawns.as_mut().unwrap();
             r.ledger.timeout(&mut r.queue)?;
         }
+        self.host.flights.as_mut().unwrap().clear(&mut self.world)?;
         Ok(())
     }
 }
 impl health::Hooks for Host {
     fn kill(&mut self, id: Id, credit: Option<Id>, w: &mut World) -> Result<(), String> {
+        let mut r = self
+            .buffs
+            .take()
+            .ok_or("Death requires the active buff context")?;
+        let result = settlement::Hooks::health_kill(self, id, credit, &mut r, w);
+        self.buffs = Some(r);
+        result
+    }
+}
+impl Host {
+    fn kill_enemy(
+        &mut self,
+        id: Id,
+        credit: Option<Id>,
+        r: &mut buffs::Runtime,
+        w: &mut World,
+    ) -> Result<(), String> {
         if !w.unit(id)?.stats.alive {
             return Ok(());
         }
@@ -563,7 +722,14 @@ impl health::Hooks for Host {
                 .unwrap_or(false),
         )?;
         enemy::clear(w, id)?;
-        blocking::unblock(w, self, id)?;
+        blocking::unblock(
+            w,
+            &mut allies::Blocking {
+                host: self,
+                buffs: r,
+            },
+            id,
+        )?;
         let time = w.time;
         let u = w.unit_mut(id)?;
         u.stats.hp = 0.;
@@ -603,11 +769,50 @@ impl buffs::Hooks for Host {
         self.rng = rng;
         result
     }
-    fn burst_sp_loss(&mut self, _: Id, amount: f64, w: &mut World) -> Result<(), String> {
-        super::element::drain_sp(w, None, amount)
+    fn burst_sp_loss(&mut self, id: Id, amount: f64, w: &mut World) -> Result<(), String> {
+        if w.unit(id)?.side == health::Side::Ally {
+            self.roster
+                .as_mut()
+                .ok_or("Missing elemental SP context")?
+                .drain_sp(w, id, amount)
+        } else {
+            super::element::drain_sp(w, None, amount)
+        }
     }
 }
 impl settlement::Hooks for Host {
+    fn health_kill(
+        &mut self,
+        id: Id,
+        credit: Option<Id>,
+        r: &mut buffs::Runtime,
+        w: &mut World,
+    ) -> Result<(), String> {
+        if w.unit(id)?.side == health::Side::Enemy {
+            return self.kill_enemy(id, credit, r, w);
+        }
+        let mut roster = self.roster.take().ok_or("Missing operator death context")?;
+        let result = roster.kill(w, r, self, id, credit);
+        self.roster = Some(roster);
+        result
+    }
+    fn health_event(
+        &mut self,
+        e: &mut health::Event,
+        r: &mut buffs::Runtime,
+        w: &mut World,
+    ) -> Result<(), String> {
+        if e.stage == health::Stage::SkillDamaged {
+            let mut roster = self
+                .roster
+                .take()
+                .ok_or("Missing operator damage context")?;
+            let result = roster.damaged(w, r, self, e.target);
+            self.roster = Some(roster);
+            result?;
+        }
+        Ok(())
+    }
     fn damage_health_event(
         &mut self,
         e: &mut health::Event,
@@ -624,7 +829,7 @@ impl settlement::Hooks for Host {
                 result?;
             }
         }
-        Ok(())
+        self.health_event(e, r, w)
     }
 }
 impl super::status::Hooks for Host {
@@ -677,8 +882,38 @@ impl super::element::Hooks for Host {
     }
 }
 impl blocking::Hooks for Host {
+    fn unblock_with_buffs(
+        &mut self,
+        w: &mut World,
+        r: &mut buffs::Runtime,
+        id: Id,
+    ) -> Result<(), String> {
+        blocking::unblock(
+            w,
+            &mut allies::Blocking {
+                host: self,
+                buffs: r,
+            },
+            id,
+        )
+    }
+    fn release_with_buffs(
+        &mut self,
+        w: &mut World,
+        r: &mut buffs::Runtime,
+        id: Id,
+    ) -> Result<(), String> {
+        blocking::release(
+            w,
+            &mut allies::Blocking {
+                host: self,
+                buffs: r,
+            },
+            id,
+        )
+    }
     fn blocked(&mut self, _: Id, _: Id, _: &mut World) -> Result<(), String> {
-        Err("No allied blocker can exist in an enemy-only field".into())
+        Ok(()) // Current default operator kits have no block-event handlers.
     }
     fn ended(&mut self, id: Id, w: &mut World) -> Result<(), String> {
         let mut r = self
@@ -691,8 +926,11 @@ impl blocking::Hooks for Host {
     }
 }
 impl motion::Hooks for Host {
-    fn check_block(&mut self, _: Id, _: &mut World, _: &mut Grid) -> Result<bool, String> {
-        Ok(false)
+    fn check_block(&mut self, id: Id, w: &mut World, g: &mut Grid) -> Result<bool, String> {
+        let roster = self.roster.take().ok_or("Missing blocker context")?;
+        let result = blocking::check(w, roster.deployment(), g, self, id);
+        self.roster = Some(roster);
+        result
     }
     fn hidden(&mut self, id: Id, on: bool, w: &mut World) -> Result<(), String> {
         w.unit_mut(id)?.hidden = on;
@@ -718,8 +956,8 @@ impl Queries for Host {
     fn skip_enemy(&mut self, _: Option<Id>, _: Id, _: &mut World) -> Result<bool, String> {
         Ok(false)
     }
-    fn remaining_distance(&mut self, _: Id, _: &mut World) -> Result<f64, String> {
-        Err("Allied target priority is unavailable in an enemy-only field".into())
+    fn remaining_distance(&mut self, id: Id, w: &mut World) -> Result<f64, String> {
+        motion::remaining_distance(w, self.grid.as_mut().ok_or("Missing route query grid")?, id)
     }
     fn body_distance(&mut self, id: Id, p: [f64; 2], w: &mut World) -> Result<f64, String> {
         Ok(super::body::distance(w.unit(id)?, p))
@@ -737,12 +975,20 @@ impl enemy::Hooks for Host {
     }
     fn allies_in_radius(
         &mut self,
-        _: Id,
-        _: f64,
-        _: &mut World,
-        _: usize,
+        id: Id,
+        radius: f64,
+        w: &mut World,
+        limit: usize,
     ) -> Result<Vec<Id>, String> {
-        Ok(vec![])
+        spatial::allies_in_radius(
+            w,
+            self.roster.as_ref().unwrap().ids(),
+            w.unit(id)?.position,
+            radius,
+            None,
+            false,
+            limit,
+        )
     }
     fn enemies_in_radius(
         &mut self,
@@ -788,11 +1034,35 @@ impl enemy::Hooks for Host {
     }
     fn deliver(
         &mut self,
-        _: enemy::Delivery,
-        _: &mut buffs::Runtime,
-        _: &mut World,
-        _: &mut Rng,
+        d: enemy::Delivery,
+        r: &mut buffs::Runtime,
+        w: &mut World,
+        rng: &mut Rng,
     ) -> Result<(), String> {
-        Err("No allied target can exist in an enemy-only field".into())
+        if d.projectile {
+            self.flights
+                .as_mut()
+                .ok_or("Reentrant projectile launch")?
+                .add(
+                    w,
+                    super::projectiles::Launch {
+                        from: w.unit(d.source)?.position,
+                        source: Some(d.source),
+                        target: Some(d.target),
+                        to: None,
+                        speed: 10.,
+                        hit_dead: false,
+                        max_age: 10.,
+                        on_hit: true,
+                        visual: "enemy".into(),
+                        speed_changeable: None,
+                        removable: None,
+                        payload: d,
+                    },
+                )?;
+        } else {
+            enemy::impact(w, r, rng, self, d, Some(d.target))?;
+        }
+        Ok(())
     }
 }

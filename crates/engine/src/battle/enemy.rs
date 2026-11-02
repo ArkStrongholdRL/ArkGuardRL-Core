@@ -638,7 +638,7 @@ pub fn update<H: Hooks>(
             if stunned && !w.unit(id)?.hidden {
                 w.unit_mut(id)?.motion.attack_stand_until = f64::NEG_INFINITY;
                 if w.unit(id)?.blocked_by().is_some() && flags(w, id)?.contains("sleep") {
-                    blocking::unblock(w, h, id)?;
+                    h.unblock_with_buffs(w, r, id)?;
                 }
                 h.check_block(id, w, g)?;
                 return Ok(());
@@ -656,7 +656,7 @@ pub fn update<H: Hooks>(
                     || ef.contains("levitate")
                     || ef.contains("fear")
                 {
-                    blocking::unblock(w, h, id)?;
+                    h.unblock_with_buffs(w, r, id)?;
                 } else {
                     return Ok(());
                 }

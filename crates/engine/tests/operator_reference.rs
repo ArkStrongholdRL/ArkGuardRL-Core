@@ -62,7 +62,7 @@ impl settlement::Hooks for Host {
         r: &mut buffs::Runtime,
         w: &mut World,
     ) -> Result<(), String> {
-        self.call(|roster, g, h| roster.kill(w, r, h, g, id, credit))
+        self.call(|roster, _, h| roster.kill(w, r, h, id, credit))
     }
     fn health_event(
         &mut self,
@@ -182,7 +182,7 @@ fn view(w: &mut World, h: &Host) -> Value {
     let u = w.unit_mut(1).unwrap();
     let s = u.stats.stats().unwrap().clone();
     let roster = h.roster.as_ref().unwrap();
-    let k = &roster.entry(1).unwrap().skill;
+    let k = roster.entry(1).unwrap().skill().unwrap();
     let stats: serde_json::Map<_, _> = ["maxHp", "atk", "def", "res", "blockCnt", "interval"]
         .into_iter()
         .map(|n| (n.into(), json!(bits(s.n(n)))))
@@ -234,7 +234,8 @@ fn death_ends_skill_in_canonical_context_and_redeploy_resets_it() {
             .unwrap()
             .entry(1)
             .unwrap()
-            .skill
+            .skill()
+            .unwrap()
             .bank
             .active
     );
@@ -245,7 +246,8 @@ fn death_ends_skill_in_canonical_context_and_redeploy_resets_it() {
             .unwrap()
             .entry(1)
             .unwrap()
-            .skill
+            .skill()
+            .unwrap()
             .bank
             .active
     );
@@ -261,7 +263,8 @@ fn death_ends_skill_in_canonical_context_and_redeploy_resets_it() {
             .unwrap()
             .entry(1)
             .unwrap()
-            .skill
+            .skill()
+            .unwrap()
             .bank
             .active
     );
@@ -430,7 +433,7 @@ fn default_operators_match_original_deployment_hp_and_skills() {
                         .unwrap();
                     }
                     "retreat" => h
-                        .call(|roster, g, h| roster.retreat(&mut w, &mut r, h, g, 1))
+                        .call(|roster, _, h| roster.retreat(&mut w, &mut r, h, 1))
                         .unwrap(),
                     "buff" => {
                         let mut buff = Buff {

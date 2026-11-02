@@ -6,6 +6,28 @@ use super::{
     health::{Id, World},
 };
 pub trait Hooks {
+    fn unblock_with_buffs(
+        &mut self,
+        w: &mut World,
+        _r: &mut super::buffs::Runtime,
+        id: Id,
+    ) -> Result<(), String>
+    where
+        Self: Sized,
+    {
+        unblock(w, self, id)
+    }
+    fn release_with_buffs(
+        &mut self,
+        w: &mut World,
+        _r: &mut super::buffs::Runtime,
+        id: Id,
+    ) -> Result<(), String>
+    where
+        Self: Sized,
+    {
+        release(w, self, id)
+    }
     fn blocked(&mut self, blocker: Id, enemy: Id, w: &mut World) -> Result<(), String>;
     /// Content host updates stealth restoration after a block ends.
     fn ended(&mut self, enemy: Id, w: &mut World) -> Result<(), String>;

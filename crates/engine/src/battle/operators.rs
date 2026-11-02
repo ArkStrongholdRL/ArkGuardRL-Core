@@ -17,6 +17,7 @@ use super::{
 use crate::data::Catalog;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub struct Definition {
     pub key: String,
@@ -27,6 +28,27 @@ pub struct Definition {
     cost: f64,
 }
 impl Definition {
+    pub(crate) fn skill_event<H: buffs::Hooks>(
+        &self,
+        w: &mut World,
+        r: &mut buffs::Runtime,
+        h: &mut H,
+        e: skills::Event,
+        c: &mut skills::Context,
+        s: &mut skills::Runtime,
+    ) -> Result<(), String> {
+        skills::Hooks::event(
+            &mut Skill {
+                r,
+                h,
+                mods: &self.modifiers,
+            },
+            e,
+            c,
+            s,
+            w,
+        )
+    }
     pub fn load(data: &Catalog, key: &str) -> Result<Self, String> {
         let raw = &data.table("chess").ok_or("Missing chess data")?[key];
         Self::compile(key, raw)
@@ -103,6 +125,19 @@ impl Definition {
         {
             return Err(format!("Unsupported operator mechanics: {key}"));
         }
+        for (field, expected) in [
+            ("attackKind", Value::from("melee")),
+            ("dmgType", Value::from("phys")),
+            ("projectile", Value::from("none")),
+            ("canHitFly", Value::from(false)),
+        ] {
+            if !raw[field].is_null() && raw[field] != expected {
+                return Err(format!("Unsupported operator profile {field}: {key}"));
+            }
+        }
+        if !raw["targetPriority"].is_null() || !raw["splashRadius"].is_null() {
+            return Err(format!("Unsupported operator targeting: {key}"));
+        }
         let bb = &skill["bb"];
         let resistance = raw["talents"]
             .as_array()
@@ -137,9 +172,16 @@ impl Definition {
     }
 }
 pub struct Entry {
-    pub definition: Definition,
+    pub definition: Arc<Definition>,
     pub direction: Direction,
-    pub skill: skills::Runtime,
+    skill: Option<skills::Runtime>,
+}
+impl Entry {
+    pub fn skill(&self) -> Result<&skills::Runtime, String> {
+        self.skill
+            .as_ref()
+            .ok_or("Operator skill is already executing".into())
+    }
 }
 /// Default 0.3.3 normal-field deployment comparator. This follows the source
 /// comparator, including descending row within a column, rather than its prose.
@@ -248,6 +290,47 @@ impl Roster {
     pub fn dp(&self, owner: Id) -> Option<f64> {
         self.deployment.dp(owner)
     }
+    pub(crate) fn take_skill(&mut self, id: Id) -> Result<skills::Runtime, String> {
+        self.healthy()?;
+        self.entries
+            .get_mut(&id)
+            .ok_or("Unknown operator identity")?
+            .skill
+            .take()
+            .ok_or("Operator skill is already executing".into())
+    }
+    pub(crate) fn restore_skill(&mut self, id: Id, skill: skills::Runtime) -> Result<(), String> {
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .ok_or("Unknown operator identity")?;
+        if entry.skill.is_some() || skill.unit() != id {
+            self.faulted = true;
+            return Err("Invalid operator skill restoration".into());
+        }
+        entry.skill = Some(skill);
+        Ok(())
+    }
+    pub(crate) fn recover_dp(&mut self, dt: f64) -> Result<(), String> {
+        self.healthy()?;
+        let dp = (self
+            .deployment
+            .dp(self.owner)
+            .ok_or("Missing solo deployment points")?
+            + dt)
+            .min(self.deployment.dp_max);
+        self.deployment.set_dp(self.owner, dp)
+    }
+    pub(crate) fn drain_sp(&mut self, w: &mut World, id: Id, amount: f64) -> Result<(), String> {
+        let skill = self
+            .entries
+            .get_mut(&id)
+            .ok_or("Unknown operator identity")?
+            .skill
+            .as_mut()
+            .ok_or("Operator skill is already executing")?;
+        super::element::drain_sp(w, Some(&mut skill.bank), amount)
+    }
     /// The definition is compiled before mutation. Capacity/placement rejection
     /// leaves identity counters and canonical state untouched.
     pub fn add<H: buffs::Hooks>(
@@ -316,9 +399,9 @@ impl Roster {
             self.entries.insert(
                 id,
                 Entry {
-                    definition: def,
+                    definition: Arc::new(def),
                     direction,
-                    skill,
+                    skill: Some(skill),
                 },
             );
             self.order.push(id);
@@ -353,7 +436,7 @@ impl Roster {
             entries: &mut self.entries,
             r,
             h,
-            grid,
+            grid: Some(grid),
             initial_cooldown: self.initial_cooldown,
         };
         let result = (|| {
@@ -386,14 +469,18 @@ impl Roster {
             .entries
             .get_mut(&id)
             .ok_or("Unknown operator identity")?;
-        let result = entry.skill.on_damaged(
-            w,
-            &mut Skill {
-                r,
-                h,
-                mods: &entry.definition.modifiers,
-            },
-        );
+        let result = entry
+            .skill
+            .as_mut()
+            .ok_or("Operator skill is already executing")?
+            .on_damaged(
+                w,
+                &mut Skill {
+                    r,
+                    h,
+                    mods: &entry.definition.modifiers,
+                },
+            );
         self.finish(result)
     }
     pub fn grant_sp<H: buffs::Hooks>(
@@ -409,18 +496,22 @@ impl Roster {
             .entries
             .get_mut(&id)
             .ok_or("Unknown operator identity")?;
-        let result = entry.skill.gain(
-            w,
-            &mut Skill {
-                r,
-                h,
-                mods: &entry.definition.modifiers,
-            },
-            amount,
-            "talent",
-            false,
-            false,
-        );
+        let result = entry
+            .skill
+            .as_mut()
+            .ok_or("Operator skill is already executing")?
+            .gain(
+                w,
+                &mut Skill {
+                    r,
+                    h,
+                    mods: &entry.definition.modifiers,
+                },
+                amount,
+                "talent",
+                false,
+                false,
+            );
         self.finish(result)
     }
     pub fn tick_skills<H: buffs::Hooks>(
@@ -440,15 +531,19 @@ impl Roster {
                     continue;
                 }
                 let entry = self.entries.get_mut(&id).unwrap();
-                entry.skill.tick(
-                    w,
-                    &mut Skill {
-                        r,
-                        h,
-                        mods: &entry.definition.modifiers,
-                    },
-                    dt,
-                )?;
+                entry
+                    .skill
+                    .as_mut()
+                    .ok_or("Operator skill is already executing")?
+                    .tick(
+                        w,
+                        &mut Skill {
+                            r,
+                            h,
+                            mods: &entry.definition.modifiers,
+                        },
+                        dt,
+                    )?;
             }
             Ok(())
         })();
@@ -459,7 +554,6 @@ impl Roster {
         w: &mut World,
         r: &mut buffs::Runtime,
         h: &mut H,
-        grid: &Grid,
         id: Id,
         credit: Option<Id>,
     ) -> Result<(), String> {
@@ -471,7 +565,7 @@ impl Roster {
                 entries: &mut self.entries,
                 r,
                 h,
-                grid,
+                grid: None,
                 initial_cooldown: self.initial_cooldown,
             },
             id,
@@ -484,7 +578,6 @@ impl Roster {
         w: &mut World,
         r: &mut buffs::Runtime,
         h: &mut H,
-        grid: &Grid,
         id: Id,
     ) -> Result<(), String> {
         self.healthy()?;
@@ -495,7 +588,7 @@ impl Roster {
                 entries: &mut self.entries,
                 r,
                 h,
-                grid,
+                grid: None,
                 initial_cooldown: self.initial_cooldown,
             },
             id,
@@ -518,7 +611,7 @@ impl Roster {
                 entries: &mut self.entries,
                 r,
                 h,
-                grid,
+                grid: Some(grid),
                 initial_cooldown: self.initial_cooldown,
             },
         );
@@ -593,7 +686,7 @@ struct Deploy<'a, H> {
     entries: &'a mut BTreeMap<Id, Entry>,
     r: &'a mut buffs::Runtime,
     h: &'a mut H,
-    grid: &'a Grid,
+    grid: Option<&'a Grid>,
     initial_cooldown: f64,
 }
 impl<H: buffs::Hooks> blocking::Hooks for Deploy<'_, H> {
@@ -615,12 +708,19 @@ impl<H: buffs::Hooks> deploy::Hooks for Deploy<'_, H> {
         let u = w.unit_mut(id)?;
         u.element_buildup = [0.; 5];
         let [row, col] = u.deployment.tile;
-        u.ground = self.grid.tiles()[row as usize * COLS + col as usize].height == "LOW";
+        u.ground = self.grid.ok_or("Deployment requires grid context")?.tiles()
+            [row as usize * COLS + col as usize]
+            .height
+            == "LOW";
         let entry = self
             .entries
             .get_mut(&id)
             .ok_or("Unknown operator identity")?;
-        entry.skill.reset(
+        let skill = entry
+            .skill
+            .as_mut()
+            .ok_or("Operator skill is already executing")?;
+        skill.reset(
             w,
             &mut Skill {
                 r: self.r,
@@ -630,7 +730,7 @@ impl<H: buffs::Hooks> deploy::Hooks for Deploy<'_, H> {
             None,
         )?;
         if opts.initial {
-            entry.skill.op_ready_at = w.time + self.initial_cooldown;
+            skill.op_ready_at = w.time + self.initial_cooldown;
         }
         Ok(())
     }
@@ -647,15 +747,19 @@ impl<H: buffs::Hooks> deploy::Hooks for Deploy<'_, H> {
                 .entries
                 .get_mut(&id)
                 .ok_or("Unknown operator identity")?;
-            entry.skill.end(
-                w,
-                &mut Skill {
-                    r: self.r,
-                    h: self.h,
-                    mods: &entry.definition.modifiers,
-                },
-                "death",
-            )?;
+            entry
+                .skill
+                .as_mut()
+                .ok_or("Operator skill is already executing")?
+                .end(
+                    w,
+                    &mut Skill {
+                        r: self.r,
+                        h: self.h,
+                        mods: &entry.definition.modifiers,
+                    },
+                    "death",
+                )?;
         }
         Ok(())
     }

@@ -1,7 +1,9 @@
 //! Development field runner. Input uses original stage/routes/spawns shapes;
-//! empty allied roster only. This is not a Gymnasium environment or benchmark.
+//! Explicitly supported default kits only; not a Gymnasium env or benchmark.
 use arkguard_engine::{
     battle::{
+        direction::Direction,
+        operators::Placement,
         runtime::{Field, Limits},
         waves::Template,
     },
@@ -13,9 +15,7 @@ use std::{path::Path, sync::Arc};
 fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 3 {
-        return Err(
-            "usage: field DATA_ROOT INPUT.json TICK_BUDGET (empty allied roster only)".into(),
-        );
+        return Err("usage: field DATA_ROOT INPUT.json TICK_BUDGET".into());
     }
     let data = Arc::new(Catalog::load(Path::new(&args[0]), 64 << 20)?);
     let mut text = Vec::new();
@@ -59,17 +59,14 @@ fn main() -> Result<(), String> {
         let players = players.as_array().ok_or("Expected player array")?;
         if players.len() != 1
             || players[0]["playerId"] != "p"
-            || !players[0]["units"]
-                .as_array()
-                .map(|u| u.is_empty())
-                .unwrap_or(false)
+            || !players[0]["units"].is_array()
             || players[0]
                 .as_object()
                 .unwrap()
                 .keys()
                 .any(|k| !matches!(k.as_str(), "playerId" | "units"))
         {
-            return Err("Only the empty solo player {playerId: p, units: []} is implemented in this field entry".into());
+            return Err("Only the solo player {playerId: p, units: [...]} is implemented in this field entry".into());
         }
     }
     let mut template = Template::parse(
@@ -98,8 +95,52 @@ fn main() -> Result<(), String> {
         input["timeLimit"].as_f64().unwrap_or(60.),
         limits,
     )?;
+    for u in input["players"][0]["units"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let object = u.as_object().ok_or("Expected operator object")?;
+        if object
+            .keys()
+            .any(|k| !matches!(k.as_str(), "chessId" | "uid" | "row" | "col" | "dir"))
+        {
+            return Err(
+                "Only default operators without items or loadout overrides are implemented".into(),
+            );
+        }
+        let direction = u
+            .get("dir")
+            .map(|v| v.as_str().ok_or("Expected operator direction string"))
+            .transpose()?
+            .unwrap_or("RIGHT");
+        let dir = match direction {
+            "RIGHT" => Direction::Right,
+            "LEFT" => Direction::Left,
+            "UP" => Direction::Up,
+            "DOWN" => Direction::Down,
+            _ => return Err("Invalid operator direction".into()),
+        };
+        let coordinate = |k: &str| -> Result<i32, String> {
+            i32::try_from(
+                u[k].as_i64()
+                    .ok_or("Expected integer operator coordinate")?,
+            )
+            .map_err(|_| "Operator coordinate outside i32".into())
+        };
+        field.add_operator(
+            u["chessId"].as_str().ok_or("Expected chessId")?,
+            Placement {
+                uid: u["uid"]
+                    .as_u64()
+                    .ok_or("Expected nonnegative operator uid")?,
+                home: [coordinate("row")?, coordinate("col")?],
+                direction: dir,
+            },
+        )?;
+    }
     let advance = field.run(budget)?;
-    let output = serde_json::json!({"ticks":advance.ticks,"terminated":advance.terminated,"budget_exhausted":advance.budget_exhausted,"report":field.report()?});
+    let output = serde_json::json!({"ticks":advance.ticks,"terminated":advance.terminated,"budget_exhausted":advance.budget_exhausted,"report":field.report()?,"allies":field.ally_states()?});
     println!(
         "{}",
         serde_json::to_string(&output).map_err(|e| e.to_string())?

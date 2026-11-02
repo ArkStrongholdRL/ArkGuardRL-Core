@@ -485,10 +485,10 @@ pub fn apply<H: Hooks>(
                 .iter()
                 .any(|k| matches!(k.as_str(), "levitate" | "unblockable" | "fear" | "sleep"))
         {
-            blocking::unblock(w, h, unit)?;
+            h.unblock_with_buffs(w, r, unit)?;
         }
         if w.unit(unit)?.side == Side::Ally && tpl.flags.iter().any(|k| k == "noBlock") {
-            blocking::release(w, h, unit)?;
+            h.release_with_buffs(w, r, unit)?;
         }
         if h.has_status_applied() {
             h.status_applied(
