@@ -2,7 +2,9 @@
 // Stronghold Protocol 41bbca57 content/enemies/{archetypes,helpers}.js.
 use crate::battle::{
     buffs::{self, Spec},
+    element::{self, Element},
     health::{Id, Side, World},
+    hit,
     stats::Buff,
 };
 use serde_json::Value;
@@ -14,6 +16,7 @@ pub enum Kit {
     Stealth { restore: f64 },
     Times { arts_only: bool },
     Refraction { res: f64, hp_pct: f64 },
+    Element { kind: Element, ratio: f64 },
 }
 fn talent(raw: &Value, overrides: &Value, keys: &[&str]) -> f64 {
     let base = raw["talents"]
@@ -41,6 +44,22 @@ impl Kit {
         let original_key = key;
         let key = raw["effectRef"].as_str().unwrap_or(key);
         Ok(match key {
+            "enemy_1148_dssbr" | "enemy_1148_dssbr_2" => Self::Element {
+                kind: Element::Neural,
+                ratio: talent(raw, overrides, &["epdamage.attack@ep_damage_ratio"]),
+            },
+            "enemy_1305_mhslim" | "enemy_1305_mhslim_2" => Self::Element {
+                kind: Element::Burn,
+                ratio: talent(raw, overrides, &["EpDamage.attack@ep_damage_ratio"]),
+            },
+            "enemy_2021_syfish" => Self::Element {
+                kind: Element::Erosion,
+                ratio: talent(raw, overrides, &["EpDamage.attack@ep_damage_ratio"]),
+            },
+            "enemy_1229_darmy" | "enemy_1229_darmy_2" => Self::Element {
+                kind: Element::Apoptosis,
+                ratio: talent(raw, overrides, &["epdamage.attack@ep_damage_ratio"]),
+            },
             "enemy_1009_lurker"
             | "enemy_1019_jshoot"
             | "enemy_1019_jshoot_2"
@@ -175,6 +194,48 @@ impl Runtime {
     }
     pub fn remove(&mut self, id: Id) {
         self.units.remove(&id);
+    }
+    /// The actual `damaged` callback: one proc per resolved normal-attack damage
+    /// instance, before fatal removal. Caller immediately applies the returned
+    /// request through the shared element pipeline, including nested bursts.
+    pub fn damaged(
+        &self,
+        w: &mut World,
+        request: &hit::Request,
+    ) -> Result<Option<element::Request>, String> {
+        if self.faulted {
+            return Err("Enemy content runtime is faulted".into());
+        }
+        if !request.is_attack {
+            return Ok(None);
+        }
+        let Some(source) = request.hit.source else {
+            return Ok(None);
+        };
+        if w.unit(source)?.side != Side::Enemy {
+            return Ok(None);
+        }
+        let Some(state) = self.units.get(&source) else {
+            return Ok(None);
+        };
+        let Kit::Element { kind, ratio } = state.kit else {
+            return Ok(None);
+        };
+        if !(ratio > 0.) || !w.unit(request.hit.target)?.stats.alive {
+            return Ok(None);
+        }
+        let amount = w
+            .unit_mut(source)?
+            .stats
+            .stats()
+            .map_err(str::to_string)?
+            .n("atk")
+            * ratio;
+        let mut req =
+            element::Request::new(Some(source), Some(source), request.hit.target, kind, amount);
+        req.damage.attack_type = hit::AttackType::None;
+        req.damage.tags = vec!["enemyAbility".into()];
+        Ok(Some(req))
     }
     fn call<T>(
         &mut self,

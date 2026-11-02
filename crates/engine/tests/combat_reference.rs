@@ -47,6 +47,7 @@ struct Host {
     flights: Option<System<Shot>>,
     buffs: Option<buffs::Runtime>,
     rng: Rng,
+    content: Option<enemy_content::Runtime>,
 }
 impl Host {
     fn move_target(&mut self, w: &mut World, inside: bool) -> Result<(), String> {
@@ -260,7 +261,26 @@ impl element::Hooks for Host {
         Ok(())
     }
 }
-impl settlement::Hooks for Host {}
+impl settlement::Hooks for Host {
+    fn damage_health_event(
+        &mut self,
+        e: &mut health::Event,
+        request: &mut hit::Request,
+        r: &mut buffs::Runtime,
+        w: &mut World,
+        rng: &mut Rng,
+    ) -> Result<(), String> {
+        if e.stage == health::Stage::Damaged {
+            if let Some(mut req) = self.content.as_ref().unwrap().damaged(w, request)? {
+                self.rng = rng.clone();
+                let result = element::apply(w, self, r, &mut req);
+                *rng = self.rng.clone();
+                result?;
+            }
+        }
+        Ok(())
+    }
+}
 impl skills::Hooks for Host {
     fn event(
         &mut self,
@@ -672,7 +692,18 @@ fn native_composition_matches_continuous_attacks() {
         let d = &v["scenario"];
         let mut w = World::new(6, 1, 1).unwrap();
         let mut base = Base::default();
-        for (k, x) in [("maxHp", 1000.0), ("atk", 80.0), ("bat", 0.2)] {
+        for (k, x) in [
+            (
+                "maxHp",
+                if d["i"].as_u64().unwrap() >= 84 {
+                    100000.
+                } else {
+                    1000.
+                },
+            ),
+            ("atk", 80.0),
+            ("bat", 0.2),
+        ] {
             base.0.insert(k.into(), x);
         }
         let mut u = Unit::new(UnitStats::new(base), Side::Ally);
@@ -686,7 +717,14 @@ fn native_composition_matches_continuous_attacks() {
             if d["dead"] == true { 500.0 } else { 100000.0 },
         );
         base.0.insert("def".into(), 20.0);
-        base.0.insert("atk".into(), 30.0);
+        base.0.insert(
+            "atk".into(),
+            if d["i"].as_u64().unwrap() >= 84 {
+                d["contentRaw"]["stats"]["atk"].as_f64().unwrap()
+            } else {
+                30.
+            },
+        );
         base.0.insert("res".into(), 30.0);
         base.0.insert("moveSpeed".into(), 2.0);
         base.0.insert("rangeRadius".into(), 3.0);
@@ -769,6 +807,7 @@ fn native_composition_matches_continuous_attacks() {
             flights: Some(System::new(128).unwrap()),
             buffs: Some(buffs::Runtime::new(16, 256, 64).unwrap()),
             rng: Rng::new(42),
+            content: None,
         };
         h.move_target(&mut w, true).unwrap();
         let mut content = enemy_content::Runtime::new(6).unwrap();
@@ -786,6 +825,7 @@ fn native_composition_matches_continuous_attacks() {
                 .unwrap();
             h.buffs = Some(buffs);
         }
+        h.content = Some(content);
         s.reset(&mut w, &mut h, None).unwrap();
         let mut cache = Commitments::new(1, 8, 8).unwrap();
         let mut states = vec![];
@@ -1019,9 +1059,11 @@ fn native_composition_matches_continuous_attacks() {
                 .unwrap();
             h.flights = Some(flights);
             let mut buffs = h.buffs.take().unwrap();
+            let mut content = h.content.take().unwrap();
             content
                 .tick(&mut w, &mut buffs, &mut h, &[2], 1. / 30.)
                 .unwrap();
+            h.content = Some(content);
             h.buffs = Some(buffs);
             if d["stop"] == true && tick == 100 {
                 s.end(&mut w, &mut h, "stopped").unwrap();
@@ -1036,7 +1078,7 @@ fn native_composition_matches_continuous_attacks() {
             );
             let u = w.unit(1).unwrap();
             let e = w.unit(2).unwrap();
-            states.push(json!({"hp":bits(e.stats.hp),"sourceHp":bits(u.stats.hp),"enemyCd":bits(e.cadence.cooldown),"enemyAttacks":e.attacks,"attackSequence":w.attack_sequence(),"alive":e.stats.alive,"position":e.position.map(bits),"moving":e.moving,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"shield":bits(enemy_shield),"rng":h.rng.state(),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
+            states.push(json!({"sourceElement":u.element_buildup.map(bits),"hp":bits(e.stats.hp),"sourceHp":bits(u.stats.hp),"enemyCd":bits(e.cadence.cooldown),"enemyAttacks":e.attacks,"attackSequence":w.attack_sequence(),"alive":e.stats.alive,"position":e.position.map(bits),"moving":e.moving,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"shield":bits(enemy_shield),"rng":h.rng.state(),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
         }
         for (tick, (a, b)) in states
             .iter()
@@ -1053,5 +1095,5 @@ fn native_composition_matches_continuous_attacks() {
         count += 1;
     }
     assert!(child.wait().unwrap().success());
-    assert_eq!(count, 84);
+    assert_eq!(count, 96);
 }

@@ -80,6 +80,16 @@ impl Request {
 /// Content dispatch may synchronously change stats, effects and unit lifecycle.
 /// No phase is enabled until the host installs a handler for it.
 pub trait Hooks: health::Hooks + Sized {
+    /// Preserve the complete attack metadata throughout synchronous HP callbacks.
+    fn apply_hp(
+        &mut self,
+        w: &mut World,
+        request: &mut Request,
+        amount: f64,
+        _rng: &mut Rng,
+    ) -> Result<f64, String> {
+        health::apply_hp_decrease(w, self, request.hit, amount)
+    }
     /// Backends may supply canonical unit buffs while sharing this HP pipeline.
     fn resolve_injury(
         &mut self,
@@ -407,7 +417,7 @@ pub fn resolve<H: Hooks>(
                 };
                 a.host.transfers(a.request, a.world, effects, rng)?;
             }
-            health::apply_hp_decrease(a.world, a.host, a.request.hit, amount)
+            a.host.apply_hp(a.world, a.request, amount, rng)
         },
         0.0,
     )

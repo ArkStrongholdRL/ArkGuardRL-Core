@@ -54,6 +54,16 @@ pub trait Hooks: buffs::Hooks + Sized {
     ) -> HookResult {
         self.emit(event, w)
     }
+    fn damage_health_event(
+        &mut self,
+        event: &mut health::Event,
+        _request: &mut Request,
+        r: &mut Runtime,
+        w: &mut World,
+        _rng: &mut Rng,
+    ) -> HookResult {
+        self.health_event(event, r, w)
+    }
     fn damage_transfers(
         &mut self,
         _request: &Request,
@@ -283,6 +293,25 @@ impl<H: Hooks> health::Hooks for Pipeline<'_, H> {
     }
 }
 impl<H: Hooks> hit::Hooks for Pipeline<'_, H> {
+    fn apply_hp(
+        &mut self,
+        w: &mut World,
+        request: &mut Request,
+        amount: f64,
+        rng: &mut Rng,
+    ) -> Result<f64, String> {
+        let hit = request.hit;
+        health::apply_hp_decrease(
+            w,
+            &mut DamageEvents {
+                pipeline: self,
+                request,
+                rng,
+            },
+            hit,
+            amount,
+        )
+    }
     fn enabled(&self, phase: Phase) -> bool {
         self.h.phase_enabled(phase)
     }
@@ -340,6 +369,40 @@ impl<H: Hooks> hit::Hooks for Pipeline<'_, H> {
         rng: &mut Rng,
     ) -> HookResult {
         self.h.damage_transfers(request, self.r, w, rng)
+    }
+}
+struct DamageEvents<'a, 'b, H> {
+    pipeline: &'a mut Pipeline<'b, H>,
+    request: &'a mut Request,
+    rng: &'a mut Rng,
+}
+impl<H: Hooks> health::Hooks for DamageEvents<'_, '_, H> {
+    fn emit(&mut self, event: &mut health::Event, w: &mut World) -> HookResult {
+        self.pipeline
+            .h
+            .damage_health_event(event, self.request, self.pipeline.r, w, self.rng)
+    }
+    fn number(&mut self, heal: bool, target: Id, amount: f64) -> HookResult {
+        self.pipeline.number(heal, target, amount)
+    }
+    fn hit_cap(&mut self, target: Id, amount: f64) -> HookResult {
+        self.pipeline.hit_cap(target, amount)
+    }
+    fn kill(&mut self, target: Id, credit: Option<Id>, w: &mut World) -> HookResult {
+        self.pipeline.kill(target, credit, w)
+    }
+    fn heal_through(&mut self, source: Id, target: Id, w: &World) -> bool {
+        self.pipeline.heal_through(source, target, w)
+    }
+    fn overheal(
+        &mut self,
+        target: Id,
+        excess: f64,
+        max_hp: f64,
+        duration: Option<f64>,
+        w: &mut World,
+    ) -> HookResult {
+        self.pipeline.overheal(target, excess, max_hp, duration, w)
     }
 }
 pub fn resolve<H: Hooks>(
