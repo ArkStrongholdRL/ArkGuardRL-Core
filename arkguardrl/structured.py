@@ -418,7 +418,7 @@ def main():
         "source": "data/garrisons.json; server/sim/content/garrisons/meta.js",
         "limitation": "Structural garrison coverage only; skills/talents/items and live per-copy counters are incomplete"}
     if args.snapshot:
-        state = json.loads(Path(args.snapshot).read_text())
+        state = json.loads(Path(args.snapshot).read_text(encoding='utf-8'))
         catalog.validate_state(state)
         observer = PublicProgress()
         observer.observe(state)

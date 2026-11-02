@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arkguardrl-core"
-version = "0.1.0"
-description = "Stronghold Protocol RL runtime with Rust feature kernels and reproducible performance measurement"
+version = "0.1.0rc1"
+description = "Gymnasium environment for Stronghold Protocol with Rust observation and action kernels"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
@@ -13,11 +13,6 @@ license-files = ["LICENSE", "NOTICE.md"]
 
 [project.optional-dependencies]
 gym = ["gymnasium>=1.1,<2", "numpy>=1.26"]
-train = ["torch>=2.6"]
-vector = ["torch>=2.6", "numpy>=1.26"]
-
-[project.scripts]
-arkguardrl-core = "arkguardrl_core.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["arkguardrl", "arkguardrl.*", "arkguardrl_core", "arkguardrl_core.*"]

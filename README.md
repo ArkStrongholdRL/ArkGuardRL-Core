@@ -1,83 +1,90 @@
 # ArkGuardRL-Core
 
-卫戍协议 RL 环境与 Python/Rust 运行时。**Core 负责性能，ArkGuardRL 主仓库负责策略。**
+[Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) 的 Gymnasium 环境。
+Core 提供环境、公开动作候选、观测编码和 Rust 内核；策略网络、PPO、采集调度与研究脚本位于
+[ArkGuardRL](https://github.com/HarcoChen/ArkGuardRL)。
 
-Rust 已接管 PREP 棋子/道具动作枚举、动态观测打包、候选路线特征和关系编码；游戏状态更新与战斗仍由 Node 引擎执行。
+版本 `0.1.0rc1`：Node 0.3.3 执行完整游戏，Rust 加速动作枚举与特征编码。
+完整 Rust 环境另在实验分支开发。
+
+游戏状态更新与战斗仍由外部 Node 引擎执行。Rust 负责 PREP 棋子/道具动作枚举、动态观测打包
+和特征编码；本项目目前不是完整的 Rust 游戏模拟器。RC 阶段已验证的平台会随实际安装测试记录，
+不以历史 0.3.1 的吞吐代表当前训练采集速度。
 
 ## 安装
 
-路线后端使用 Python 3.12；运行游戏需要 Node 22+；源码安装需要 Rust/Cargo。
+需要 Python 3.10+、Node 22+，源码构建还需要 Rust/Cargo。
 
 ```sh
-python -m pip install -e '.[vector]'
+python -m pip install 'arkguardrl-core[gym]==0.1.0rc1'
+# 源码开发：python -m pip install -e '.[gym]'
 ```
 
-只运行 Gymnasium 环境和无模型 benchmark，可安装 `python -m pip install -e '.[gym]'`，不需要 Torch。
+单独准备 Stronghold Protocol 引擎和数据：当前支持提交
+`41bbca5712ac08394bbc4d5b4e3411c6be1634b6`（app 0.3.3），引擎目录需保持干净。
+本仓库不提供游戏素材、数据、模型权重或轨迹，也不需要 Torch。
 
-游戏引擎和数据单独准备：[Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol)，
-版本 `c9d804f470b8d7422ae04eb66faf671cef21ad52`（app 0.3.1）。
-本仓库不包含引擎素材、数据、权重或轨迹。
-
-## Gymnasium 环境
+## 使用
 
 ```python
 import gymnasium as gym
 
 with gym.make("arkguardrl_core.gym_env:ArkGuardRL-v0", engine_root="/path/to/engine") as env:
     obs, info = env.reset(seed=42)
-    action = env.action_space.sample(mask=obs["action_mask"])
-    obs, reward, terminated, truncated, info = env.step(action)
+    while True:
+        action = env.action_space.sample(mask=obs["action_mask"])
+        obs, reward, terminated, truncated, info = env.step(action)
+        if terminated or truncated:
+            break
 ```
 
-观测为 NumPy `Dict`：`observation` 是 4784 维动态观测，`candidates` 是候选特征矩阵，
-`schedules`、`experts` 是候选分组，`action_mask` 标记有效行。静态定义由
-`env.unwrapped.catalog.definitions()` 提供。动作是当前候选行索引；掩码表示公开候选域，
-引擎仍可能拒绝动作，结果通过 `info["accepted"]` 返回。选择 padding 会抛出 `InvalidAction`，
-不会替换动作或推进游戏。候选上限默认 16384，可配置 `max_candidates`；超限报错，不裁剪动作域。
+观测是 NumPy `Dict`：
 
-每个 env 在 reset 间复用自己的 Node 进程。Gym 种子通过 `np_random` 派生引擎需要的非零
-uint32 种子，记录在 `info["engine_seed"]`；相同 Gym 种子可复现，`reset(seed=None)` 继续 RNG 流。
-自然结束返回 `terminated`，预算耗尽返回 `truncated` 和真实后继观测；引擎/传输错误直接抛出。
-奖励沿用 `NativeProgressCore`，没有模型、高层选项或 PPO。现有策略专用上下文需要在环境外构造。
+| 字段 | 含义 |
+| --- | --- |
+| `observation` | 4784 维动态观测 |
+| `candidates` | 当前候选的特征矩阵，填充至 `max_candidates` |
+| `schedules`、`experts` | 候选分组 |
+| `action_mask` | 有效候选行 |
 
-批量运行直接使用 Gymnasium `SyncVectorEnv` / `AsyncVectorEnv`。Async 用 `spawn` 和共享内存，
-脚本入口需要 `if __name__ == "__main__"`。benchmark 使用 `AutoresetMode.DISABLED`，
-读取终止观测后通过 `reset_mask` 单独 reset，避免将自动 reset 误计为游戏决策。
+动作是当前候选行索引。候选由公开信息构造，引擎仍可能拒绝动作，见 `info["accepted"]`。
+选择 padding 会抛出 `InvalidAction`，不会替换动作或推进游戏。候选容量默认 16384；
+超限报错，不裁剪动作域。静态定义可通过 `env.unwrapped.catalog.definitions()` 读取。
+
+奖励使用 `NativeProgressCore`，分项见 `info["reward_components"]`。
+自然结束返回 `terminated`，预算耗尽返回 `truncated` 和真实后继观测；引擎或传输错误抛出异常。
+`max_decisions`、`max_advances` 和可选的 `wall_seconds` 控制运行预算。
+
+每个 env 在 reset 之间复用自己的 Node 进程。Gym 种子派生非零 uint32 引擎种子，记录在
+`info["engine_seed"]`；相同 Gym 种子可复现，`reset(seed=None)` 继续 RNG 流。
+
+## 并行与测量
+
+单个 Gym 环境不自动并行；同时采集多个对局需显式使用 `AsyncVectorEnv`，
+或研究包的 `iterate --workers 4` 入口。`SyncVectorEnv` 逐个推进环境。Async 使用 `spawn` 和共享内存，
+脚本入口需要 `if __name__ == "__main__"`。默认填充观测约 2.98 MB/env，每个 env 还会创建
+一个 Node 进程，增加并发时需要考虑两者的内存占用。
 
 ```sh
 python benchmarks/gym_env.py --engine-root /path/to/engine \
   --vector async --envs 4 --steps 256 --repeats 3 --out artifacts/gym-async-4.json
 ```
 
-测试：`ARKGUARD_ENGINE_ROOT=/path/to/engine python -m unittest discover -s tests -p test_gym_env.py -v`。
-测试按掩码选动作，检查 Gym 的 reset 确定性与 step 返回值；通用 `check_env()` 的无掩码随机动作
-可能选中 padding，因此不直接适用于这个动作契约。
+[性能测量](benchmarks/README.md)记录负载和测量边界；[Rust 内核](docs/RUST-ROUTES.md)说明实现范围。
 
-## 性能采集
+原生集成测试需要显式提供引擎路径，会实际运行对局：
 
 ```sh
-python -m arkguardrl_core iterate \
-  --engine-root /path/to/engine \
-  --expected-data-sha256 DATA_SHA256 \
-  --checkpoint /path/to/policy.pt --anchor /path/to/anchor.pt \
-  --seeds 10001 10002 10003 10004 --rng-seed 42 \
-  --workers 4 --device cpu --collect-only \
-  --max-buffer-bytes 2147483648 --max-wall 600 \
-  --out artifacts/run-01
+ARKGUARD_ENGINE_ROOT=/path/to/engine python -m unittest discover -s tests -p test_gym_env.py -v
 ```
 
-重复测量保持相同权重、种子和配置，输出目录每次使用新名字。
-`--collect-only` 只采集、不更新权重。测量包含特征编码、推理、游戏执行和传输。
-默认关闭逐步日志和轨迹回读，只保留结果与耗时汇总；排障时用 `--trace` 开启完整轨迹。
+通用 `check_env()` 的无掩码随机动作可能选中 padding；现有测试按掩码选择动作，检查种子、
+状态转移、截断、自然结束及向量环境行为。
 
-```sh
-python benchmarks/report.py artifacts/run-01 artifacts/run-02 \
-  --out artifacts/performance.json
-```
+## 代码边界
 
-检查点按模型结构和输入契约加载，不再绑定 Python 源码或 Rust 二进制哈希。
-普通代码修改或重新编译无需重新导出权重。
+`arkguardrl_core` 包含 Gymnasium 接口、Rust 内核及 Node 会话复用；`arkguardrl` 包含底层状态、
+候选、奖励与观测契约。保留两个包名以维持环境输入兼容。
+原训练入口已迁至研究仓库的 `python -m arkguardrl_research.runtime`。
 
-[运行参数](docs/RUNTIME.md) · [Rust 内核](docs/RUST-ROUTES.md) · [性能测量](benchmarks/README.md)
-
-代码使用 GPL-3.0-or-later，来源和外部资源说明见 [NOTICE](NOTICE.md) 与 [LICENSE](LICENSE)。
+代码采用 GPL-3.0-or-later；来源与外部游戏资源边界见 [NOTICE](NOTICE.md) 和 [LICENSE](LICENSE)。

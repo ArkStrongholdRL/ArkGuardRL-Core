@@ -1,7 +1,7 @@
 """Pinned, external PUBLIC data, not a simulator or a private legality oracle.
 
 The engine and its datasets remain external. Public placement semantics were
-researched against Stronghold Protocol c9d804f, server/match/board.js,
+researched against Stronghold Protocol 41bbca57, server/match/board.js,
 shared/highGround.js and shared/loadoutRecord.js (GPL-3.0). No engine code is
 imported. Dataset/asset licensing is separate from this framework's license.
 """
@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from .engine.session import ENGINE_REVISION
+from .engine.session import ENGINE_REVISION, ENGINE_VERSION
 from .observation import validate_state
 
 CATALOG_SCHEMA = "arkguardrl/external-public-catalog031-v4"
@@ -31,8 +31,8 @@ class PublicCatalog:
                                            text=True, timeout=10).strip()
         if git("rev-parse", "HEAD") != ENGINE_REVISION or git("status", "--porcelain", "--untracked-files=all"):
             raise ValueError("Public catalog requires the clean frozen engine checkout")
-        if json.loads((self.engine_root / "package.json").read_text())["version"] != "0.3.1":
-            raise ValueError("Public catalog requires engine package 0.3.1")
+        if json.loads((self.engine_root / "package.json").read_text(encoding='utf-8'))["version"] != ENGINE_VERSION:
+            raise ValueError("Public catalog requires engine package 0.3.3")
         digest, loaded = hashlib.sha256(), {}
         for path in sorted((self.engine_root / "data").glob("*.json")):
             raw = path.read_bytes()

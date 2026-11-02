@@ -1,4 +1,4 @@
-"""Bounded JSONL transport for the independent native 0.3.1 bridge."""
+"""Bounded JSONL transport for the independent native 0.3.3 bridge."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,8 @@ from threading import Thread
 
 from ..observation import SCHEMA, validate_state
 
-ENGINE_REVISION = "c9d804f470b8d7422ae04eb66faf671cef21ad52"
+ENGINE_REVISION = "41bbca5712ac08394bbc4d5b4e3411c6be1634b6"
+ENGINE_VERSION = "0.3.3"
 
 
 class NativeSession:
@@ -65,7 +66,7 @@ class NativeSession:
             self.identity = self._request("identity")["identity"]
             if (self.identity.get("schema") != SCHEMA
                     or self.identity.get("engineRevision") != ENGINE_REVISION
-                    or self.identity.get("appVersion") != "0.3.1"):
+                    or self.identity.get("appVersion") != ENGINE_VERSION):
                 raise RuntimeError("Incompatible engine identity")
             if (self.expected_data_sha256 is not None
                     and self.identity.get("dataSha256") != self.expected_data_sha256):

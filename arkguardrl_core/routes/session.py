@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 
-from arkguardrl.engine.session import NativeSession, ENGINE_REVISION
+from arkguardrl.engine.session import NativeSession, ENGINE_REVISION, ENGINE_VERSION
 from arkguardrl.observation import SCHEMA
 from ..environment import DeadlineEnv
 
@@ -51,7 +51,7 @@ class RouteSession(NativeSession):
             self.identity = self._request('identity')['identity']
             if (self.identity.get('schema') != SCHEMA
                     or self.identity.get('engineRevision') != ENGINE_REVISION
-                    or self.identity.get('appVersion') != '0.3.1'):
+                    or self.identity.get('appVersion') != ENGINE_VERSION):
                 raise ValueError('Engine identity mismatch')
             if (self.expected_data_sha256 is not None
                     and self.identity['dataSha256'] != self.expected_data_sha256):
@@ -198,3 +198,20 @@ class RouteEnv(DeadlineEnv):
     def takeover(self):
         self._remaining()
         return self.session._request('teacherTakeover')
+
+    def layout_goal(self, uids, *, include_reserves=False):
+        """Current deployed members, deterministic public engine layout teacher."""
+        self._remaining()
+        goal = self.session._request('layoutGoal', uids=list(uids),
+                                     includeReserves=include_reserves)['layout']
+        if goal['revision'] != self._state['revision']:
+            raise ValueError('Layout goal belongs to another decision')
+        return goal
+
+    def summon_goal(self, *, fixed_allies=True):
+        """Public token-family slots at the current deployed owner positions."""
+        self._remaining()
+        goal = self.session._request('summonGoal', fixedAllies=fixed_allies)['layout']
+        if goal['revision'] != self._state['revision']:
+            raise ValueError('Summon goal belongs to another decision')
+        return goal

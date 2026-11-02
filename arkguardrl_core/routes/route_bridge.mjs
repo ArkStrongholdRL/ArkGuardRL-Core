@@ -1,8 +1,9 @@
 // Standalone experimental extension of the native bridge.
-// Independent native-intent bridge for the frozen Stronghold Protocol 0.3.1 engine.
+// Independent native-intent bridge for the frozen Stronghold Protocol 0.3.3 engine.
 // Engine implementation stays external; no legacy ArkGuardRL adapter is imported.
 import fs from 'node:fs';
 import {geometry, captureTeacher, ROUTE_SCHEMA} from './route_teacher.mjs';
+import {fixedAllyPlanner} from './summon_layout.mjs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -11,16 +12,16 @@ import readline from 'node:readline';
 
 if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node 22+ required');
 
-const REVISION = 'c9d804f470b8d7422ae04eb66faf671cef21ad52';
+const REVISION = '41bbca5712ac08394bbc4d5b4e3411c6be1634b6';
 const SCHEMA = 'arkguardrl/native-session-v2';
 const PLAYER = 'agent';
 const root = fs.realpathSync(process.argv[2]);
 const inlineGeometry = process.argv[3] !== '--no-inline-geometry';
 const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
-if (git('rev-parse', 'HEAD') !== REVISION) throw new Error('Expected frozen 0.3.1 engine revision');
+if (git('rev-parse', 'HEAD') !== REVISION) throw new Error('Expected frozen 0.3.3 engine revision');
 if (git('status', '--porcelain', '--untracked-files=all')) throw new Error('Engine checkout must be clean');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-if (pkg.version !== '0.3.1') throw new Error('Expected engine app version 0.3.1');
+if (pkg.version !== '0.3.3') throw new Error('Expected engine app version 0.3.3');
 const digest = createHash('sha256');
 for (const name of fs.readdirSync(path.join(root, 'data')).filter(n => n.endsWith('.json')).sort()) {
   digest.update(name + '\0');
@@ -33,6 +34,7 @@ const [{ Match }, { VirtualScheduler }, { getData, DATA_FILES }, protocol, const
   imp('server/match/Match.js'), imp('server/match/scheduler.js'), imp('server/data.js'), imp('shared/protocol.js'), imp('shared/constants.js'),
 ]);
 const bot = await imp('server/match/bot.js');
+const boardApi = await imp('server/match/board.js');
 const quiet = { info() {}, debug() {}, warn() {}, error() {} };
 const data = getData({ log: quiet });
 for (const key of DATA_FILES) {
@@ -120,6 +122,68 @@ function dispatch(req) {
     case 'routeGeometry': {
       assertEngineHealthy();
       return {geometry:geometry(match,match.players.get(PLAYER),bot,revision)};
+    }
+    case 'summonGoal':
+    case 'layoutGoal': {
+      assertEngineHealthy();
+      const ps = match.players.get(PLAYER);
+      if (match.phase !== 'PREP' || ps.ready) throw Error('Layout requires active PREP');
+      const summons = req.cmd === 'summonGoal';
+      const ids = summons ? [] : req.uids;
+      if (!Array.isArray(ids) || ids.length > 12 || new Set(ids).size !== ids.length)
+        throw Error('Distinct bounded layout members required');
+      const board = [...ps.board.values()];
+      if (req.includeReserves !== undefined && typeof req.includeReserves !== 'boolean')
+        throw Error('Explicit owned/deployed layout scope required');
+      const available = req.includeReserves ? ps.allChess() : board;
+      let pieces = ids.map(uid => available.find(p => p.uid === uid && p.kind === 'chess'));
+      if (pieces.some(p => !p)) throw Error('Layout members outside requested public inventory scope');
+      if (summons) {
+        const owners = new Set(board.filter(p => p.kind === 'chess').map(p => p.uid));
+        pieces = [];
+        for (const p of [...board, ...ps.hand, ...ps.temp]) {
+          if (!p || p.kind !== 'token' || !owners.has(p.ownerUid)) continue;
+          for (let i = 0; i < (p.count || 1); i++) {
+            if (pieces.length >= 48) throw Error('Summon goal exceeds bounded placement domain');
+            pieces.push({...p, uid: -(pieces.length + 1), count: 1});
+          }
+        }
+      }
+      // Invoke the existing planner on an isolated read-only facade. Current
+      // spawn identities/counts/routes are visible; private stat multipliers and
+      // boss parts are deliberately omitted. No pool or future wave is queried.
+      const sanitize = wave => wave ? {...wave, spawns: (wave.spawns || [])
+        .filter(s => s.tag !== 'part').map(s => ({enemyKey:s.enemyKey,
+          count:s.count, routeIndex:s.routeIndex, tag:s.tag}))} : null;
+      const group = match.wave ? null : match.bossGroupOf(ps);
+      const view = Object.create(match);
+      view.wave = sanitize(match.wave);
+      view.bossGroupOf = () => group ? {...group, wave:sanitize(group.wave)} : null;
+      view._botPath = null;
+      view.rngBots = () => .5; // Deterministic tie handling; no real RNG draw.
+      const player = Object.create(ps);
+      player.m = view;
+      player._botRangeRecs = new Map();
+      const occupied = new Set([...ps.board].filter(([,p]) => summons ? p.kind !== 'token'
+        : !ids.includes(p.uid) && (!req.includeReserves || p.kind !== 'chess')).map(([key]) => key));
+      let plan = bot.planLayout(view, player, pieces, bot.LAYOUT_PARAMS, {occupied});
+      if (summons) {
+        if (req.fixedAllies !== undefined && typeof req.fixedAllies !== 'boolean')
+          throw Error('Explicit fixed ally scoring flag required');
+        const scored = fixedAllyPlanner(bot,boardApi,view,player,pieces,plan);
+        if (req.fixedAllies !== false) plan=scored.plan;
+        return {layout:{schema:'arkguardrl/public-summon-layout/v1', revision,
+          positions:pieces.filter(p => plan.has(p.uid)).map(p => ({ownerUid:p.ownerUid,
+            tokenId:p.id, cell:plan.get(p.uid).split(',').map(Number), dir:plan.dirOf(p.uid)})),
+          unplaced:pieces.filter(p => !plan.has(p.uid)).map(p => ({ownerUid:p.ownerUid, tokenId:p.id})),
+          tie:'deterministic first maximum', scoring:scored.comparison,
+          fixedAllies:req.fixedAllies !== false,
+          enemy_stats:'public nominal; private spawn multipliers omitted'}};
+      }
+      return {layout:{schema:'arkguardrl/public-engine-layout/v1', revision,
+        positions:[...plan].map(([uid,key]) => ({uid, cell:key.split(',').map(Number), dir:plan.dirOf(uid)})),
+        missing:ids.filter(uid => !plan.has(uid)), tie:'constant-half',
+        enemy_stats:'public nominal; private spawn multipliers omitted'}};
     }
     case 'teacherTakeover': {
       const ps=match.players.get(PLAYER); const before=observe();
