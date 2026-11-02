@@ -126,7 +126,6 @@ pub trait Hooks: super::skills::Hooks + health::Hooks + Queries {
     ) -> Result<(), String>;
 }
 pub struct Executor {
-    sequence: u64,
     max_targets: usize,
     max_hits: u32,
 }
@@ -136,7 +135,6 @@ impl Executor {
             return Err("Attack execution limits must be positive".into());
         }
         Ok(Self {
-            sequence: 0,
             max_targets,
             max_hits,
         })
@@ -181,19 +179,16 @@ impl Executor {
                 return Ok(None);
             }
         }
-        let next = self
-            .sequence
-            .checked_add(1)
-            .ok_or("Attack identity exhausted")?;
         let time = w.time;
-        let u = w.unit_mut(id)?;
-        let count = u
+        let count = w
+            .unit(id)?
             .attacks
             .checked_add(1)
             .ok_or("Unit attack count exhausted")?;
+        let next = w.next_attack_id()?;
+        let u = w.unit_mut(id)?;
         u.last_attack_at = time;
         u.attacks = count;
-        self.sequence = next;
         if !matches!(p.mode, Mode::Heal)
             && u.side == Side::Ally
             && !u.engaged

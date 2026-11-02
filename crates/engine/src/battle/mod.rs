@@ -11,6 +11,7 @@ pub mod damage;
 pub mod deploy;
 pub mod direction;
 pub mod element;
+pub mod enemy;
 pub mod grid;
 pub mod health;
 pub mod hit;

@@ -5,6 +5,7 @@ use arkguard_engine::{
         ally, attacks, blocking, body, buffs,
         damage::DamageType,
         element::{self, Element},
+        enemy,
         grid::{Grid, Rect},
         health::{self, Side, Unit, World},
         hit, motion,
@@ -29,6 +30,11 @@ use std::{
 fn bits(x: f64) -> String {
     format!("{:016x}", x.to_bits())
 }
+#[derive(Clone, Copy)]
+enum Shot {
+    Ally(u64, u64, attacks::Direct, attacks::Area),
+    Enemy(enemy::Delivery),
+}
 struct Host {
     d: Value,
     trace: Vec<Value>,
@@ -37,7 +43,7 @@ struct Host {
     grid: Option<Grid>,
     stored: u32,
     executor: Option<attacks::Executor>,
-    flights: Option<System<(u64, u64, attacks::Direct, attacks::Area)>>,
+    flights: Option<System<Shot>>,
     buffs: Option<buffs::Runtime>,
     rng: Rng,
 }
@@ -414,7 +420,7 @@ impl ally::Host for Host {
                             visual: "arrow".into(),
                             speed_changeable: None,
                             removable: None,
-                            payload: (id, prepared.attack_id, payload, area),
+                            payload: Shot::Ally(id, prepared.attack_id, payload, area),
                         },
                     )?;
             }
@@ -507,43 +513,149 @@ impl attacks::Hooks for Host {
         Ok(())
     }
 }
+impl enemy::Hooks for Host {
+    fn profile(&mut self, _: u64, _: &mut World) -> Result<enemy::Profile, String> {
+        Ok(enemy::Profile {
+            melee: false,
+            animation: Some(enemy::Animation {
+                duration: 0.8,
+                hit: Some(0.3),
+            }),
+            ..Default::default()
+        })
+    }
+    fn allies_in_radius(
+        &mut self,
+        id: u64,
+        radius: f64,
+        w: &mut World,
+        limit: usize,
+    ) -> Result<Vec<u64>, String> {
+        spatial::allies_in_radius(w, &[1], w.unit(id)?.position, radius, None, false, limit)
+    }
+    fn enemies_in_radius(
+        &mut self,
+        id: u64,
+        radius: f64,
+        w: &mut World,
+        limit: usize,
+    ) -> Result<Vec<u64>, String> {
+        let ids = self.enemies.clone();
+        let origin = w.unit(id)?.position;
+        spatial::enemies_in_radius(
+            w,
+            self,
+            &ids,
+            origin,
+            radius,
+            spatial::RadiusRule::Body,
+            false,
+            limit,
+        )
+    }
+    fn can_target(&mut self, _: u64, _: u64, _: &mut World) -> Result<bool, String> {
+        Ok(true)
+    }
+    fn enemy_event_enabled(&self, _: enemy::Event) -> bool {
+        false
+    }
+    fn enemy_event(
+        &mut self,
+        _: enemy::Event,
+        _: &mut enemy::Context,
+        _: &mut buffs::Runtime,
+        _: &mut World,
+        _: &mut Grid,
+        _: &mut Rng,
+    ) -> Result<(), String> {
+        Err("Unexpected enemy hook".into())
+    }
+    fn attack_visual(&mut self, _: u64, _: u64, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn palsy_visual(&mut self, _: u64, _: &World) -> Result<(), String> {
+        Ok(())
+    }
+    fn deliver(
+        &mut self,
+        d: enemy::Delivery,
+        r: &mut buffs::Runtime,
+        w: &mut World,
+        rng: &mut Rng,
+    ) -> Result<(), String> {
+        if d.projectile {
+            self.flights.as_mut().unwrap().add(
+                w,
+                Launch {
+                    from: w.unit(d.source)?.position,
+                    source: Some(d.source),
+                    target: Some(d.target),
+                    to: None,
+                    speed: 10.0,
+                    hit_dead: false,
+                    max_age: 10.0,
+                    on_hit: true,
+                    visual: "enemy".into(),
+                    speed_changeable: None,
+                    removable: None,
+                    payload: Shot::Enemy(d),
+                },
+            )?;
+        } else {
+            enemy::impact(w, r, rng, self, d, Some(d.target))?;
+        }
+        Ok(())
+    }
+}
 struct FlightHost<'a> {
     host: &'a mut Host,
     skill: &'a mut Runtime,
 }
-impl projectiles::Hooks<(u64, u64, attacks::Direct, attacks::Area)> for FlightHost<'_> {
+impl projectiles::Hooks<Shot> for FlightHost<'_> {
     fn has_step(&self) -> bool {
         false
     }
     fn step(
         &mut self,
-        _: &mut Projectile<(u64, u64, attacks::Direct, attacks::Area)>,
-        _: &mut System<(u64, u64, attacks::Direct, attacks::Area)>,
+        _: &mut Projectile<Shot>,
+        _: &mut System<Shot>,
         _: &mut World,
     ) -> Result<bool, String> {
         Ok(false)
     }
     fn impact(
         &mut self,
-        p: &mut Projectile<(u64, u64, attacks::Direct, attacks::Area)>,
+        p: &mut Projectile<Shot>,
         target: Option<u64>,
-        _: &mut System<(u64, u64, attacks::Direct, attacks::Area)>,
+        _: &mut System<Shot>,
         w: &mut World,
     ) -> Result<(), String> {
-        let mut executor = self.host.executor.take().unwrap();
-        let result = executor.impact_at(
-            w,
-            self.host,
-            p.payload.0,
-            target,
-            p.payload.1,
-            p.payload.2,
-            p.payload.3,
-            p.position,
-            Some(self.skill),
-        );
-        self.host.executor = Some(executor);
-        result
+        match p.payload {
+            Shot::Ally(id, attack_id, payload, area) => {
+                let mut executor = self.host.executor.take().unwrap();
+                let result = executor.impact_at(
+                    w,
+                    self.host,
+                    id,
+                    target,
+                    attack_id,
+                    payload,
+                    area,
+                    p.position,
+                    Some(self.skill),
+                );
+                self.host.executor = Some(executor);
+                result
+            }
+            Shot::Enemy(d) => {
+                let mut runtime = self.host.buffs.take().unwrap();
+                let mut rng = self.host.rng.clone();
+                let result = enemy::impact(w, &mut runtime, &mut rng, self.host, d, target);
+                self.host.buffs = Some(runtime);
+                self.host.rng = rng;
+                result.map(|_| ())
+            }
+        }
     }
 }
 #[test]
@@ -579,6 +691,7 @@ fn native_composition_matches_continuous_attacks() {
         base.0.insert("atk".into(), 30.0);
         base.0.insert("res".into(), 30.0);
         base.0.insert("moveSpeed".into(), 2.0);
+        base.0.insert("rangeRadius".into(), 3.0);
         let mut e = Unit::new(
             UnitStats::new(base),
             if d["healer"] == true {
@@ -836,7 +949,7 @@ fn native_composition_matches_continuous_attacks() {
                 let mut buffs = h.buffs.take().unwrap();
                 let mut grid = h.grid.take().unwrap();
                 let mut rng = h.rng.clone();
-                motion::update(
+                enemy::update(
                     &mut w,
                     &mut grid,
                     &mut buffs,
@@ -844,8 +957,7 @@ fn native_composition_matches_continuous_attacks() {
                     &mut h,
                     2,
                     1.0 / 30.0,
-                    false,
-                    false,
+                    8,
                 )
                 .unwrap();
                 h.buffs = Some(buffs);
@@ -882,7 +994,7 @@ fn native_composition_matches_continuous_attacks() {
             );
             let u = w.unit(1).unwrap();
             let e = w.unit(2).unwrap();
-            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"position":e.position.map(bits),"moving":e.moving,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"shield":bits(enemy_shield),"rng":h.rng.state(),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
+            states.push(json!({"hp":bits(e.stats.hp),"sourceHp":bits(u.stats.hp),"enemyCd":bits(e.cadence.cooldown),"enemyAttacks":e.attacks,"attackSequence":w.attack_sequence(),"alive":e.stats.alive,"position":e.position.map(bits),"moving":e.moving,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"shield":bits(enemy_shield),"rng":h.rng.state(),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
         }
         for (tick, (a, b)) in states
             .iter()
@@ -893,6 +1005,7 @@ fn native_composition_matches_continuous_attacks() {
         }
         assert_eq!(json!(h.trace), v["trace"], "events {d}");
         h.flights.as_mut().unwrap().clear(&mut w).unwrap();
+        enemy::clear(&mut w, 2).unwrap();
         assert_eq!(w.unit_pins(1).unwrap(), 0);
         assert_eq!(w.unit_pins(2).unwrap(), 0);
         count += 1;

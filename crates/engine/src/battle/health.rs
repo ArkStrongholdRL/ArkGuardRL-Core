@@ -23,6 +23,7 @@ pub struct Unit {
     pub block_weight: f64,
     pub moving: bool,
     pub motion: super::motion::State,
+    pub enemy: super::enemy::State,
     pub(crate) blocking: Vec<Id>,
     pub(crate) blocked_by: Option<Id>,
     pub stats: UnitStats,
@@ -76,6 +77,7 @@ impl Unit {
             block_weight: 1.0,
             moving: false,
             motion: Default::default(),
+            enemy: Default::default(),
             blocking: vec![],
             blocked_by: None,
             stats,
@@ -121,6 +123,7 @@ pub struct Pool {
     pub max_hp: f64,
 }
 pub struct World {
+    attack_sequence: u64,
     units: BTreeMap<Id, Unit>,
     pools: BTreeMap<Id, Pool>,
     players: BTreeMap<Id, PlayerTotals>,
@@ -129,6 +132,16 @@ pub struct World {
     pub boss_battle: bool,
 }
 impl World {
+    pub fn attack_sequence(&self) -> u64 {
+        self.attack_sequence
+    }
+    pub fn next_attack_id(&mut self) -> Result<u64, String> {
+        self.attack_sequence = self
+            .attack_sequence
+            .checked_add(1)
+            .ok_or("Attack identity exhausted")?;
+        Ok(self.attack_sequence)
+    }
     pub fn pin_unit(&mut self, id: Id) -> Result<(), String> {
         let u = unit_mut(self, id)?;
         u.pins = u
@@ -160,6 +173,7 @@ impl World {
             return Err("Health registry limits must be positive".into());
         }
         Ok(Self {
+            attack_sequence: 0,
             units: BTreeMap::new(),
             pools: BTreeMap::new(),
             players: BTreeMap::new(),
@@ -201,6 +215,7 @@ impl World {
         if !u.removed || u.pins > 0 || u.blocked_by.is_some() || !u.blocking.is_empty() {
             return Err("Cannot release a retained or still linked unit".into());
         }
+        super::enemy::clear(self, id)?;
         self.units.remove(&id);
         Ok(())
     }
