@@ -453,7 +453,10 @@ pub fn apply<H: Hooks>(
                             round(row).clamp(rect.r0 as f64, rect.r1 as f64) as i32,
                             round(col).clamp(rect.c0 as f64, rect.c1 as f64) as i32,
                         ];
-                        r.edit(w, unit, id, |b| b.runtime.attract = Some(tile))?;
+                        r.edit(w, unit, id, |b| {
+                            b.runtime.attract = Some(tile);
+                            b.runtime.attract_path = None;
+                        })?;
                     }
                 }
                 if key == "fear" && w.unit(unit)?.side == Side::Enemy {

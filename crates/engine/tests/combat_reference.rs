@@ -5,9 +5,9 @@ use arkguard_engine::{
         ally, attacks, blocking, body, buffs,
         damage::DamageType,
         element::{self, Element},
-        grid::Rect,
+        grid::{Grid, Rect},
         health::{self, Side, Unit, World},
-        hit,
+        hit, motion,
         projectiles::{self, Launch, Projectile, System},
         search::{self, AttackProfile, Commitments, Heal, Selection},
         settlement,
@@ -34,6 +34,7 @@ struct Host {
     trace: Vec<Value>,
     index: Option<Index>,
     enemies: Vec<u64>,
+    grid: Option<Grid>,
     stored: u32,
     executor: Option<attacks::Executor>,
     flights: Option<System<(u64, u64, attacks::Direct, attacks::Area)>>,
@@ -43,8 +44,10 @@ struct Host {
 impl Host {
     fn move_target(&mut self, w: &mut World, inside: bool) -> Result<(), String> {
         let e = w.unit_mut(2)?;
-        e.position = [10.0, if inside { 6.0 } else { 8.0 }];
-        e.deployment.tile = [10, if inside { 6 } else { 8 }];
+        if self.d["mobile"] != true {
+            e.position = [10.0, if inside { 6.0 } else { 8.0 }];
+            e.deployment.tile = [10, if inside { 6 } else { 8 }];
+        }
         self.index.as_mut().unwrap().rebuild(w, &self.enemies)
     }
     fn base_profile(&self) -> AttackProfile {
@@ -142,6 +145,25 @@ impl blocking::Hooks for Host {
         Ok(())
     }
     fn ended(&mut self, _: u64, _: &mut World) -> Result<(), String> {
+        Ok(())
+    }
+}
+impl motion::Hooks for Host {
+    fn check_block(&mut self, _: u64, _: &mut World, _: &mut Grid) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn hidden(&mut self, id: u64, on: bool, w: &mut World) -> Result<(), String> {
+        w.unit_mut(id)?.hidden = on;
+        Ok(())
+    }
+    fn cut_attack_stand(&mut self, _: u64, _: &mut World) -> Result<(), String> {
+        Ok(())
+    }
+    fn leak(&mut self, id: u64, w: &mut World) -> Result<(), String> {
+        let u = w.unit_mut(id)?;
+        u.stats.alive = false;
+        u.deployed = false;
+        self.trace.push(json!(["leak"]));
         Ok(())
     }
 }
@@ -556,6 +578,7 @@ fn native_composition_matches_continuous_attacks() {
         base.0.insert("def".into(), 20.0);
         base.0.insert("atk".into(), 30.0);
         base.0.insert("res".into(), 30.0);
+        base.0.insert("moveSpeed".into(), 2.0);
         let mut e = Unit::new(
             UnitStats::new(base),
             if d["healer"] == true {
@@ -571,6 +594,9 @@ fn native_composition_matches_continuous_attacks() {
         e.position = [10.0, 6.0];
         e.deployment.tile = [10, 6];
         e.targeting.spawn_seq = 1;
+        if d["mobile"] == true {
+            e.motion.route=Some(motion::Route::compile(&json!({"checkpoints":[{"type":"WAIT","time":0.2},{"type":"MOVE","pos":[10,9]},{"type":"MOVE","pos":[10,6]}],"end":[10,9]}),Rect::FULL,64,e.position).unwrap());
+        }
         w.insert_unit(2, e).unwrap();
         let mut enemies = if d["healer"] == true { vec![] } else { vec![2] };
         let mut extra_ids = vec![];
@@ -620,6 +646,13 @@ fn native_composition_matches_continuous_attacks() {
             trace: vec![],
             index: Some(Index::new(6, 256).unwrap()),
             enemies,
+            grid: Some(
+                Grid::new(
+                    &json!({"rows":vec!["r".repeat(21);19],"legend":{}}),
+                    Rect::FULL,
+                )
+                .unwrap(),
+            ),
             stored: 0,
             executor: Some(attacks::Executor::new(8, 8).unwrap()),
             flights: Some(System::new(128).unwrap()),
@@ -730,6 +763,54 @@ fn native_composition_matches_continuous_attacks() {
                     .unwrap();
             }
             let units: Vec<_> = (1..=if extra_ids.is_empty() { 2 } else { 6 }).collect();
+            if d["mobile"] == true {
+                if tick == 20 {
+                    status::apply(
+                        &mut w,
+                        &mut h,
+                        &mut buffs,
+                        Rect::FULL,
+                        2,
+                        "fear",
+                        status::Options {
+                            duration: 0.6,
+                            source: Some(1),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                }
+                if tick == 40 {
+                    status::apply(
+                        &mut w,
+                        &mut h,
+                        &mut buffs,
+                        Rect::FULL,
+                        2,
+                        "attract",
+                        status::Options {
+                            duration: 0.6,
+                            point: Some([10.0, 6.0]),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                }
+                if tick == 90 {
+                    h.grid
+                        .as_mut()
+                        .unwrap()
+                        .set_obstacle([10, 7], true, 1)
+                        .unwrap();
+                }
+                if tick == 130 {
+                    h.grid
+                        .as_mut()
+                        .unwrap()
+                        .set_obstacle([10, 7], false, 1)
+                        .unwrap();
+                }
+            }
             buffs.tick(&mut w, &mut h, &units, 1.0 / 30.0).unwrap();
             h.buffs = Some(buffs);
 
@@ -751,6 +832,26 @@ fn native_composition_matches_continuous_attacks() {
                 )
                 .unwrap();
             cache.capture(&mut w, &mut h, &[1], 1.0 / 30.0).unwrap();
+            if d["mobile"] == true && w.unit(2).unwrap().stats.alive {
+                let mut buffs = h.buffs.take().unwrap();
+                let mut grid = h.grid.take().unwrap();
+                let mut rng = h.rng.clone();
+                motion::update(
+                    &mut w,
+                    &mut grid,
+                    &mut buffs,
+                    &mut rng,
+                    &mut h,
+                    2,
+                    1.0 / 30.0,
+                    false,
+                    false,
+                )
+                .unwrap();
+                h.buffs = Some(buffs);
+                h.grid = Some(grid);
+                h.rng = rng;
+            }
             h.move_target(&mut w, (tick + 1) % 17 < 12).unwrap();
             if w.unit(1).unwrap().stats.alive && w.unit(1).unwrap().deployed {
                 s.tick(&mut w, &mut h, 1.0 / 30.0).unwrap();
@@ -781,7 +882,7 @@ fn native_composition_matches_continuous_attacks() {
             );
             let u = w.unit(1).unwrap();
             let e = w.unit(2).unwrap();
-            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"shield":bits(enemy_shield),"rng":h.rng.state(),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
+            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"position":e.position.map(bits),"moving":e.moving,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"shield":bits(enemy_shield),"rng":h.rng.state(),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
         }
         for (tick, (a, b)) in states
             .iter()
@@ -797,5 +898,5 @@ fn native_composition_matches_continuous_attacks() {
         count += 1;
     }
     assert!(child.wait().unwrap().success());
-    assert_eq!(count, 48);
+    assert_eq!(count, 60);
 }
