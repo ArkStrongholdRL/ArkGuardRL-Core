@@ -8,9 +8,9 @@ use arkguard_engine::{
         grid::Rect,
         health::{self, Side, Unit, World},
         hit,
-        injury::Effects,
         projectiles::{self, Launch, Projectile, System},
         search::{self, AttackProfile, Commitments, Heal, Selection},
+        settlement,
         skills::{self, Condition, Context, Event, Rule, Runtime, SpType, Spec},
         sp::{Bank, Kind},
         spatial::{self, Index},
@@ -37,7 +37,6 @@ struct Host {
     stored: u32,
     executor: Option<attacks::Executor>,
     flights: Option<System<(u64, u64, attacks::Direct, attacks::Area)>>,
-    effects: Option<Effects>,
     buffs: Option<buffs::Runtime>,
     rng: Rng,
 }
@@ -160,10 +159,13 @@ impl buffs::Hooks for Host {
     fn burst_damage(
         &mut self,
         r: &mut hit::Request,
-        _: &mut buffs::Runtime,
+        runtime: &mut buffs::Runtime,
         w: &mut World,
     ) -> Result<f64, String> {
-        attacks::Hooks::damage(self, w, r)
+        let mut rng = self.rng.clone();
+        let result = settlement::resolve(w, runtime, &mut rng, self, r);
+        self.rng = rng;
+        result
     }
     fn status(&mut self, _: u64, _: &str, _: bool) -> Result<(), String> {
         Ok(())
@@ -232,7 +234,7 @@ impl element::Hooks for Host {
         Ok(())
     }
 }
-impl hit::Hooks for Host {}
+impl settlement::Hooks for Host {}
 impl skills::Hooks for Host {
     fn event(
         &mut self,
@@ -443,10 +445,10 @@ impl attacks::Hooks for Host {
         Ok(())
     }
     fn damage(&mut self, w: &mut World, r: &mut hit::Request) -> Result<f64, String> {
-        let mut effects = self.effects.take().ok_or("Reentrant test injury")?;
+        let mut runtime = self.buffs.take().ok_or("Reentrant fixture buff runtime")?;
         let mut rng = self.rng.clone();
-        let result = hit::resolve(w, &mut effects, &mut rng, self, r);
-        self.effects = Some(effects);
+        let result = settlement::resolve(w, &mut runtime, &mut rng, self, r);
+        self.buffs = Some(runtime);
         self.rng = rng;
         result
     }
@@ -621,7 +623,6 @@ fn native_composition_matches_continuous_attacks() {
             stored: 0,
             executor: Some(attacks::Executor::new(8, 8).unwrap()),
             flights: Some(System::new(128).unwrap()),
-            effects: Some(Effects::new(8).unwrap()),
             buffs: Some(buffs::Runtime::new(16, 256, 64).unwrap()),
             rng: Rng::new(42),
         };
@@ -662,6 +663,50 @@ fn native_composition_matches_continuous_attacks() {
             }
 
             let mut buffs = h.buffs.take().unwrap();
+            if d["healer"] != true && d["i"].as_u64().unwrap() >= 24 {
+                if tick % 31 == 0 {
+                    let mut b = Buff {
+                        key: Some("battleShield".into()),
+                        shield: 50.0,
+                        ..Default::default()
+                    };
+                    b.runtime.duration = 0.3;
+                    buffs
+                        .add(
+                            &mut w,
+                            &mut h,
+                            2,
+                            buffs::Spec {
+                                buff: b,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                }
+                if tick % 37 == 0 {
+                    let mut b = Buff {
+                        key: Some("protection".into()),
+                        mods: [("dmgTakenMul".into(), 0.8), ("dodgePhys".into(), 0.2)]
+                            .into_iter()
+                            .collect(),
+                        ..Default::default()
+                    };
+                    b.runtime.duration = 0.5;
+                    buffs
+                        .add(
+                            &mut w,
+                            &mut h,
+                            2,
+                            buffs::Spec {
+                                buff: b,
+                                mods_present: true,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                }
+            }
+
             if d["i"].as_u64().unwrap() >= 36 && tick % 23 == 0 {
                 let mut b = Buff {
                     key: Some("pulse".into()),
@@ -729,10 +774,14 @@ fn native_composition_matches_continuous_attacks() {
             let atk = w.unit_mut(1).unwrap().stats.stats().unwrap().n("atk");
             let element_lock = element::locked(&mut w, 2).unwrap();
             let enemy_stats = w.unit_mut(2).unwrap().stats.stats().unwrap();
-            let (enemy_atk, enemy_res) = (enemy_stats.n("atk"), enemy_stats.n("res"));
+            let (enemy_atk, enemy_res, enemy_shield) = (
+                enemy_stats.n("atk"),
+                enemy_stats.n("res"),
+                enemy_stats.n("shield"),
+            );
             let u = w.unit(1).unwrap();
             let e = w.unit(2).unwrap();
-            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
+            states.push(json!({"hp":bits(e.stats.hp),"alive":e.stats.alive,"element":e.element_buildup.map(bits),"elementLock":element_lock,"enemyAtk":bits(enemy_atk),"enemyRes":bits(enemy_res),"shield":bits(enemy_shield),"rng":h.rng.state(),"otherHp":extra_ids.iter().map(|id|bits(w.unit(*id).unwrap().stats.hp)).collect::<Vec<_>>(),"flights":h.flights.as_ref().unwrap().list().len(),"cd":bits(u.cadence.cooldown),"had":u.cadence.had_target,"attacks":u.attacks,"sp":bits(s.bank.sp),"charges":bits(s.bank.charges),"active":s.bank.active,"pending":s.pending,"time":bits(s.time_left),"ammo":bits(s.ammo_left),"last":bits(u.last_attack_at),"atk":bits(atk)}));
         }
         for (tick, (a, b)) in states
             .iter()

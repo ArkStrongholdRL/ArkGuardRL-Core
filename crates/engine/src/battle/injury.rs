@@ -91,7 +91,7 @@ impl Effect {
     fn reduction_value(&self, kind: DamageType) -> f64 {
         self.reduction.map(|r| r[index(kind)]).unwrap_or(0.0)
     }
-    fn participates(&self, kind: DamageType) -> bool {
+    pub(crate) fn participates(&self, kind: DamageType) -> bool {
         self.injury
             || self.observer
             || self.reduction_value(kind) > 0.0
@@ -233,6 +233,93 @@ pub trait Hooks: Sized {
 }
 pub struct NoHooks;
 impl Hooks for NoHooks {}
+/// One ordered algorithm serves isolated oracle fixtures and canonical unit buffs.
+/// read(retained=true) also resolves a removed current effect until the outer call ends.
+pub trait Store {
+    fn order(&self, kind: DamageType) -> Result<Vec<(EffectId, f64)>, String>;
+    fn read(&self, id: EffectId, retained: bool) -> Result<Option<Effect>, String>;
+    fn write_shields(&mut self, id: EffectId, shield: f64, hits: u32) -> HookResult;
+    fn remove(&mut self, id: EffectId) -> HookResult;
+    fn mark_dirty(&mut self) -> HookResult;
+    fn deferred_limit(&self) -> usize;
+}
+pub trait Dispatch<S: Store>: Sized {
+    fn injury(
+        &mut self,
+        id: EffectId,
+        event: &mut InjuryEvent,
+        store: &mut S,
+        rng: &mut Rng,
+    ) -> HookResult;
+    fn observe(
+        &mut self,
+        id: EffectId,
+        event: Observation,
+        store: &mut S,
+        rng: &mut Rng,
+    ) -> HookResult;
+    fn notice(&mut self, notice: Notice, store: &mut S, rng: &mut Rng) -> HookResult;
+    fn remove(&mut self, id: EffectId, store: &mut S, _rng: &mut Rng) -> HookResult {
+        store.remove(id)
+    }
+}
+impl Store for Effects {
+    fn order(&self, kind: DamageType) -> Result<Vec<(EffectId, f64)>, String> {
+        Ok(self
+            .active()
+            .filter(|(_, e)| e.participates(kind))
+            .map(|(id, e)| (id, e.priority))
+            .collect())
+    }
+    fn read(&self, id: EffectId, retained: bool) -> Result<Option<Effect>, String> {
+        Ok(self
+            .entries
+            .get(&id)
+            .filter(|e| retained || e.active)
+            .map(|e| e.effect.clone()))
+    }
+    fn write_shields(&mut self, id: EffectId, shield: f64, hits: u32) -> HookResult {
+        let e = &mut self.entries.get_mut(&id).ok_or("Unknown effect")?.effect;
+        e.shield = shield;
+        e.shield_hits = hits;
+        self.dirty = true;
+        Ok(())
+    }
+    fn remove(&mut self, id: EffectId) -> HookResult {
+        Effects::remove(self, id);
+        Ok(())
+    }
+    fn mark_dirty(&mut self) -> HookResult {
+        self.dirty = true;
+        Ok(())
+    }
+    fn deferred_limit(&self) -> usize {
+        self.max_deferred
+    }
+}
+impl<H: Hooks> Dispatch<Effects> for H {
+    fn injury(
+        &mut self,
+        id: EffectId,
+        event: &mut InjuryEvent,
+        e: &mut Effects,
+        rng: &mut Rng,
+    ) -> HookResult {
+        Hooks::injury(self, id, event, e, rng)
+    }
+    fn observe(
+        &mut self,
+        id: EffectId,
+        event: Observation,
+        e: &mut Effects,
+        rng: &mut Rng,
+    ) -> HookResult {
+        Hooks::observe(self, id, event, e, rng)
+    }
+    fn notice(&mut self, n: Notice, e: &mut Effects, rng: &mut Rng) -> HookResult {
+        Hooks::notice(self, n, e, rng)
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Observation {
     pub amount: f64,
@@ -263,11 +350,11 @@ impl InjuryEvent {
             Some(p) => p.is_finite() && p > 0.0 && rng.next_f64() < p.min(1.0),
         }
     }
-    pub fn block<H: Hooks>(
+    pub fn block<S: Store, H: Dispatch<S>>(
         &mut self,
         p: Option<f64>,
         hooks: &mut H,
-        effects: &mut Effects,
+        effects: &mut S,
         rng: &mut Rng,
     ) -> Result<bool, String> {
         if self.cancelled || !(self.rest > 0.0) || !Self::succeeds(p, rng) {
@@ -287,11 +374,11 @@ impl InjuryEvent {
         )?;
         Ok(true)
     }
-    pub fn dodge<H: Hooks>(
+    pub fn dodge<S: Store, H: Dispatch<S>>(
         &mut self,
         p: Option<f64>,
         hooks: &mut H,
-        effects: &mut Effects,
+        effects: &mut S,
         rng: &mut Rng,
     ) -> Result<bool, String> {
         if self.cancelled
@@ -383,8 +470,8 @@ pub fn execute<H: Hooks>(
     }
     result
 }
-fn run<H: Hooks>(
-    effects: &mut Effects,
+pub fn run<S: Store, H: Dispatch<S>>(
+    effects: &mut S,
     rng: &mut Rng,
     hooks: &mut H,
     amount: f64,
@@ -392,15 +479,13 @@ fn run<H: Hooks>(
     mode: DodgeMode,
     ignore_block: bool,
 ) -> Result<InjuryResult, String> {
-    let mut order: Vec<_> = effects
-        .active()
-        .filter(|(_, e)| e.participates(kind))
-        .map(|(id, e)| (id, e.priority))
-        .collect();
+    let mut order = effects.order(kind)?;
     order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
     let mut strongest: BTreeMap<String, (EffectId, f64)> = BTreeMap::new();
     for &(id, _) in &order {
-        let e = effects.get(id).unwrap();
+        let e = effects
+            .read(id, false)?
+            .ok_or("Missing active injury effect")?;
         let v = e.reduction_value(kind);
         if !v.is_finite() || v <= 0.0 {
             continue;
@@ -427,15 +512,18 @@ fn run<H: Hooks>(
         mode,
         ignore_block,
         deferred: vec![],
-        max_deferred: effects.max_deferred,
+        max_deferred: effects.deferred_limit(),
     };
     let mut notify_zero = false;
+    let mut changed = false;
     for (id, _) in order {
-        if effects.get(id).is_none() {
+        if effects.read(id, false)?.is_none() {
             continue;
         }
         if event.rest > 0.0 && !event.cancelled {
-            let e = effects.get(id).unwrap();
+            let e = effects
+                .read(id, false)?
+                .ok_or("Missing active injury effect")?;
             let mult = (if matches!(kind, DamageType::Elemental) {
                 1.0
             } else {
@@ -457,7 +545,9 @@ fn run<H: Hooks>(
                 .unwrap_or(true);
             let before = event.rest;
             let mut consumed = false;
-            let e = &mut effects.entries.get_mut(&id).unwrap().effect;
+            let mut e = effects
+                .read(id, true)?
+                .ok_or("Missing retained injury effect")?;
             if event.rest > 0.0 && absorbs && e.shield_hits > 0 {
                 e.shield_hits -= 1;
                 event.rest = 0.0;
@@ -472,7 +562,8 @@ fn run<H: Hooks>(
                 consumed = true;
             }
             if consumed {
-                effects.dirty = true;
+                effects.write_shields(id, e.shield, e.shield_hits)?;
+                changed = true;
             }
             if consumed && !(event.rest > 0.0) {
                 if ignore_block {
@@ -491,10 +582,20 @@ fn run<H: Hooks>(
                     rng,
                 )?;
             }
-            if consumed && effects.entries[&id].effect.disposable() {
-                effects.remove(id);
+            if consumed
+                && effects
+                    .read(id, true)?
+                    .ok_or("Missing retained injury effect")?
+                    .disposable()
+            {
+                hooks.remove(id, effects, rng)?;
             }
-            if event.rest > 0.0 && effects.entries[&id].effect.injury {
+            if event.rest > 0.0
+                && effects
+                    .read(id, true)?
+                    .ok_or("Missing retained injury effect")?
+                    .injury
+            {
                 event.amount = event.rest;
                 hooks.injury(id, &mut event, effects, rng)?;
                 event.rest = if event.cancelled {
@@ -505,7 +606,9 @@ fn run<H: Hooks>(
                     0.0
                 };
             }
-            let e = &effects.entries[&id].effect;
+            let e = effects
+                .read(id, true)?
+                .ok_or("Missing retained injury effect")?;
             let p = dodge_key(kind)
                 .and_then(|key| e.mod_value(key))
                 .unwrap_or(0.0);
@@ -521,7 +624,11 @@ fn run<H: Hooks>(
                 event.outcome = Some(Outcome::Zero);
             }
         }
-        if effects.entries[&id].effect.observer {
+        if effects
+            .read(id, true)?
+            .ok_or("Missing retained injury effect")?
+            .observer
+        {
             hooks.observe(
                 id,
                 Observation {
@@ -534,6 +641,9 @@ fn run<H: Hooks>(
             )?;
         }
     }
+    if changed {
+        effects.mark_dirty()?;
+    }
     Ok(InjuryResult {
         amount: event.rest,
         cancelled: event.cancelled,
@@ -542,7 +652,6 @@ fn run<H: Hooks>(
         deferred: event.deferred,
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

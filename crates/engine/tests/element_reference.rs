@@ -6,7 +6,7 @@ use arkguard_engine::{
         grid::Rect,
         health::{self, Side, Unit, World},
         hit::{self, AttackType},
-        injury::{Effect, Effects},
+        settlement,
         sp::{Bank, Kind},
         stats::{Base, Buff, UnitStats},
         status,
@@ -34,7 +34,6 @@ fn kind(k: arkguard_engine::battle::damage::DamageType) -> &'static str {
 struct Host {
     cfg: Value,
     trace: Vec<Value>,
-    effects: Option<Effects>,
     rng: Rng,
     bank: Option<Bank>,
 }
@@ -48,7 +47,7 @@ impl health::Hooks for Host {
         Ok(())
     }
 }
-impl hit::Hooks for Host {}
+impl settlement::Hooks for Host {}
 impl blocking::Hooks for Host {
     fn blocked(&mut self, _: u64, _: u64, _: &mut World) -> Result<(), String> {
         Ok(())
@@ -76,7 +75,7 @@ impl buffs::Hooks for Host {
     fn burst_damage(
         &mut self,
         r: &mut hit::Request,
-        _: &mut Runtime,
+        runtime: &mut Runtime,
         w: &mut World,
     ) -> Result<f64, String> {
         let attack = match r.attack_type {
@@ -95,10 +94,8 @@ impl buffs::Hooks for Host {
             r.tags,
             r.element.map(|e| e.name())
         ]));
-        let mut effects = self.effects.take().unwrap();
         let mut rng = self.rng.clone();
-        let result = hit::resolve(w, &mut effects, &mut rng, self, r);
-        self.effects = Some(effects);
+        let result = settlement::resolve(w, runtime, &mut rng, self, r);
         self.rng = rng;
         result
     }
@@ -281,7 +278,6 @@ fn elemental_timelines_match() {
         let mut h = Host {
             cfg: c.clone(),
             trace: vec![],
-            effects: Some(Effects::new(16).unwrap()),
             rng: Rng::new(42),
             bank: Some(bank),
         };
@@ -334,15 +330,6 @@ fn elemental_timelines_match() {
             },
         )
         .unwrap();
-        h.effects
-            .as_mut()
-            .unwrap()
-            .insert(Effect {
-                key: "baseline".into(),
-                mods: Some(w.unit(1).unwrap().stats.buffs()[0].mods.clone()),
-                ..Effect::default()
-            })
-            .unwrap();
         let mut states = vec![];
         for op in v["ops"].as_array().unwrap() {
             let result = match op["op"].as_str().unwrap() {

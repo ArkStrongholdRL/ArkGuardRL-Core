@@ -39,6 +39,9 @@ pub struct State {
     pub attract: Option<[i32; 2]>,
     pub fear: Option<super::status::FearStamp>,
     pub element_burst: Option<super::element::Burst>,
+    pub injury: Injury,
+    pub mods_present: bool,
+    pub flags_present: bool,
 }
 impl Default for State {
     fn default() -> Self {
@@ -64,6 +67,9 @@ impl Default for State {
             attract: None,
             fear: None,
             element_burst: None,
+            injury: Injury::default(),
+            mods_present: false,
+            flags_present: false,
         }
     }
 }
@@ -71,6 +77,16 @@ impl State {
     pub fn id(&self) -> BuffId {
         self.id
     }
+}
+#[derive(Clone, Debug, Default)]
+pub struct Injury {
+    pub priority: f64,
+    pub reduction: Option<[f64; 4]>,
+    pub reduction_group: Option<String>,
+    pub shield_types: Option<Vec<super::damage::DamageType>>,
+    pub keep_empty_shield: bool,
+    pub on_injury: Option<u64>,
+    pub observe: Option<u64>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Spec {
@@ -141,6 +157,9 @@ impl Runtime {
     }
     pub fn faulted(&self) -> bool {
         self.faulted
+    }
+    pub(crate) fn deferred_limit(&self) -> usize {
+        self.max_retained
     }
     pub(crate) fn next_fear(&mut self) -> Result<u64, String> {
         self.fear_sequence = self
@@ -226,7 +245,7 @@ impl Runtime {
     ) -> Result<(), String> {
         self.edit_inner(w, unit, id, true, f)
     }
-    fn edit_timer(
+    pub(crate) fn edit_timer(
         &mut self,
         w: &mut World,
         unit: Id,
@@ -288,6 +307,11 @@ impl Runtime {
         }
         self.adopt(w, unit)?;
         let mut b = spec.buff;
+        b.runtime.mods_present = spec.mods_present || !b.mods.is_empty();
+        b.runtime.flags_present = spec.flags_present || !b.flags.is_empty();
+        if !b.runtime.injury.priority.is_finite() {
+            b.runtime.injury.priority = 0.0;
+        }
         if b.stacks == 0
             || b.stacks > i32::MAX as u32
             || b.runtime.max_stacks == 0
@@ -323,9 +347,11 @@ impl Runtime {
                     old.runtime.duration = b.runtime.duration;
                     if spec.mods_present {
                         old.mods = b.mods;
+                        old.runtime.mods_present = true;
                     }
                     if spec.flags_present {
                         old.flags = b.flags;
+                        old.runtime.flags_present = true;
                     }
                 }
                 Refresh::Extend => {
@@ -333,9 +359,11 @@ impl Runtime {
                     old.runtime.duration = js_max(old.runtime.duration, b.runtime.duration);
                     if spec.mods_present {
                         old.mods = b.mods;
+                        old.runtime.mods_present = true;
                     }
                     if spec.flags_present {
                         old.flags = b.flags;
+                        old.runtime.flags_present = true;
                     }
                     if b.shield > old.shield {
                         old.shield = b.shield;

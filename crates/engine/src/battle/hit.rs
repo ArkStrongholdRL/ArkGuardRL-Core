@@ -78,6 +78,34 @@ impl Request {
 /// Content dispatch may synchronously change stats, effects and unit lifecycle.
 /// No phase is enabled until the host installs a handler for it.
 pub trait Hooks: health::Hooks + Sized {
+    /// Backends may supply canonical unit buffs while sharing this HP pipeline.
+    fn resolve_injury(
+        &mut self,
+        world: &mut World,
+        effects: &mut Effects,
+        rng: &mut Rng,
+        r: &mut Request,
+        amount: f64,
+        kind: super::damage::DamageType,
+        mode: DodgeMode,
+        ignore_block: bool,
+        expected: f64,
+    ) -> Result<injury::InjuryResult, String> {
+        injury::execute(
+            effects,
+            rng,
+            &mut Adapter {
+                host: self,
+                world,
+                expected,
+                request: r,
+            },
+            amount,
+            kind,
+            mode,
+            ignore_block,
+        )
+    }
     fn enabled(&self, _phase: Phase) -> bool {
         false
     }
@@ -339,21 +367,23 @@ pub fn resolve<H: Hooks>(
         return Ok(0.0);
     }
     let ignore_block = r.ignore_block;
+    let result = host.resolve_injury(
+        world,
+        effects,
+        rng,
+        r,
+        final_,
+        damage_type,
+        dodge_mode,
+        ignore_block,
+        expected,
+    )?;
     let mut adapter = Adapter {
         host,
         world,
         expected,
         request: r,
     };
-    let result = injury::execute(
-        effects,
-        rng,
-        &mut adapter,
-        final_,
-        damage_type,
-        dodge_mode,
-        ignore_block,
-    )?;
     result.settle_with(
         &mut adapter,
         |a, mut amount| {
