@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
+  <title id="title">ArkGuardRL Core — a Gymnasium environment for Stronghold Protocol</title>
+  <desc id="desc">A navy blue banner with the ArkGuardRL Core wordmark, structured observations, candidate actions, and parallel rollouts. An original abstract tactical grid on the right illustrates branching decisions and a highlighted route; it is not a game screenshot.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d2230"/>
+      <stop offset="0.55" stop-color="#091b27"/>
+      <stop offset="1" stop-color="#071722"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.82" cy="0.45" r="0.5">
+      <stop offset="0" stop-color="#31d7b2" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#31d7b2" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="board" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#153b47"/>
+      <stop offset="1" stop-color="#102c37"/>
+    </linearGradient>
+    <linearGradient id="route" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#4bd9b9"/>
+      <stop offset="0.7" stop-color="#83edcf"/>
+      <stop offset="1" stop-color="#e3eea3"/>
+    </linearGradient>
+    <rect id="tile" width="36" height="36" rx="5" fill="#183d48" stroke="#315661" stroke-width="0.8"/>
+    <g id="row">
+      <use href="#tile"/>
+      <use href="#tile" x="44"/>
+      <use href="#tile" x="88"/>
+      <use href="#tile" x="132"/>
+      <use href="#tile" x="176"/>
+      <use href="#tile" x="220"/>
+      <use href="#tile" x="264"/>
+    </g>
+  </defs>
+
+  <rect width="1280" height="360" rx="22" fill="url(#background)"/>
+  <rect width="1280" height="360" rx="22" fill="url(#halo)"/>
+  <path d="M742 0 622 360M806 0 686 360" fill="none" stroke="#8bcbbb" stroke-opacity="0.035" stroke-width="1"/>
+  <path d="M0 359.5H1280" stroke="#7bbaa9" stroke-opacity="0.08"/>
+
+  <g font-family="Arial, Helvetica, sans-serif">
+    <rect x="66" y="46" width="8" height="8" rx="2" fill="#71e7c2"/>
+    <text x="88" y="56" fill="#93b4bc" font-size="13" font-weight="700" letter-spacing="3">ARKSTRONGHOLDRL</text>
+
+    <text x="63" y="147" fill="#f0f6f5" font-size="74" font-weight="700" letter-spacing="-2.5">ArkGuardRL</text>
+    <text x="67" y="205" fill="#e3eea3" font-size="41" font-weight="400" letter-spacing="7">CORE</text>
+    <text x="67" y="257" fill="#a9c3ca" font-size="21">Stronghold Protocol · Gymnasium environment</text>
+
+    <g fill="#c7d9dd" font-size="17">
+      <rect x="68" y="307" width="5" height="5" rx="1.5" fill="#71e7c2"/>
+      <text x="84" y="316">Structured observations</text>
+      <rect x="325" y="307" width="5" height="5" rx="1.5" fill="#71e7c2"/>
+      <text x="341" y="316">Candidate actions</text>
+      <rect x="529" y="307" width="5" height="5" rx="1.5" fill="#e3eea3"/>
+      <text x="545" y="316">Parallel rollouts</text>
+    </g>
+  </g>
+
+  <!-- Original, schematic decision board. The geometry does not depict a game map. -->
+  <g transform="matrix(.88 .34 -.64 .48 975 52)">
+    <rect x="-17" y="-17" width="334" height="334" rx="16" fill="#030e17" fill-opacity="0.3" transform="translate(15 23)"/>
+    <rect x="-17" y="-17" width="334" height="334" rx="16" fill="url(#board)" stroke="#436b70" stroke-opacity="0.65" stroke-width="1.4"/>
+    <rect x="-9" y="-9" width="318" height="318" rx="10" fill="none" stroke="#5a958d" stroke-opacity="0.18" stroke-width="1"/>
+
+    <g opacity="0.68">
+      <use href="#row"/>
+      <use href="#row" y="44"/>
+      <use href="#row" y="88"/>
+      <use href="#row" y="132"/>
+      <use href="#row" y="176"/>
+      <use href="#row" y="220"/>
+      <use href="#row" y="264"/>
+    </g>
+
+    <g fill="#31665f" fill-opacity="0.7" stroke="#70ccb0" stroke-opacity="0.45" stroke-width="1.2">
+      <rect x="44" y="220" width="36" height="36" rx="5"/>
+      <rect x="88" y="176" width="36" height="36" rx="5"/>
+      <rect x="132" y="176" width="36" height="36" rx="5"/>
+      <rect x="132" y="132" width="36" height="36" rx="5"/>
+      <rect x="176" y="88" width="36" height="36" rx="5"/>
+      <rect x="220" y="88" width="36" height="36" rx="5"/>
+    </g>
+    <rect x="264" y="44" width="36" height="36" rx="5" fill="#8b9a5b" fill-opacity="0.5" stroke="#e3eea3" stroke-opacity="0.8" stroke-width="1.3"/>
+
+    <path d="M150 194V238H238V282M150 150H106V106H62V62M238 106V150H282" fill="none" stroke="#77a59e" stroke-opacity="0.53" stroke-width="2" stroke-dasharray="5 7" stroke-linecap="round" stroke-linejoin="round"/>
+    <g fill="#294d56" stroke="#7ca79e" stroke-width="1.5">
+      <circle cx="238" cy="282" r="6"/>
+      <circle cx="62" cy="62" r="6"/>
+      <circle cx="282" cy="150" r="6"/>
+    </g>
+
+    <path d="M18 238H62L106 194H150V150L194 106H238L282 62" fill="none" stroke="#61dfb9" stroke-opacity="0.12" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M18 238H62L106 194H150V150L194 106H238L282 62" fill="none" stroke="url(#route)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <g fill="#86edce" stroke="#173c45" stroke-width="3">
+      <circle cx="18" cy="238" r="7"/>
+      <circle cx="150" cy="194" r="7"/>
+      <circle cx="194" cy="106" r="7"/>
+    </g>
+    <circle cx="282" cy="62" r="13" fill="#e3eea3" fill-opacity="0.1" stroke="#e3eea3" stroke-width="1.8"/>
+    <circle cx="282" cy="62" r="6" fill="#e3eea3"/>
+
+    <path d="M10 -28H66M328 232V288" fill="none" stroke="#8edac2" stroke-opacity="0.4" stroke-width="2" stroke-linecap="round"/>
+  </g>
+
+  <g fill="none" stroke="#8edac2" stroke-opacity="0.22" stroke-width="1">
+    <path d="M793 107h15m-7.5-7.5v15"/>
+    <path d="M1180 303h15m-7.5-7.5v15"/>
+    <circle cx="1232" cy="72" r="3"/>
+  </g>
+</svg>
