@@ -81,4 +81,5 @@ desc.text = ("Apple M5, 16 GiB. Engine 0.3.1 on Node.js with Rust action/observa
 svg.insert(0, title)
 svg.insert(1, desc)
 tree.write(output, encoding="utf-8", xml_declaration=True)
+output.write_text("\n".join(line.rstrip() for line in output.read_text().splitlines()) + "\n")
 print(output)
