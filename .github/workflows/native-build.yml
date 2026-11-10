@@ -1,0 +1,81 @@
+name: native-build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, codex/native-runtime-main, codex/native-win-ci, codex/multi-env-worker]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.platform.name }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+        platform:
+          - {name: linux-x64, runner: ubuntu-22.04}
+          - {name: windows-x64, runner: windows-latest}
+          - {name: macos-arm64, runner: macos-15}
+          - {name: macos-x64, runner: macos-15-intel}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install import dependency
+        run: python -m pip install "numpy>=1.26,<3"
+      - name: Build engine, feature kernels and parallel slots
+        shell: python
+        run: |
+          import os
+          import subprocess
+          import sys
+
+          env = dict(os.environ, PYO3_PYTHON=sys.executable)
+          for args in (
+              ['-p', 'arkguard-python'],
+              ['--manifest-path', 'arkguardrl_core/native/Cargo.toml'],
+              ['--manifest-path', 'benchmarks/native_slots/Cargo.toml'],
+          ):
+              subprocess.run(['cargo', 'build', '--release', '--locked', *args], env=env, check=True)
+      - name: Collect and import all modules
+        shell: python
+        run: |
+          import importlib
+          import pathlib
+          import shutil
+          import sys
+          import sysconfig
+
+          artifacts = pathlib.Path('artifacts')
+          artifacts.mkdir()
+          prefix = '' if sys.platform == 'win32' else 'lib'
+          suffix = {'win32': '.dll', 'darwin': '.dylib'}.get(sys.platform, '.so')
+          for directory, name in (
+              ('target/release', '_native'),
+              ('arkguardrl_core/native/target/release', '_rust_routes'),
+              ('benchmarks/native_slots/target/release', '_native_slots'),
+          ):
+              source = pathlib.Path(directory) / f'{prefix}{name}{suffix}'
+              shutil.copy2(source, artifacts / f'{name}{sysconfig.get_config_var("EXT_SUFFIX")}')
+          sys.path.insert(0, str(artifacts.resolve()))
+          for name in ('_native', '_rust_routes', '_native_slots'):
+              module = importlib.import_module(name)
+              assert pathlib.Path(module.__file__).resolve().parent == artifacts.resolve()
+              print(f'Imported {module.__file__}')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-py${{ matrix.python }}-${{ matrix.platform.name }}
+          path: artifacts/*
+          if-no-files-found: error
