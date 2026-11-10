@@ -39,7 +39,7 @@ with gym.make(
         done = terminated or truncated
 ```
 
-Linux 动态库后缀为 `.so`，CI 提供 Linux x64、Windows x64、macOS Intel／Apple Silicon 的 CPython 3.10／3.12 原生模块，详见[构建说明](benchmarks/README.md#跨平台构建)。原生运行时读取数据目录，核心由构造参数指定。`banned` 接受禁用干员 ID，`tick_budget` 控制每次战斗续跑的帧数。
+Linux 动态库后缀为 `.so`，CI 提供 Linux x64、Windows x64、macOS Intel／Apple Silicon 的 CPython 3.12 原生模块，详见[构建说明](benchmarks/README.md#跨平台构建)。原生运行时读取数据目录，核心由构造参数指定。`banned` 接受禁用干员 ID，`tick_budget` 控制每次战斗续跑的帧数。
 
 观测是 NumPy `Dict`，动作是**当前候选行索引**：
 

@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.12']
+        python: ['3.12']
         platform:
           - {name: linux-x64, runner: ubuntu-22.04}
           - {name: windows-x64, runner: windows-latest}
