@@ -1,76 +1,64 @@
-<p align="center">
-  <img src="docs/assets/hero.svg" alt="ArkGuardRL-Core — a Gymnasium research environment for Stronghold Protocol" width="100%">
-</p>
+<a name="top"></a>
 
 <p align="center">
-  <a href="README.md">简体中文</a> · <strong>English</strong>
+  <img src="docs/assets/hero.svg" alt="ArkGuardRL-Core — Stronghold Protocol research environment" width="100%">
 </p>
 
+<h3 align="center">Stronghold Protocol · Reinforcement Learning Environment</h3>
+
+<p align="center"><a href="README.md">简体中文</a> · <strong>English</strong></p>
+
+<p align="center">Run complete solo games, connect a learning policy, and inspect each decision.</p>
+
 <p align="center">
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+"></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 22+"></a>
-  <a href="https://gymnasium.farama.org/"><img src="https://img.shields.io/badge/Gymnasium-1.1%2B-00897B?style=flat-square" alt="Gymnasium 1.1+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-476582?style=flat-square" alt="GPL-3.0-or-later"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-PyO3-dea584?style=flat-square&amp;logo=rust&amp;logoColor=white" alt="Rust and PyO3"></a>
+  <a href="https://gymnasium.farama.org/"><img src="https://img.shields.io/badge/Gymnasium-1.1%2B-00897B?style=flat-square" alt="Gymnasium 1.1+"></a>
 </p>
 
-<p align="center">
-  <a href="#quick-start">Quick start</a> · <a href="#performance">Performance</a> · <a href="#environment-api">Environment API</a> · <a href="docs/NATIVE-033.md">Native Rust progress</a>
-</p>
+<p align="center"><a href="#quick-start">Quick start</a> · <a href="#environment-api">Environment API</a> · <a href="#performance">Performance</a> · <a href="#documentation">Documentation</a> · <a href="#license-and-acknowledgments">License</a></p>
 
-**Bring Stronghold Protocol into your reinforcement learning experiments.** ArkGuardRL-Core
-provides a Gymnasium interface to the unofficial
-[Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) simulator, exposing
-game decisions as structured observations, candidate actions, and action masks.
+## Overview
 
-| Connect experiments | Inspect decisions | Scale collection |
-| --- | --- | --- |
-| `gym.make("ArkGuardRL-v0")` with NumPy dictionary observations | Engine seeds, reward components, and action acceptance | `SyncVectorEnv` and shared-memory `AsyncVectorEnv` |
-| Rust/PyO3 action and observation kernels | Separate termination and budget truncation | Environment-only benchmarks without Torch or a trainer |
+ArkGuardRL-Core exposes the purchasing, team-building, and deployment decisions of Stronghold Protocol through Gymnasium.
+Public observations, candidate actions, rewards, and episode boundaries let a policy drive complete games through `reset` and `step`.
+Game rules follow the Stronghold Protocol simulator. [Upstream project](https://github.com/sganggs/Stronghold-Protocol)
 
-The current interface covers solo games with default loadouts, using **the app 0.3.1 engine (Node.js) for game execution and Rust for action and feature computation**.
-A complete Rust environment is [in development](docs/NATIVE-033.md). Core owns the environment
-and runtime; policy networks and training belong in downstream research projects.
+| Core runtime | Policy research |
+| --- | --- |
+| Game execution, public observations, candidate enumeration, and numeric encoding | Model representations, policy networks, and learning algorithms |
+| Seeded reproduction, decision budgets, and vector collection | Trajectory collection, training, and policy evaluation |
+| Maintained in this repository | Maintained in [ArkGuardRL](https://github.com/HarcoChen/ArkGuardRL) |
+
+Maintenance targets solo Desperation mode (`mode_single_abyss`). This branch's quick start uses **the 0.3.1 Node engine and Rust feature kernels**.
+The 0.3.3 native runtime, Rust slots, and public spatial APIs are developed in PR #4. [Native runtime PR](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/pull/4)
 
 ## Quick start
 
-### 1. Install the environment package
-
-You need **Python 3.10+, Node.js 22+, Git, Rust/Cargo, and system linker tools**.
-A Python virtual environment is recommended. Installation builds the Rust/PyO3 extension in release mode.
+Use Python 3.12, Node.js 22+, Git, and Rust/Cargo. Installation compiles a PyO3 extension and requires system linker tools.
 
 ```sh
 git clone https://github.com/ArkStrongholdRL/ArkGuardRL-Core.git
 cd ArkGuardRL-Core
 python -m pip install -e '.[gym]'
-```
 
-### 2. Prepare the external engine
-
-From this repository, clone the engine into a sibling directory:
-
-```sh
 git clone https://github.com/sganggs/Stronghold-Protocol.git ../Stronghold-Protocol
 git -C ../Stronghold-Protocol checkout c9d804f470b8d7422ae04eb66faf671cef21ad52
 ```
 
-`ArkGuardRL-v0` requires this exact revision (app 0.3.1), a **clean Git working tree**, and
-the complete `data/*.json` files. This checkout includes the required JSON; Gym starts the engine
-in the background without a web server or artwork downloads. Set `engine_root` to the engine repository root. See the
-[upstream documentation](https://github.com/sganggs/Stronghold-Protocol/tree/c9d804f470b8d7422ae04eb66faf671cef21ad52)
-for engine and resource information, and [NOTICE](NOTICE.md) for this project's resource boundaries.
+Keep the external engine checkout clean with all `data/*.json` files present. Set `engine_root` to its repository root.
+This revision includes the required JSON files. The environment starts the engine in the background.
 
-### 3. Run a minimal example
-
-Run this example from the Core repository. It samples masked actions at random; the default difficulty is `ABYSS`:
+### Run a game
 
 ```python
 import gymnasium as gym
-import arkguardrl_core.gym_env  # Registers ArkGuardRL-v0.
+import arkguardrl_core.gym_env
 
 with gym.make("ArkGuardRL-v0", engine_root="../Stronghold-Protocol") as env:
     env.action_space.seed(42)
     obs, info = env.reset(seed=42)
-
     while True:
         action = env.action_space.sample(mask=obs["action_mask"])
         obs, reward, terminated, truncated, info = env.step(action)
@@ -78,79 +66,65 @@ with gym.make("ArkGuardRL-v0", engine_root="../Stronghold-Protocol") as env:
             break
 ```
 
-## Performance
-
-Recorded environment throughput includes observation construction, reward calculation,
-Gym communication, and in-loop resets:
-
-![Environment throughput: six measurements and medians for one synchronous and four asynchronous environments](docs/assets/benchmark-throughput.svg)
-
-**Apple M5 · 16 GiB · November 2, 2026.** Uniform sampling over valid candidates, without model
-inference or training. Each environment runs 64 warm-up steps and 1,024 measured decisions;
-each variant has six runs. Short desktop measurements vary with load; these changes do not establish a training speedup.
-
-→ **[Results, measurement scope, and reproduction commands](benchmarks/README.md)** ·
-[Raw records](benchmarks/env-hotspots-20261102.json) · [Optimization notes](benchmarks/HOTSPOTS-20261102.md)
+The example samples candidates using the mask. Replace `action` with the candidate row selected by your policy.
 
 ## Environment API
 
-An action is a **row index into the current candidate set**; a row's meaning changes with the state.
-Observations are dictionaries of NumPy arrays:
+| Interface | Use |
+| --- | --- |
+| `ArkGuardRL-v0` | A single-environment Gymnasium decision loop |
+| `SyncVectorEnv` / `AsyncVectorEnv` | Vector collection with an independent session per environment |
+| `env.unwrapped.catalog.definitions()` | Read public static definitions |
+| `info` | Inspect action acceptance, reward components, engine seeds, and episode reasons |
 
-| Field | Shape / type | Content |
-| --- | --- | --- |
-| `observation` | `(4784,) float32` | Dynamic state features |
-| `candidates` | `(max_candidates, 41) float32` | Candidate action features; zero padding |
-| `schedules` / `experts` | `(max_candidates,) int64` | Candidate groups |
-| `action_mask` | `(max_candidates,) int8` | Current valid candidate rows |
+Observations are dictionaries of NumPy arrays. Action indices refer to the current state's candidate rows. The default capacity is 16,384.
 
-Candidates are constructed from public information; check `info["accepted"]` for the execution result.
-The default candidate capacity is **16,384**. Overflow raises an error; selecting padding or an
-out-of-range index raises `InvalidAction` without advancing the game.
+| Field | Shape and type |
+| --- | --- |
+| `observation` | `(4784,) float32` |
+| `candidates` | `(max_candidates, 41) float32` |
+| `schedules` / `experts` | `(max_candidates,) int64` |
+| `action_mask` | `(max_candidates,) int8` |
 
 <details>
-<summary><strong>Seeds, rewards, episode boundaries, and vector execution</strong></summary>
+<summary>Actions, seeds, and rollout semantics</summary>
 
-- **Seeds:** the same Gym seed reproduces the environment. The derived engine seed is available
-  in `info["engine_seed"]`. `reset(seed=None)` continues the RNG stream; action sampling has its own RNG.
-- **Rewards:** `NativeProgressCore` computes rewards; components are returned in `info["reward_components"]`.
-- **Episode boundaries:** natural endings return `terminated`. Exhausting `max_decisions`,
-  `max_advances`, or `wall_seconds` returns `truncated`, a reason in `info["reason"]`, and the actual
-  successor observation. Engine and transport failures raise exceptions.
-- **Actions:** the mask identifies candidate rows that can be submitted; the engine may still reject
-  execution. Unmasked random actions from a generic `check_env()` can select padding; sample with the mask.
-- **Configuration:** set difficulty and budgets at construction. Single-environment `reset(options=...)`
-  accepts no extra configuration. Read static definitions after reset via `env.unwrapped.catalog.definitions()`.
-- **Vector execution:** this repository's async benchmark sets `context="spawn"` and `shared_memory=True`. Custom entry points need
-  `if __name__ == "__main__"`. Each environment owns one Node process; default padded observations
-  use **2,984,640 bytes per environment**.
+- Candidates are constructed from public information. Check `info["accepted"]` for execution results. Padding or out-of-range indices raise `InvalidAction`. Candidate overflow raises an error.
+- The same Gym seed reproduces the environment. `info["engine_seed"]` exposes the derived seed. `reset(seed=None)` continues the RNG stream. Action sampling uses a separate RNG.
+- `NativeProgressCore` computes rewards. Components appear in `info["reward_components"]`.
+- Natural endings return `terminated`. Exhausting `max_decisions`, `max_advances`, or `wall_seconds` returns `truncated`, the actual successor observation, and `info["reason"]`. Engine or transport failures raise exceptions.
+- Set difficulty and budgets at construction. Single-environment `reset(options=...)` accepts an empty configuration.
+- Async collection with `spawn` requires an `if __name__ == "__main__"` entry point. Each v0 environment owns an independent Node process.
 
 </details>
 
-## Documentation and development
+## Performance
 
-The detailed development and benchmark notes are currently in Chinese.
+| Configuration | Decisions per second |
+| --- | ---: |
+| Gym Sync, 1 environment | 494.75 |
+| Gym Async, shared memory, 4 environments | 937.19 |
+
+Recorded on November 2, 2026, with an Apple M5 / 16 GiB and the Node 0.3.1 engine plus Rust feature kernels.
+Each environment runs 64 warm-up steps and 1,024 measured steps. Values are medians of six measurements.
+Timing includes observations, rewards, Gym communication, and in-loop resets, with masked random actions.
+Raw records, measurement plots, and reproduction commands are available in the benchmark guide. [Performance benchmarks](benchmarks/README.md)
+
+## Documentation
+
+Detailed development notes are currently in Chinese.
 
 | Guide | Contents |
 | --- | --- |
-| [Performance benchmarks](benchmarks/README.md) | Latest measurements, historical comparisons, reproduction, and timing scope |
-| [Rust action and feature kernels](docs/RUST-ROUTES.md) | Kernel responsibilities and ABI in the installed package |
-| [Complete Rust environment migration](docs/NATIVE-033.md) | Implementation scope, validation, and remaining work against app 0.3.3 |
-| [Attribution and resource boundaries](NOTICE.md) | Code provenance, external engine, and resource ownership |
+| [Performance benchmarks](benchmarks/README.md) | Measurements, timing scope, and commands |
+| [Rust feature kernels](docs/RUST-ROUTES.md) | Action and observation encoding responsibilities and ABI |
+| [Native migration notes](docs/NATIVE-033.md) | Development history for the 0.3.3 engine |
+| [Issue tracker](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | Interface issues and reproducible reports |
 
-Environment integration tests require the external engine and run actual games:
+## License and acknowledgments
 
-```sh
-ARKGUARD_ENGINE_ROOT=/path/to/Stronghold-Protocol \
-  python -m unittest discover -s tests -p test_gym_env.py -v
-```
+Code is licensed under GPL-3.0-or-later. Stronghold Protocol provides the upstream simulator. See the license and attribution notes for game assets and external data. [LICENSE](LICENSE) · [NOTICE](NOTICE.md)
 
-Contributions are welcome: [report interface issues](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues),
-share reproducible environment measurements, or help with the native migration.
+The landing-page layout draws on AutoTavern. The banner is an original schematic illustration. [AutoTavern](https://github.com/MCG-NJU/AutoTavern)
 
-## Acknowledgments and license
-
-Thanks to [Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) for the upstream simulator.
-This is an unofficial research framework. Code is licensed under **GPL-3.0-or-later**;
-game assets, data, model weights, and trajectories are not included in this repository.
-See [NOTICE](NOTICE.md) and [LICENSE](LICENSE) for provenance and licensing details.
+<p align="center"><a href="#top">Back to top</a></p>
