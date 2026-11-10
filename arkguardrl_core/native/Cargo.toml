@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "arkguardrl-route-kernels"
 version = "0.1.0"
