@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 
 pub type Prepared = (Vec<domain::Piece>, u16, bool, bool, bool);
+pub(crate) const CELL_MASK: u64 = domain::MASK;
+
 const DIRECTIONS: [&str; 4] = ["RIGHT", "UP", "DOWN", "LEFT"];
 
 fn intent(action: domain::Action) -> Value {

@@ -111,3 +111,21 @@ impl DecisionLedger {
         self.snapshot(Some(execution), Some(reward), advances)
     }
 }
+
+/// One bounded current domain. The binding keeps its token counter across resets.
+pub struct PolicyDomain {
+    pub revision: u64,
+    pub token: u64,
+    pub actions: Vec<Value>,
+}
+impl PolicyDomain {
+    pub fn selected(&self, revision: u64, token: u64, index: usize) -> Result<Value, String> {
+        if self.revision != revision || self.token != token {
+            return Err("Stale native candidate domain".into());
+        }
+        self.actions
+            .get(index)
+            .cloned()
+            .ok_or_else(|| "Select a current unpadded candidate index".into())
+    }
+}

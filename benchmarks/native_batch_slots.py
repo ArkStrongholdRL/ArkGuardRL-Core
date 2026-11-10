@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import numpy as np
 from arkguardrl.catalog import PublicCatalog
-from arkguardrl.candidates import build_decision
+from arkguardrl.candidates import Decision
 from arkguardrl.contracts import canonical
 from arkguardrl_core.native_ledger import NativeLedgerHistory
 from arkguardrl_core.native_policy import metadata
@@ -99,17 +99,10 @@ class NativeSlotBatch:
         slot.state = slot._ledger['observation']
 
     def _refresh(self, slot):
-        slot.prefix, slot.prepared = b'[]', None
         if slot.state['decisionRequired'] and not slot.state['personalEnded']:
-            def prepare(state, prefix, catalog, history, prepared):
-                slot.prefix, slot.prepared = canonical(prefix), prepared
-                return prefix, (), (), (), ()
-
-            # Python prepares the small public parameter domain. Enumeration,
-            # history filtering and all numerical projection run together in Rust.
-            slot.decision = build_decision(slot.state, self.catalog, slot.history,
-                                           candidate_encoder=prepare,
-                                           state_copy=lambda _: json.loads(slot.raw)['observation'])
+            snapshot = slot.history.snapshot(slot.state)
+            slot.decision = Decision(json.loads(slot.raw)['observation'], (), (), (), (), (), False,
+                                     history_json=canonical(snapshot))
         else:
             slot.decision = None
         slot.info = dict(candidate_count=0,
@@ -120,10 +113,9 @@ class NativeSlotBatch:
         n, k = self.num_envs, self.max_candidates
         for slot in self.slots:
             slot.history._check(slot.state)
-        actions, buffers = self.native.build_ledger_policy_all(
-            [s.state['revision'] for s in self.slots],
-            [s.prefix for s in self.slots], [s.prepared for s in self.slots])
-        for slot, raw in zip(self.slots, actions):
+        tokens, actions, buffers = self.native.build_current_policy_all([s.state['revision'] for s in self.slots])
+        for slot, token, raw in zip(self.slots, tokens, actions):
+            slot.token = token
             candidates = tuple(json.loads(raw))
             if len(candidates) > self.max_candidates:
                 raise ValueError('Candidate capacity exceeded; no domain truncation')
@@ -197,10 +189,12 @@ class NativeSlotBatch:
             slot.history._check(slot.state)
             if not 0 <= int(index) < len(slot.decision.actions):
                 raise ValueError('Select a current unpadded candidate index')
-            query.append(json.dumps(slot.decision.actions[int(index)], allow_nan=False))
+            query.append(int(index))
             budgets.append(max(0, self.max_advances - slot.advances))
         try:
-            packets = self.native.step_decision_all(query, self.tick_budget, budgets)
+            packets = self.native.step_index_all(
+                [s.state['revision'] for s in self.slots], [s.token for s in self.slots],
+                query, self.tick_budget, budgets)
             rewards = np.zeros(self.num_envs, np.float64)
             for i in np.flatnonzero(mask):
                 slot = self.slots[i]

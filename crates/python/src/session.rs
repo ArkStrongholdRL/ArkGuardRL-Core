@@ -20,12 +20,44 @@ pub struct NativeSolo {
     public: Option<Arc<serde_json::Value>>,
     policy: Option<crate::policy::PolicyEncoder>,
     ledger: Option<crate::ledger::DecisionLedger>,
+    domain: Option<crate::ledger::PolicyDomain>,
+    policy_token: u64,
 }
 impl NativeSolo {
     fn live(&mut self) -> PyResult<&mut Session> {
         self.session
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Reset required"))
+    }
+    fn step_decision_value(
+        &mut self,
+        py: Python<'_>,
+        action: &serde_json::Value,
+        tick_budget: usize,
+        max_advances: usize,
+    ) -> PyResult<String> {
+        let retired = self.domain.take();
+        let mut ledger = self
+            .ledger
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("Reset a decision session before stepping"))?;
+        let result = py.detach(|| {
+            drop(retired);
+            ledger
+                .step(self.live()?, action, tick_budget, max_advances)
+                .map_err(PyRuntimeError::new_err)
+        });
+        match result {
+            Ok(result) => {
+                self.public = Some(ledger.state.clone());
+                self.ledger = Some(ledger);
+                Ok(result)
+            }
+            Err(error) => {
+                self.close();
+                Err(error)
+            }
+        }
     }
 }
 #[pymethods]
@@ -75,6 +107,8 @@ impl NativeSolo {
             public: None,
             policy: None,
             ledger: None,
+            domain: None,
+            policy_token: 0,
         })
     }
     /// Replace the episode, retaining immutable definitions. A failed reset
@@ -83,6 +117,7 @@ impl NativeSolo {
         self.session = None;
         self.public = None;
         self.ledger = None;
+        self.domain = None;
         let session = py
             .detach(|| {
                 Session::new_at_revision(
@@ -109,6 +144,7 @@ impl NativeSolo {
             .map_err(|e: serde_json::Error| PyValueError::new_err(e.to_string()))?;
         self.public = None;
         self.ledger = None;
+        self.domain = None;
         let live = self.live()?;
         py.detach(|| live.step(&action, tick_budget))
             .map(|v| v.to_string())
@@ -117,6 +153,7 @@ impl NativeSolo {
     fn advance(&mut self, py: Python<'_>, tick_budget: usize) -> PyResult<String> {
         self.public = None;
         self.ledger = None;
+        self.domain = None;
         let live = self.live()?;
         py.detach(|| live.advance(tick_budget))
             .map(|v| v.to_string())
@@ -170,26 +207,30 @@ impl NativeSolo {
         }
         let action =
             serde_json::from_str(action_json).map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        let mut ledger = self
-            .ledger
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("Reset a decision session before stepping"))?;
-        let result = py.detach(|| {
-            ledger
-                .step(self.live()?, &action, tick_budget, max_advances)
-                .map_err(PyRuntimeError::new_err)
-        });
-        match result {
-            Ok(result) => {
-                self.public = Some(ledger.state.clone());
-                self.ledger = Some(ledger);
-                Ok(result)
-            }
-            Err(error) => {
-                self.close();
-                Err(error)
-            }
+        self.step_decision_value(py, &action, tick_budget, max_advances)
+    }
+
+    fn step_index(
+        &mut self,
+        py: Python<'_>,
+        revision: u64,
+        token: u64,
+        index: usize,
+        tick_budget: usize,
+        max_advances: usize,
+    ) -> PyResult<String> {
+        if !(1..=108000).contains(&tick_budget) {
+            return Err(PyValueError::new_err("Invalid decision tick budget"));
         }
+        let action = self
+            .domain
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("Build a native candidate domain before stepping")
+            })?
+            .selected(revision, token, index)
+            .map_err(PyValueError::new_err)?;
+        self.step_decision_value(py, &action, tick_budget, max_advances)
     }
     /// Compile public model metadata once, outside the per-decision path.
     fn configure_policy(&mut self, py: Python<'_>, metadata_json: &[u8]) -> PyResult<()> {
@@ -203,6 +244,7 @@ impl NativeSolo {
             })
             .map_err(PyValueError::new_err)?;
         self.policy = Some(encoder);
+        self.domain = None;
         Ok(())
     }
     /// Read the same allowlisted Rust state as observation(), with no Python
@@ -331,6 +373,51 @@ impl NativeSolo {
         let (observation, candidates, schedules, experts) = policy_buffers(py, &encoded)?;
         Ok((actions, observation, candidates, schedules, experts))
     }
+    fn build_current_policy<'py>(
+        &mut self,
+        py: Python<'py>,
+        expected_revision: u64,
+    ) -> PyResult<(u64, String, PolicyBuffers<'py>)> {
+        let ledger = self
+            .ledger
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Reset a decision session before encoding"))?;
+        if ledger.state["revision"].as_u64() != Some(expected_revision) {
+            return Err(PyValueError::new_err(
+                "Numeric observation revision mismatch",
+            ));
+        }
+        let policy = self
+            .policy
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Configure policy before numeric encoding"))?;
+        let token = self
+            .policy_token
+            .checked_add(1)
+            .ok_or_else(|| PyRuntimeError::new_err("Candidate token overflow"))?;
+        let retired = self.domain.take();
+        let (actions, json, encoded) = py
+            .detach(|| {
+                drop(retired);
+                let actions = policy.current_candidates(
+                    &ledger.state,
+                    &ledger.policy_history,
+                    &ledger.blocked,
+                )?;
+                let encoded = policy.encode(&ledger.state, &ledger.policy_history, &actions)?;
+                let json = serde_json::to_string(&actions).map_err(|e| e.to_string())?;
+                Ok::<_, String>((actions, json, encoded))
+            })
+            .map_err(PyValueError::new_err)?;
+        let buffers = policy_buffers(py, &encoded)?;
+        self.policy_token = token;
+        self.domain = Some(crate::ledger::PolicyDomain {
+            revision: expected_revision,
+            token,
+            actions,
+        });
+        Ok((token, json, buffers))
+    }
     /// Private debugging data, including RNG and pool state. Not a policy input.
     fn diagnostics(&mut self, py: Python<'_>) -> PyResult<String> {
         let live = self.live()?;
@@ -408,6 +495,7 @@ impl NativeSolo {
         self.session = None;
         self.public = None;
         self.ledger = None;
+        self.domain = None;
     }
 }
 

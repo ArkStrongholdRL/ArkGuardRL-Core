@@ -1,9 +1,10 @@
 """Gym bridge to the public progress, history and reward owned by NativeSolo."""
 from copy import deepcopy
 import json
+from numbers import Integral
 from uuid import uuid4
 
-from arkguardrl.candidates import CandidateBlocked, DecisionHistory, build_decision
+from arkguardrl.candidates import CandidateBlocked, Decision, DecisionHistory, build_decision
 from arkguardrl.contracts import fingerprint, canonical
 from arkguardrl.decision_session import DecisionSession
 from arkguardrl.environment import Transition
@@ -39,7 +40,7 @@ class NativeLedgerSession(DecisionSession):
     def __init__(self, environment, catalog):
         self.environment, self.catalog = environment, catalog
         self.history = NativeLedgerHistory(environment)
-        self.result = None
+        self.result = self._decision = None
 
     def reset(self, **kwargs):
         if self.result is not None:
@@ -53,16 +54,53 @@ class NativeLedgerSession(DecisionSession):
         if fingerprint(self.result.observation) != self.history.progress['observation_id']:
             raise ValueError('Decision snapshot was mutated; no command executed')
         self.result = self.environment.step(action)
+        self._decision = None
         return self.result
 
     def decision(self):
         if self.result is None:
             raise RuntimeError('Reset before constructing a decision')
         if self.environment.numeric_encoder is None:
-            return super().decision()
-        return build_decision(self.result.observation, self.catalog, self.history,
-                              candidate_encoder=self.environment._encode_candidates,
-                              state_copy=self.environment._copy_state)
+            self._decision = super().decision()
+            return self._decision
+        if self.catalog is not self.environment._policy_catalog:
+            raise ValueError('Numeric encoding requires the current public snapshot and catalog')
+        if not hasattr(self.environment.session, 'build_current_policy'):
+            self._decision = build_decision(self.result.observation, self.catalog, self.history,
+                                           candidate_encoder=self.environment._encode_candidates,
+                                           state_copy=self.environment._copy_state)
+        else:
+            from .native_policy import decode
+            state = self.result.observation
+            snapshot = self.history.snapshot(state)
+            try:
+                token, raw, buffers = self.environment.session.build_current_policy(state['revision'])
+            except ValueError as error:
+                if str(error) in ('Native candidate hard cap exceeded; domain was not sliced',
+                                  'History/public domain exhausted; no fallback wait or forced Ready'):
+                    raise CandidateBlocked(str(error)) from None
+                raise
+            actions = tuple(json.loads(raw))
+            observation, features, schedules, experts = decode(buffers, len(actions))
+            self._decision = Decision(self.environment._copy_state(state), observation, features,
+                                      actions, schedules, experts, state['personalEnded'],
+                                      history_json=canonical(snapshot))
+            self.environment._policy_token = token
+        return self._decision
+
+    def step_index(self, index):
+        if self._decision is None:
+            raise RuntimeError('Construct a current decision before selecting its index')
+        if (not isinstance(index, Integral) or isinstance(index, bool)
+                or not 0 <= index < len(self._decision.actions)):
+            raise ValueError('Select a current unpadded candidate index')
+        if getattr(self.environment, '_policy_token', None) is None:
+            return self.step(self._decision.actions[index])
+        if fingerprint(self.result.observation) != self.history.progress['observation_id']:
+            raise ValueError('Decision snapshot was mutated; no command executed')
+        self.result = self.environment._step(index=int(index))
+        self._decision = None
+        return self.result
 
 
 class NativeLedgerEnv(NativeDecisionEnv):
@@ -98,6 +136,7 @@ class NativeLedgerEnv(NativeDecisionEnv):
         state = ledger['observation']
         # NativeProgressCore validates this exact owned state before committing it.
         self._raw = raw
+        self._policy_token = None
         self._ledger = ledger
         self._state = state
         self._advances += ledger['advances']
@@ -120,12 +159,19 @@ class NativeLedgerEnv(NativeDecisionEnv):
         return self._consume(self.session.reset_decision(seed, uuid4().hex))
 
     def step(self, action):
+        return self._step(action=action)
+
+    def _step(self, *, action=None, index=None):
         if self._closed or self._state is None or self._reason or self._state['personalEnded']:
             raise RuntimeError('Reset required')
         self._previous = self._state
         try:
-            raw = self.session.step_decision(json.dumps(action, allow_nan=False), self.tick_budget,
-                                             self.max_advances - self._advances)
+            if index is None:
+                raw = self.session.step_decision(json.dumps(action, allow_nan=False), self.tick_budget,
+                                                 self.max_advances - self._advances)
+            else:
+                raw = self.session.step_index(self._state['revision'], self._policy_token, index,
+                                              self.tick_budget, self.max_advances - self._advances)
             self._decisions += 1
             result = self._consume(raw)
             self._reward_consumed = False

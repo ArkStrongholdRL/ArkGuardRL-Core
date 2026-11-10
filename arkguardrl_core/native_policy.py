@@ -28,11 +28,15 @@ def metadata(catalog):
         definitions.append(dict(kind=kind, id=identifier, index=indices[kind, identifier],
             ranges=catalog.attack_range({'kind': kind, 'id': identifier}) if kind == 'chess' else (),
             air=bool(bank['entities'][i][air_column]), base=record.get('baseId', identifier),
-            isGolden=bool(record.get('isGolden', False)), upgradeNum=record.get('upgradeNum', 0)))
+            isGolden=bool(record.get('isGolden', False)), upgradeNum=record.get('upgradeNum', 0),
+            domain=dict(placement=catalog.placement_class({'kind': kind, 'id': identifier})
+                        if kind in ('chess', 'token') and record.get('position') in ('MELEE', 'RANGED', 'ALL') else None,
+                        itemType=record.get('itemType'), ownerRange=record.get('ownerRange'),
+                        ownerRangeOutside=record.get('ownerRangeOutside'))))
     compiled = dict(definitions=definitions, band_ids=list(catalog.band_ids),
         entities=[dict(kind=k, id=i, index=n) for (k, i), n in catalog._entity_indices.items()],
         enemies=[dict(id=i, index=n) for i, n in catalog._enemy_indices.items()],
-        config=catalog._data['config'],
+        config=catalog._data['config'], diy=catalog._data.get('diy', {}),
         choices=[dict(rec, kind=k, id=i) for (k, i), rec in catalog._choices.items()])
     cached = json.dumps(compiled, ensure_ascii=False, allow_nan=False,
                         separators=(',', ':')).encode('utf-8')

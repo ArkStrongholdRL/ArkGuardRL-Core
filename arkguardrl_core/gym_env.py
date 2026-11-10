@@ -150,7 +150,9 @@ class ArkGuardEnv(gym.Env):
         try:
             before = self._result.observation
             started = time.perf_counter()
-            self._result = self._session.step(self._decision.actions[int(action)])
+            indexed = getattr(self._session, 'step_index', None)
+            self._result = (indexed(int(action)) if indexed is not None
+                            else self._session.step(self._decision.actions[int(action)]))
             engine_seconds = time.perf_counter()-started
             started = time.perf_counter()
             reward = self._reward.step(before, self._result.observation)

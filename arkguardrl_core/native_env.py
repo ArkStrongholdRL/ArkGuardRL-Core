@@ -81,7 +81,10 @@ class NativeDecisionEnv:
         """
         if self._closed or self._state is None:
             raise RuntimeError("Reset required")
-        return self.session.public_spatial_update(geometry_key, self._state['revision'])
+        incremental = getattr(self.session, 'public_spatial_update', None)
+        if incremental is None:
+            return None, self.session.public_spatial(self._state['revision']), '{}'
+        return incremental(geometry_key, self._state['revision'])
 
     def _encode_numeric(self, state, actions, catalog, history):
         from .native_policy import encode

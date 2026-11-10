@@ -26,6 +26,7 @@ struct Episode {
     session: Session,
     public: Option<Value>,
     ledger: Option<crate::ledger::DecisionLedger>,
+    domain: Option<crate::ledger::PolicyDomain>,
 }
 
 /// Join every worker, including after errors; flatten chunks in slot order.
@@ -93,6 +94,7 @@ pub struct NativeBatch {
     threads: usize,
     episodes: Vec<Option<Episode>>,
     policy: Option<Arc<PolicyEncoder>>,
+    policy_token: u64,
 }
 impl NativeBatch {
     fn length(&self, len: usize, name: &str) -> PyResult<()> {
@@ -107,6 +109,7 @@ impl NativeBatch {
         for episode in self.episodes.iter_mut().flatten() {
             episode.public = None;
             episode.ledger = None;
+            episode.domain = None;
         }
     }
     fn parse_actions(&self, py: Python<'_>, actions: &[String]) -> PyResult<Vec<Value>> {
@@ -121,6 +124,36 @@ impl NativeBatch {
                 .collect::<std::result::Result<Vec<_>, _>>()
         })
         .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+    fn step_decisions(
+        &mut self,
+        py: Python<'_>,
+        actions: &[Option<Value>],
+        tick_budget: usize,
+        max_advances: &[usize],
+    ) -> PyResult<Vec<Option<String>>> {
+        runtime(py.detach(|| {
+            parallel(&mut self.episodes, self.threads, |episode, slot| {
+                let Some(action) = &actions[slot] else {
+                    return Ok(None);
+                };
+                let episode = live(episode)?;
+                episode.public = None;
+                episode.domain = None;
+                let mut ledger = episode
+                    .ledger
+                    .take()
+                    .ok_or("Reset a decision session before stepping")?;
+                let result = ledger.step(
+                    &mut episode.session,
+                    action,
+                    tick_budget,
+                    max_advances[slot],
+                )?;
+                episode.ledger = Some(ledger);
+                Ok(Some(result))
+            })
+        }))
     }
 }
 
@@ -166,6 +199,7 @@ impl NativeBatch {
             threads,
             episodes,
             policy: None,
+            policy_token: 0,
         })
     }
 
@@ -204,6 +238,7 @@ impl NativeBatch {
                                 session,
                                 public: None,
                                 ledger: None,
+                                domain: None,
                             }),
                             status,
                         ))
@@ -282,27 +317,110 @@ impl NativeBatch {
             })
             .collect::<std::result::Result<_, _>>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        runtime(py.detach(|| {
-            parallel(&mut self.episodes, self.threads, |episode, slot| {
-                let Some(action) = &actions[slot] else {
+        self.step_decisions(py, &actions, tick_budget, &max_advances)
+    }
+
+    fn step_index_all(
+        &mut self,
+        py: Python<'_>,
+        revisions: Vec<u64>,
+        tokens: Vec<u64>,
+        indices: Vec<Option<usize>>,
+        tick_budget: usize,
+        max_advances: Vec<usize>,
+    ) -> PyResult<Vec<Option<String>>> {
+        self.length(revisions.len(), "Revisions")?;
+        self.length(tokens.len(), "Candidate tokens")?;
+        self.length(indices.len(), "Indices")?;
+        self.length(max_advances.len(), "Max advances")?;
+        if !(1..=MAX_TICK_BUDGET).contains(&tick_budget) {
+            return Err(PyValueError::new_err("Invalid decision tick budget"));
+        }
+        // Validate the whole selection vector before any slot advances.
+        let actions = self
+            .episodes
+            .iter()
+            .enumerate()
+            .map(|(slot, episode)| {
+                let Some(index) = indices[slot] else {
                     return Ok(None);
                 };
-                let episode = live(episode)?;
-                episode.public = None;
-                let mut ledger = episode
-                    .ledger
-                    .take()
-                    .ok_or("Reset a decision session before stepping")?;
-                let result = ledger.step(
-                    &mut episode.session,
-                    action,
-                    tick_budget,
-                    max_advances[slot],
-                )?;
-                episode.ledger = Some(ledger);
-                Ok(Some(result))
+                let domain = episode
+                    .as_ref()
+                    .and_then(|e| e.domain.as_ref())
+                    .ok_or_else(|| {
+                        PyValueError::new_err("Build a native candidate domain before stepping")
+                    })?;
+                domain
+                    .selected(revisions[slot], tokens[slot], index)
+                    .map(Some)
+                    .map_err(PyValueError::new_err)
             })
-        }))
+            .collect::<PyResult<Vec<_>>>()?;
+        self.step_decisions(py, &actions, tick_budget, &max_advances)
+    }
+
+    fn build_current_policy_all<'py>(
+        &mut self,
+        py: Python<'py>,
+        revisions: Vec<u64>,
+    ) -> PyResult<(Vec<u64>, Vec<String>, PolicyBytes<'py>)> {
+        self.length(revisions.len(), "Revisions")?;
+        let policy = self
+            .policy
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Configure policy before numeric encoding"))?;
+        let token = self.policy_token;
+        self.policy_token = token
+            .checked_add(self.episodes.len() as u64)
+            .ok_or_else(|| PyRuntimeError::new_err("Candidate token overflow"))?;
+        let results = py.detach(|| {
+            parallel(&mut self.episodes, self.threads, |episode, slot| {
+                let episode = live(episode)?;
+                let ledger = episode
+                    .ledger
+                    .as_ref()
+                    .ok_or("Reset a decision session before encoding")?;
+                if ledger.state["revision"].as_u64() != Some(revisions[slot]) {
+                    return Err("Numeric observation revision mismatch".into());
+                }
+                episode.domain = None;
+                let actions = policy.current_candidates(
+                    &ledger.state,
+                    &ledger.policy_history,
+                    &ledger.blocked,
+                )?;
+                let encoded = policy.encode(&ledger.state, &ledger.policy_history, &actions)?;
+                let json = serde_json::to_string(&actions).map_err(|e| e.to_string())?;
+                let token = token + slot as u64 + 1;
+                episode.domain = Some(crate::ledger::PolicyDomain {
+                    revision: revisions[slot],
+                    token,
+                    actions,
+                });
+                Ok((
+                    token,
+                    json,
+                    (
+                        f32_bytes(&encoded.observation),
+                        f32_bytes(&encoded.candidates),
+                        i64_bytes(&encoded.schedules),
+                        i64_bytes(&encoded.experts),
+                    ),
+                ))
+            })
+        });
+        let mut tokens = Vec::with_capacity(results.len());
+        let mut actions = Vec::with_capacity(results.len());
+        let mut buffers = Vec::with_capacity(results.len());
+        for (slot, result) in results.into_iter().enumerate() {
+            let (token, json, wire) =
+                result.map_err(|e| PyValueError::new_err(format!("Slot {slot}: {e}")))?;
+            tokens.push(token);
+            actions.push(json);
+            buffers.push(Ok(wire));
+        }
+        Ok((tokens, actions, policy_bytes(py, buffers)?))
     }
 
     fn build_ledger_policy_all<'py>(
@@ -419,6 +537,7 @@ impl NativeBatch {
                 if let Some(episode) = episode {
                     episode.public = None;
                     episode.ledger = None;
+                    episode.domain = None;
                 }
             }
         }
@@ -588,6 +707,9 @@ impl NativeBatch {
             })
             .map_err(PyValueError::new_err)?;
         self.policy = Some(Arc::new(encoder));
+        for episode in self.episodes.iter_mut().flatten() {
+            episode.domain = None;
+        }
         Ok(())
     }
 

@@ -3,6 +3,9 @@
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+#[path = "candidate_inputs.rs"]
+mod candidate_inputs;
+
 type Result<T> = std::result::Result<T, String>;
 const MAX_ENTITIES: usize = 128;
 const MAX_ENEMIES: usize = 64;
@@ -259,6 +262,7 @@ struct Definition {
     base: String,
     golden: bool,
     upgrade: f64,
+    domain: Value,
 }
 
 pub struct Encoded {
@@ -275,6 +279,7 @@ pub struct PolicyEncoder {
     bands: Vec<String>,
     choices: HashMap<(String, String), Value>,
     config: Value,
+    diy: Value,
 }
 
 struct Entity {
@@ -362,6 +367,7 @@ impl PolicyEncoder {
                 return Err("Static range capacity exceeded".into());
             }
             let def = Definition {
+                domain: get(row, "domain").clone(),
                 index: i,
                 ranges,
                 air: field(row, "air")?
@@ -444,6 +450,10 @@ impl PolicyEncoder {
             bands,
             choices,
             config,
+            diy: metadata
+                .get("diy")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
         })
     }
 

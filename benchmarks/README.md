@@ -2,7 +2,7 @@
 
 ## 多环境并行
 
-Gym `AsyncVectorEnv` 和 Rust slots 均可继续用于向量化实验。slots 支持 1–64 个环境、显式局部重置及部分槽位推进，输出数组独立持有内存。战斗、公开账本、奖励、候选枚举与过滤、数值编码在 Rust 中并行执行，直接复用单环境账本和候选模块。Python 负责公开参数准备及独立输出数组的装配。
+Gym `AsyncVectorEnv` 和 Rust slots 均可继续用于向量化实验。slots 支持 1–64 个环境、显式局部重置及部分槽位推进，输出数组独立持有内存。战斗、公开账本、奖励、公开候选参数准备、枚举与过滤、数值编码在 Rust 中并行执行，直接复用单环境账本和候选模块。Python 负责快照绑定检查及独立输出数组的装配。
 
 ```sh
 PYO3_PYTHON="$(command -v python)" cargo build --release --locked --manifest-path benchmarks/native_slots/Cargo.toml
@@ -54,6 +54,16 @@ slots 的决策状态副本改为从当前原始账本报文重新解析，每�
 陈核心完整对局、5 轮交替 A/B，双方均包含完整空间张量化。单环境吞吐为 171.3 → 341.9 决策/秒（2.00 倍），空间读取与编码平均 3.410 → 0.470 ms；四环境四线程为 188.3 → 517.3 决策/秒（2.75 倍），空间部分平均 3.926 → 0.466 ms/决策。包含冷缓存，未计模型前向或训练。这组负载增加了空间张量化，前文较早的吞吐仅包含空间 JSON 读取。[单环境 A/B](local/spatial-tensor-cache-ab-20261110.json) [四环境 A/B](local/spatial-tensor-cache-batch-ab-20261110.json) [真实记录](local/spatial-update-records-20261110.json)
 
 敌人更新将连续状态标记查询合并为一次单位／属性访问，战术调度的 Ines 类型检查改为借用定义。63 份真实记录、9,262 个决策的新旧观测、内部诊断、动作回执及空间报文逐字节相同，四核心 384 个槽位快照对照通过。陈核心 seed 42/99、完整购买部署对局、7 轮交替 A/B，中位吞吐为纯 native 619.7 → 628.0（+1.3%）、Gym 417.5 → 425.4（+1.9%）决策/秒。该组测量包含 reset，未计空间张量化或模型前向。[本机 A/B](local/grouped-enemy-flags-ab-20261110.json) [真实记录](local/grouped-enemy-flags-records-20261110.json)
+
+### 原生候选准备与索引执行
+
+`NativeSolo.build_current_policy(revision)` 返回 `(token, actions_json, buffers)`，`step_index(revision, token, index, tick_budget, max_advances)` 执行该候选。批量对应 `build_current_policy_all(revisions)` 和 `step_index_all(revisions, tokens, indices, tick_budget, max_advances)`，暂停槽位的索引为 `None`。token 限定在所属原生实例内使用，跨 reset 单调递增；重新构造候选会替换旧 token，动作执行后候选缓存失效。每槽只保留当前一份、最多 16,384 个候选，清理在 GIL 外完成。批量索引在推进前整组验证。动作字典入口与带参数的既有编码入口继续供记录回放和兼容调用。
+
+Gym 和 slots 已接入此路径。研究侧 `open_session` 改为按 Python／原生 API 能力选择 Rust 账本，在线采集使用索引执行；旧构建回退至可用入口。仅有完整空间投影的原生构建也能通过完整报文适配空间缓存。这两处研究接线在 ArkGuardRL 工作树。
+
+63 份记录共 9,262 次动作，新旧执行报文逐字节一致。原特征接口可编码的 9,183 个决策，候选顺序与四类数值 buffer 一致，其中 8,979 次使用原生索引执行。另 204 次记录动作位于原有候选域外，通过字典入口回放；一份自选记录的 79 个状态仍受原有自选特征定义缺失限制，两路均无法编码。四核心 384 个槽位快照，以及旧 token、越界索引、整批非法选择、局部 reset／step、错误恢复与旧构建兼容检查通过。
+
+同负载交替 A/B，Gym 420.7 → 437.2 决策/秒（+3.9%，不含空间张量化），四环境四线程 slots 555.9 → 585.7（+5.4%，含空间 JSON 读取）。实际研究采集入口包含完整空间张量化，从 293.0 → 338.5（+15.5%）；该项同时计入原生账本接线的收益。均为完整购买部署对局，未计模型前向或训练。[Gym A/B](local/native-domain-gym-ab-20261110.json) [slots A/B](local/native-domain-slots-ab-20261110.json) [采集入口 A/B](local/native-domain-research-ab-20261110.json) [记录对照](local/native-domain-records-20261110.json)
 
 ## 原生战斗回放
 
