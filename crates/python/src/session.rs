@@ -359,6 +359,30 @@ impl NativeSolo {
         }
         Ok(spatial)
     }
+    #[pyo3(signature = (geometry_key=None, expected_revision=None))]
+    fn public_spatial_update(
+        &mut self,
+        py: Python<'_>,
+        geometry_key: Option<&str>,
+        expected_revision: Option<u64>,
+    ) -> PyResult<(String, Option<String>, String)> {
+        if geometry_key.is_some_and(|key| key.len() > 8 << 20) {
+            return Err(PyValueError::new_err(
+                "Public spatial key exceeds byte limit",
+            ));
+        }
+        let live = self.live()?;
+        py.detach(|| {
+            let status = live.status().map_err(PyRuntimeError::new_err)?;
+            if expected_revision
+                .is_some_and(|expected| status["revision"].as_u64() != Some(expected))
+            {
+                return Err(PyValueError::new_err("Public spatial revision mismatch"));
+            }
+            live.public_spatial_update(geometry_key)
+                .map_err(PyRuntimeError::new_err)
+        })
+    }
     fn replay_frame(&mut self, py: Python<'_>) -> PyResult<String> {
         let live = self.live()?;
         py.detach(|| live.replay_frame())

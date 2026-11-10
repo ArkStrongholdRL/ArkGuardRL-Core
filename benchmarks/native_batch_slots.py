@@ -240,6 +240,12 @@ class NativeSlotBatch:
             raise ValueError('Public spatial revision mismatch')
         return spatial
 
+    def public_spatial_update(self, geometry_keys=None):
+        if self._closed or self._faulted or any(s.state is None for s in self.slots):
+            raise RuntimeError('Reset a live batch before reading public spatial information')
+        keys = [None] * self.num_envs if geometry_keys is None else list(geometry_keys)
+        return self.native.public_spatial_updates([s.state['revision'] for s in self.slots], keys)
+
     def close(self):
         self.native.close()
         self._closed = True

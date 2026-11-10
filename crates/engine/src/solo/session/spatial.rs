@@ -124,6 +124,7 @@ fn route(raw: &Value, grid: &mut Grid, remaining: &mut usize) -> Result<Value, S
 pub(super) struct Cache {
     map: Option<Box<MapGeometry>>,
     routes: Option<RouteGeometry>,
+    key: String,
 }
 
 #[derive(PartialEq)]
@@ -293,6 +294,44 @@ impl Session {
     }
 
     pub fn public_spatial_json(&self) -> Result<String, String> {
+        self.project_spatial(|cache, header, effects, tail| {
+            join_fields(&[
+                header,
+                &cache.map.as_ref().unwrap().fields,
+                effects,
+                &cache.routes.as_ref().unwrap().fields,
+                tail,
+            ])
+        })
+    }
+
+    /// The key identifies public geometry within the catalog. Only resend its
+    /// static fields when the consumer does not already hold this key.
+    pub fn public_spatial_update(
+        &self,
+        known_geometry: Option<&str>,
+    ) -> Result<(String, Option<String>, String), String> {
+        self.project_spatial(|cache, header, effects, tail| {
+            let geometry = if known_geometry == Some(cache.key.as_str()) {
+                None
+            } else {
+                Some(join_fields(&[
+                    &cache.map.as_ref().unwrap().fields,
+                    &cache.routes.as_ref().unwrap().fields,
+                ])?)
+            };
+            Ok((
+                cache.key.clone(),
+                geometry,
+                join_fields(&[header, effects, tail])?,
+            ))
+        })
+    }
+
+    fn project_spatial<T>(
+        &self,
+        encode: impl FnOnce(&Cache, &str, &str, &str) -> Result<T, String>,
+    ) -> Result<T, String> {
         self.healthy()?;
         let phase = match self.run.phase() {
             Phase::Prep => "PREP",
@@ -361,6 +400,17 @@ impl Session {
             if map.fields.len() + routes.fields.len() > MAX_BYTES {
                 return Err("Public spatial byte capacity exceeded".into());
             }
+            let geometry_key = json!([
+                &map.key.stage_id,
+                map.key.boss,
+                &map.key.overrides,
+                &templates
+            ])
+            .to_string();
+            if geometry_key.len() > MAX_BYTES {
+                return Err("Public spatial key exceeds byte limit".into());
+            }
+            cache.key = geometry_key;
             cache.routes = Some(routes);
         }
         let map = cache.map.as_ref().unwrap();
@@ -390,22 +440,31 @@ impl Session {
         let effects = json!({"mapEffects":run.map.effects}).to_string();
         let tail =
             json!({"previewRoutes":associations,"pathBasis":"public-map-default"}).to_string();
-        // All fragments are nonempty JSON objects serialized by serde_json.
-        // Splice their members while preserving the existing packet byte order.
-        let capacity =
-            header.len() + map.fields.len() + effects.len() + routes.fields.len() + tail.len() - 4;
-        if capacity > MAX_BYTES {
+        if header.len() + map.fields.len() + effects.len() + routes.fields.len() + tail.len() - 4
+            > MAX_BYTES
+        {
             return Err("Public spatial byte capacity exceeded".into());
         }
-        let mut out = String::with_capacity(capacity);
-        out.push_str(&header[..header.len() - 1]);
-        for fields in [&map.fields, &effects, &routes.fields, &tail] {
-            out.push(',');
-            out.push_str(&fields[1..fields.len() - 1]);
-        }
-        out.push('}');
-        Ok(out)
+        encode(&cache, &header, &effects, &tail)
     }
+}
+
+fn join_fields(fields: &[&str]) -> Result<String, String> {
+    // Each fragment is a nonempty JSON object serialized by serde_json.
+    let capacity = fields.iter().map(|s| s.len()).sum::<usize>() - fields.len() + 1;
+    if capacity > MAX_BYTES {
+        return Err("Public spatial byte capacity exceeded".into());
+    }
+    let mut out = String::with_capacity(capacity);
+    out.push('{');
+    for (index, fields) in fields.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&fields[1..fields.len() - 1]);
+    }
+    out.push('}');
+    Ok(out)
 }
 
 #[cfg(test)]

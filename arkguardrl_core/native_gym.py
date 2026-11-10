@@ -57,6 +57,11 @@ class ArkGuardNativeEnv(ArkGuardEnv):
             raise gym.error.ResetNeeded("Reset before reading public spatial information")
         return self._session.environment.public_spatial()
 
+    def public_spatial_update(self, geometry_key=None):
+        if self._session is None:
+            raise gym.error.ResetNeeded("Reset before reading public spatial information")
+        return self._session.environment.public_spatial_update(geometry_key)
+
     def _make_reward(self):
         if self.native_ledger:
             from .native_ledger import NativeLedgerReward

@@ -43,6 +43,16 @@ slots 接入 Rust 账本后，陈核心 seed 42–45、四环境完整购买部�
 
 slots 的决策状态副本改为从当前原始账本报文重新解析，每槽只保留一份当前报文，副本与运行状态独立持有内存。同一四环境完整对局负载、逐决策读取空间信息的 5 轮交替 A/B，中位吞吐为 1 线程 299.3 → 305.2（+2.0%）、4 线程 522.8 → 535.6（+2.5%）决策/秒，未接入模型。384 个槽位快照对照及独立快照修改检查通过。另试过让调用线程执行一组任务以减少线程创建，1／4 线程均未显示收益，已撤回。[快照 A/B](local/slots-snapshot-copy-ab-20261110.json) [调度试验](local/slots-caller-worker-ab-20261110.json)
 
+### 增量空间读取与张量缓存
+
+`env.unwrapped.public_spatial_update(key=None)` 返回 `(key, geometry_json, dynamic_json)`。几何相同时 `geometry_json` 为 `None`，动态报文始终包含 schema、revision、回合、阶段、地图机变、当前预览关联及路径来源。key 依据公开地图、有效装置开关及当前模板生成，限定在同一不可变 catalog 内复用。原生 `NativeSolo` 还接受 `expected_revision`。slots 外观接受每槽 key 列表，底层为 `public_spatial_updates(revisions, keys)`，非决策槽位返回 `None`。现有完整空间报文保持原格式。
+
+研究侧 `SpatialCache.read(environment, decision.state)` 持有一份当前几何及其张量，地图／模板变化时重建。批量入口用 `SpatialCache.update(packet, state)` 消费每槽增量包。候选空间行从 36 个目标格的预编码表批量索引，预览关联及 summary 的预览计数逐次更新。返回张量独立持有内存，布局与数值保持一致。BC 和在线采集入口已接线，研究侧改动在 ArkGuardRL 工作树。
+
+63 份真实记录、9,262 个决策中，完整报文保持逐字节一致，增量字段合并后与完整报文一致，8,433 次复用几何、829 次重建。四核心 137 个决策的全部空间张量与改动前逐字节一致，另覆盖四核心 72 个槽位快照、1／4 线程及局部 reset／step。9 项 Rust 测试通过。
+
+陈核心完整对局、5 轮交替 A/B，双方均包含完整空间张量化。单环境吞吐为 171.3 → 341.9 决策/秒（2.00 倍），空间读取与编码平均 3.410 → 0.470 ms；四环境四线程为 188.3 → 517.3 决策/秒（2.75 倍），空间部分平均 3.926 → 0.466 ms/决策。包含冷缓存，未计模型前向或训练。这组负载增加了空间张量化，前文较早的吞吐仅包含空间 JSON 读取。[单环境 A/B](local/spatial-tensor-cache-ab-20261110.json) [四环境 A/B](local/spatial-tensor-cache-batch-ab-20261110.json) [真实记录](local/spatial-update-records-20261110.json)
+
 ## 原生战斗回放
 
 按需导出战斗采样帧和可独立打开的 HTML，默认每 3 个逻辑帧采样一次。JSONL 包含动作、公开状态、地图、单位位置与血量、技能开启状态、弹道和终局结果。最大输出默认 128 MiB，达到上限会报告错误。

@@ -510,6 +510,36 @@ impl NativeBatch {
         }))
     }
 
+    fn public_spatial_updates(
+        &mut self,
+        py: Python<'_>,
+        revisions: Vec<u64>,
+        keys: Vec<Option<String>>,
+    ) -> PyResult<Vec<Option<(String, Option<String>, String)>>> {
+        self.length(revisions.len(), "Revisions")?;
+        self.length(keys.len(), "Geometry keys")?;
+        if keys.iter().flatten().any(|key| key.len() > 8 << 20) {
+            return Err(PyValueError::new_err(
+                "Public spatial key exceeds byte limit",
+            ));
+        }
+        runtime(py.detach(|| {
+            parallel(&mut self.episodes, self.threads, |episode, slot| {
+                let session = &live(episode)?.session;
+                let status = session.status()?;
+                if status["revision"].as_u64() != Some(revisions[slot]) {
+                    return Err("Public spatial revision mismatch".into());
+                }
+                if status["decisionRequired"] != true {
+                    return Ok(None);
+                }
+                session
+                    .public_spatial_update(keys[slot].as_deref())
+                    .map(Some)
+            })
+        }))
+    }
+
     fn observe_all(&mut self, py: Python<'_>) -> PyResult<Vec<String>> {
         let results = py.detach(|| {
             parallel(&mut self.episodes, self.threads, |episode, _| {

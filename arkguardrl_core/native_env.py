@@ -73,6 +73,16 @@ class NativeDecisionEnv:
             raise RuntimeError("Reset required")
         return json.loads(self.session.public_spatial(self._state['revision']))
 
+    def public_spatial_update(self, geometry_key=None):
+        """Return (key, optional geometry JSON, current dynamic JSON).
+
+        Reuse keys only with the same immutable catalog. The consumer owns its
+        decoded geometry and must validate each dynamic packet's revision.
+        """
+        if self._closed or self._state is None:
+            raise RuntimeError("Reset required")
+        return self.session.public_spatial_update(geometry_key, self._state['revision'])
+
     def _encode_numeric(self, state, actions, catalog, history):
         from .native_policy import encode
         if catalog is not self._policy_catalog or state != self._state:
