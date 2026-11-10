@@ -14,6 +14,27 @@ PYTHONPATH=.:benchmarks python benchmarks/bench_slots.py \
 
 上述动态库名适用于 macOS，Linux 使用 `.so`。Windows 构建会一并产出三个 `.pyd` 模块。
 
+## 公开空间输入
+
+在 PREP／SP_DRAFT 决策边界调用 `env.unwrapped.public_spatial()`。原生会话支持 `session.public_spatial(expected_revision=None)`，返回 JSON 字符串。slots 外观的 `batch.public_spatial()` 返回按槽位排序的字典列表，非决策槽位为 `None`，底层批量入口为 `public_spatial_all()`。
+
+`arkguardrl/public-spatial/v1` 包含当前 `revision`、回合、阶段、地图、399 个地格、公开装置及地图机变、当前公开模板的路线集合，以及按 `own.nextEnemies` 原顺序排列的 `previewRoutes`。每项 `routeCandidates` 引用输出 `routes` 的下标，保留可能关联的完整集合。该关联由入口、飞行标记和公开 Boss 起点筛选。
+
+```python
+obs, info = env.reset(seed=42)
+spatial = env.unwrapped.public_spatial()
+for route in spatial['routes']:
+    print(route['motion'], route['start'], route['end'], route['checkpoints'])
+```
+
+所有坐标使用地图原始 `[row, col]`。`fieldBounds` 为 `[r0, c0, r1, c1]`，端点均包含。地图坐标加 `boardOffset` 得到公开部署坐标，普通场为 `[0, 0]`，单人 Boss 左场为 `[7, 0]`。399 个地格保留完整静态地图，`groundPassable`／`flyPassable` 表示当前场地范围内的通行性，`elevated` 标识已启用的高台／土堆装置。
+
+每条路线保留类型化检查点及分段几何。`routeSet` 区分基础路线 `base` 与当前模板中供机制使用的额外路线 `extra`，预览关联仅指向基础路线。额外路线中的 `E_NUM` 保留为尚未具体化的模板占位，分段列表为空。`segments[].groundCells` 是在公开地图及当前装置配置上计算的默认地面路径，`null` 表示飞行直线段或地图上没有地面通路。飞行段由 `from`／`to` 定义。`repeatFrom` 标识巡逻回到的检查点，末段为回环连接。该接口提供基准空间事实，单位能力、阻挡和战斗中装置损坏可改变实际移动。
+
+模板只依据当前模式、回合及敌人预览中已显示的 Boss 身份选择。接口读取地图静态数据和公开预览，不读取生成后的出怪路线分配、未来回合或战斗单位轨迹。读取不推进会话，不更改既有观测和候选布局。
+
+接口上限为 64 条路线、每条 256 个检查点、总计 65,536 个地面路径格、399 个装置及 8 MiB JSON。超限、revision 不匹配或非决策阶段调用会报错。
+
 ## 原生战斗回放
 
 按需导出战斗采样帧和可独立打开的 HTML，默认每 3 个逻辑帧采样一次。JSONL 包含动作、公开状态、地图、单位位置与血量、技能开启状态、弹道和终局结果。最大输出默认 128 MiB，达到上限会报告错误。

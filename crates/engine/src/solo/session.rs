@@ -6,6 +6,7 @@ use crate::data::Catalog;
 use serde_json::{json, Value};
 use std::sync::Arc;
 mod setup;
+mod spatial;
 mod view;
 
 /// Bounded work per call; callers can resume the same battle with advance().

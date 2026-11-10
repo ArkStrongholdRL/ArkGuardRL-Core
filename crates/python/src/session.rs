@@ -338,6 +338,22 @@ impl NativeSolo {
             .map(|v| v.to_string())
             .map_err(PyRuntimeError::new_err)
     }
+    #[pyo3(signature = (expected_revision=None))]
+    fn public_spatial(
+        &mut self,
+        py: Python<'_>,
+        expected_revision: Option<u64>,
+    ) -> PyResult<String> {
+        let live = self.live()?;
+        let spatial = py
+            .detach(|| live.public_spatial())
+            .map_err(PyRuntimeError::new_err)?;
+        if expected_revision.is_some_and(|revision| spatial["revision"].as_u64() != Some(revision))
+        {
+            return Err(PyValueError::new_err("Public spatial revision mismatch"));
+        }
+        Ok(spatial.to_string())
+    }
     fn replay_frame(&mut self, py: Python<'_>) -> PyResult<String> {
         let live = self.live()?;
         py.detach(|| live.replay_frame())

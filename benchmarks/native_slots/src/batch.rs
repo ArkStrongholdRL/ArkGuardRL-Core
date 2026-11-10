@@ -353,6 +353,20 @@ impl NativeBatch {
         Ok((immediate, final_states, receipts, counts))
     }
 
+    fn public_spatial_all(&mut self, py: Python<'_>) -> PyResult<Vec<Option<String>>> {
+        runtime(py.detach(|| {
+            parallel(&mut self.episodes, self.threads, |episode, _| {
+                let session = &live(episode)?.session;
+                if session.status()?["decisionRequired"] != true {
+                    return Ok(None);
+                }
+                session
+                    .public_spatial()
+                    .map(|spatial| Some(spatial.to_string()))
+            })
+        }))
+    }
+
     fn observe_all(&mut self, py: Python<'_>) -> PyResult<Vec<String>> {
         let results = py.detach(|| {
             parallel(&mut self.episodes, self.threads, |episode, _| {

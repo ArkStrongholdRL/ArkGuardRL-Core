@@ -237,6 +237,16 @@ class NativeSlotBatch:
             self.native.close()
             raise
 
+    def public_spatial(self):
+        if self._closed or self._faulted or any(s.state is None for s in self.slots):
+            raise RuntimeError('Reset a live batch before reading public spatial information')
+        spatial = [json.loads(raw) if raw is not None else None
+                   for raw in self.native.public_spatial_all()]
+        if any(packet is not None and packet['revision'] != slot.state['revision']
+               for packet, slot in zip(spatial, self.slots)):
+            raise ValueError('Public spatial revision mismatch')
+        return spatial
+
     def close(self):
         self.native.close()
         self._closed = True

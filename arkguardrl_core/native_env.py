@@ -67,6 +67,12 @@ class NativeDecisionEnv:
     def __enter__(self):
         return self
 
+    def public_spatial(self):
+        """Public map/template geometry bound to the current decision revision."""
+        if self._closed or self._state is None:
+            raise RuntimeError("Reset required")
+        return json.loads(self.session.public_spatial(self._state['revision']))
+
     def _encode_numeric(self, state, actions, catalog, history):
         from .native_policy import encode
         if catalog is not self._policy_catalog or state != self._state:
