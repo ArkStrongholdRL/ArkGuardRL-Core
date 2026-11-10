@@ -94,6 +94,7 @@ class NativeSlotBatch:
         return mask
 
     def _adopt(self, slot, raw):
+        slot.raw = raw
         slot._ledger = json.loads(raw)
         slot.state = slot._ledger['observation']
 
@@ -107,7 +108,8 @@ class NativeSlotBatch:
             # Python prepares the small public parameter domain. Enumeration,
             # history filtering and all numerical projection run together in Rust.
             slot.decision = build_decision(slot.state, self.catalog, slot.history,
-                                           candidate_encoder=prepare)
+                                           candidate_encoder=prepare,
+                                           state_copy=lambda _: json.loads(slot.raw)['observation'])
         else:
             slot.decision = None
         slot.info = dict(candidate_count=0,
