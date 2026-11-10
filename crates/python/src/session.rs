@@ -345,14 +345,19 @@ impl NativeSolo {
         expected_revision: Option<u64>,
     ) -> PyResult<String> {
         let live = self.live()?;
-        let spatial = py
-            .detach(|| live.public_spatial())
+        let (spatial, revision) = py
+            .detach(|| {
+                let spatial = live.public_spatial_json()?;
+                let revision = live.status()?["revision"]
+                    .as_u64()
+                    .ok_or("Missing session revision")?;
+                Ok::<_, String>((spatial, revision))
+            })
             .map_err(PyRuntimeError::new_err)?;
-        if expected_revision.is_some_and(|revision| spatial["revision"].as_u64() != Some(revision))
-        {
+        if expected_revision.is_some_and(|expected| expected != revision) {
             return Err(PyValueError::new_err("Public spatial revision mismatch"));
         }
-        Ok(spatial.to_string())
+        Ok(spatial)
     }
     fn replay_frame(&mut self, py: Python<'_>) -> PyResult<String> {
         let live = self.live()?;

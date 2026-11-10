@@ -10,6 +10,7 @@ use crate::deterministic::math::round_half_even;
 const MAX_ROUTES: usize = 64;
 const MAX_CHECKPOINTS: usize = 256;
 const MAX_PATH_CELLS: usize = 65_536;
+const MAX_BYTES: usize = 8 << 20;
 
 fn position(value: &Value) -> Result<[f64; 2], String> {
     let coordinates = value.as_array().ok_or("Invalid public spatial position")?;
@@ -119,24 +120,43 @@ fn route(raw: &Value, grid: &mut Grid, remaining: &mut usize) -> Result<Value, S
     Ok(route)
 }
 
-impl Session {
-    /// An additive input interface. It never reads generated route assignments,
-    /// combat units, future plans or private random state.
-    pub fn public_spatial(&self) -> Result<Value, String> {
-        self.healthy()?;
-        if !matches!(self.run.phase(), Phase::Prep | Phase::Draft) {
-            return Err("Public spatial projection requires a decision boundary".into());
-        }
-        let state = self.observation()?;
-        let run = &self.run;
-        let mode = &run
-            .data
-            .table("config")
-            .ok_or("Missing public mode configuration")?["modes"]["mode_single_abyss"];
-        let round = &mode["rounds"][state["round"].to_string()];
-        let boss = round["isBoss"] == true;
+#[derive(Default)]
+pub(super) struct Cache {
+    map: Option<Box<MapGeometry>>,
+    routes: Option<RouteGeometry>,
+}
+
+#[derive(PartialEq)]
+struct MapKey {
+    stage_id: Value,
+    boss: bool,
+    overrides: std::collections::BTreeMap<String, bool>,
+}
+
+struct MapGeometry {
+    key: MapKey,
+    grid: Grid,
+    fields: String,
+}
+
+struct RouteHint {
+    base: bool,
+    flying: bool,
+    gate: Value,
+    start: Value,
+}
+
+struct RouteGeometry {
+    templates: Vec<String>,
+    fields: String,
+    hints: Vec<RouteHint>,
+}
+
+impl MapGeometry {
+    fn new(stage: &Value, key: MapKey) -> Result<Self, String> {
+        let boss = key.boss;
         let bounds = if boss { Rect::BOSS } else { Rect::NORMAL };
-        let mut stage = run.stage.clone();
+        let mut stage = stage.clone();
         if stage["legend"].is_null() {
             stage["legend"] = stage["tiles"].clone();
         }
@@ -144,7 +164,6 @@ impl Session {
             stage["rows"] = stage["grid"].clone();
         }
         let mut grid = Grid::new(&stage, bounds).map_err(str::to_string)?;
-        let map = run.map.clone().resolved(&run.data)?;
         let raw_devices = stage["devices"]
             .as_array()
             .map(Vec::as_slice)
@@ -156,7 +175,7 @@ impl Session {
         for device in raw_devices {
             let alias = device["alias"].as_str().or(device["raw"]["alias"].as_str());
             let active = alias
-                .and_then(|key| map.device_overrides.get(key))
+                .and_then(|alias| key.overrides.get(alias))
                 .copied()
                 .unwrap_or_else(|| {
                     device["active"]
@@ -200,35 +219,29 @@ impl Session {
                 "obstacle":grid.obstacle(at),"elevated":grid.obstacle(at) & BLOCK != 0,"groundPassable":grid.ground_passable(at,false),
                 "flyPassable":grid.fly_passable(at)}));
         }
-        let preview = state["own"]["nextEnemies"]
-            .as_array()
-            .ok_or("Missing public enemy preview")?;
-        let mut templates = Vec::new();
-        if let Some(template) = round["template"].as_str() {
-            templates.push(template);
-        } else {
-            let bosses = run
-                .data
-                .table("bosses")
-                .ok_or("Missing public boss definitions")?;
-            for (id, template) in round["bossTemplates"].as_object().into_iter().flatten() {
-                if preview.iter().any(|enemy| {
-                    enemy["boss"] == true && enemy["enemyKey"] == bosses[id]["enemyKey"]
-                }) {
-                    templates.push(template.as_str().ok_or("Invalid public route template")?);
-                }
-            }
+        let fields = json!({"stageId":&key.stage_id,
+            "field":if boss {"bossL"} else {"normal"},"coordinates":"stage",
+            "boardOffset":if boss {[7,0]} else {[0,0]},
+            "fieldBounds":[bounds.r0,bounds.c0,bounds.r1,bounds.c1],
+            "tiles":tiles,"devices":devices})
+        .to_string();
+        if fields.len() > MAX_BYTES {
+            return Err("Public spatial byte capacity exceeded".into());
         }
-        if templates.is_empty() {
-            return Err("Current route template is not publicly identifiable".into());
-        }
-        let waves = run
-            .data
-            .table("waves")
-            .ok_or("Missing public route templates")?;
+        Ok(Self { key, grid, fields })
+    }
+}
+
+impl RouteGeometry {
+    fn new(
+        templates: &[String],
+        waves: &Value,
+        boss: bool,
+        grid: &mut Grid,
+    ) -> Result<Self, String> {
         let mut routes = Vec::new();
         let mut remaining = MAX_PATH_CELLS;
-        for template in &templates {
+        for template in templates {
             for (set, key) in [("base", "routes"), ("extra", "extraRoutes")] {
                 let raw = waves[template][key]
                     .as_array()
@@ -238,7 +251,7 @@ impl Session {
                     return Err("Public spatial route capacity exceeded".into());
                 }
                 for (index, raw) in raw.iter().enumerate() {
-                    let mut geometry = route(raw, &mut grid, &mut remaining)?;
+                    let mut geometry = route(raw, grid, &mut remaining)?;
                     geometry["templateId"] = json!(template);
                     geometry["routeSet"] = json!(set);
                     geometry["templateRouteIndex"] = json!(index);
@@ -254,36 +267,144 @@ impl Session {
                 }
             }
         }
+        let hints = routes
+            .iter()
+            .map(|route| RouteHint {
+                base: route["routeSet"] == "base",
+                flying: route["motion"] == "FLY",
+                gate: route["gate"].clone(),
+                start: route["start"].clone(),
+            })
+            .collect();
+        let fields = json!({"templateIds":templates,"routes":routes}).to_string();
+        Ok(Self {
+            templates: templates.to_vec(),
+            fields,
+            hints,
+        })
+    }
+}
+
+impl Session {
+    /// Owned compatibility projection. The Python transport uses the serialized
+    /// entry point to avoid rebuilding and reserializing the static geometry.
+    pub fn public_spatial(&self) -> Result<Value, String> {
+        serde_json::from_str(&self.public_spatial_json()?).map_err(|error| error.to_string())
+    }
+
+    pub fn public_spatial_json(&self) -> Result<String, String> {
+        self.healthy()?;
+        let phase = match self.run.phase() {
+            Phase::Prep => "PREP",
+            Phase::Draft => "SP_DRAFT",
+            _ => return Err("Public spatial projection requires a decision boundary".into()),
+        };
+        let run = &self.run;
+        let round_number = run.snapshot()?.round;
+        let preview = self.current_preview()?;
+        let mode = &run
+            .data
+            .table("config")
+            .ok_or("Missing public mode configuration")?["modes"]["mode_single_abyss"];
+        let round = &mode["rounds"][round_number.to_string()];
+        let boss = round["isBoss"] == true;
+        let mut templates = Vec::new();
+        if let Some(template) = round["template"].as_str() {
+            templates.push(template.to_owned());
+        } else {
+            let bosses = run
+                .data
+                .table("bosses")
+                .ok_or("Missing public boss definitions")?;
+            for (id, template) in round["bossTemplates"].as_object().into_iter().flatten() {
+                if preview.iter().any(|enemy| {
+                    enemy["boss"] == true && enemy["enemyKey"] == bosses[id]["enemyKey"]
+                }) {
+                    templates.push(
+                        template
+                            .as_str()
+                            .ok_or("Invalid public route template")?
+                            .to_owned(),
+                    );
+                }
+            }
+        }
+        if templates.is_empty() {
+            return Err("Current route template is not publicly identifiable".into());
+        }
+        let effective_map = run.map.clone().resolved(&run.data)?;
+        let key = MapKey {
+            stage_id: self.public_setup["stageId"].clone(),
+            boss,
+            overrides: effective_map.device_overrides,
+        };
+        let mut cache = self
+            .spatial
+            .lock()
+            .map_err(|_| "Public spatial cache is poisoned")?;
+        if cache.map.as_ref().is_none_or(|map| map.key != key) {
+            let map = MapGeometry::new(&run.stage, key)?;
+            cache.map = Some(Box::new(map));
+            cache.routes = None;
+        }
+        if cache
+            .routes
+            .as_ref()
+            .is_none_or(|routes| routes.templates != templates)
+        {
+            let waves = run
+                .data
+                .table("waves")
+                .ok_or("Missing public route templates")?;
+            let map = cache.map.as_mut().unwrap();
+            let routes = RouteGeometry::new(&templates, waves, boss, &mut map.grid)?;
+            if map.fields.len() + routes.fields.len() > MAX_BYTES {
+                return Err("Public spatial byte capacity exceeded".into());
+            }
+            cache.routes = Some(routes);
+        }
+        let map = cache.map.as_ref().unwrap();
+        let routes = cache.routes.as_ref().unwrap();
         let associations: Vec<_> = preview
             .iter()
             .enumerate()
             .map(|(index, enemy)| {
                 let candidates: Vec<_> = routes
+                    .hints
                     .iter()
                     .enumerate()
                     .filter(|(_, route)| {
-                        route["routeSet"] == "base"
-                            && (route["motion"] == "FLY") == (enemy["fly"] == true)
-                            && route["gate"] == enemy["gate"]
-                            && (enemy["start"].is_null() || route["start"] == enemy["start"])
+                        route.base
+                            && route.flying == (enemy["fly"] == true)
+                            && route.gate == enemy["gate"]
+                            && (enemy["start"].is_null() || route.start == enemy["start"])
                     })
                     .map(|(index, _)| index)
                     .collect();
                 json!({"previewIndex":index,"routeCandidates":candidates})
             })
             .collect();
-        let result = json!({"schema":"arkguardrl/public-spatial/v1","revision":self.revision,
-            "round":state["round"],"phase":state["phase"],"stageId":self.public_setup["stageId"],
-            "field":if boss {"bossL"} else {"normal"},"coordinates":"stage",
-            "boardOffset":if boss {[7,0]} else {[0,0]},
-            "fieldBounds":[bounds.r0,bounds.c0,bounds.r1,bounds.c1],
-            "tiles":tiles,"devices":devices,"mapEffects":map.effects,
-            "templateIds":templates,"routes":routes,"previewRoutes":associations,
-            "pathBasis":"public-map-default"});
-        if result.to_string().len() > 8 << 20 {
+        let header = json!({"schema":"arkguardrl/public-spatial/v1","revision":self.revision,
+            "round":round_number,"phase":phase})
+        .to_string();
+        let effects = json!({"mapEffects":run.map.effects}).to_string();
+        let tail =
+            json!({"previewRoutes":associations,"pathBasis":"public-map-default"}).to_string();
+        // All fragments are nonempty JSON objects serialized by serde_json.
+        // Splice their members while preserving the existing packet byte order.
+        let capacity =
+            header.len() + map.fields.len() + effects.len() + routes.fields.len() + tail.len() - 4;
+        if capacity > MAX_BYTES {
             return Err("Public spatial byte capacity exceeded".into());
         }
-        Ok(result)
+        let mut out = String::with_capacity(capacity);
+        out.push_str(&header[..header.len() - 1]);
+        for fields in [&map.fields, &effects, &routes.fields, &tail] {
+            out.push(',');
+            out.push_str(&fields[1..fields.len() - 1]);
+        }
+        out.push('}');
+        Ok(out)
     }
 }
 

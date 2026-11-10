@@ -18,6 +18,7 @@ pub struct Session {
     fault: Option<String>,
     public_setup: Value,
     preview: Vec<Value>,
+    spatial: std::sync::Mutex<spatial::Cache>,
 }
 impl Session {
     /// Only Desperation is supported. Core choice is an experiment parameter.
@@ -48,6 +49,7 @@ impl Session {
             fault: None,
             public_setup: json!({}),
             preview: vec![],
+            spatial: std::sync::Mutex::new(spatial::Cache::default()),
         }
     }
     fn healthy(&self) -> Result<(), String> {

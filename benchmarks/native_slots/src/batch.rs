@@ -360,9 +360,7 @@ impl NativeBatch {
                 if session.status()?["decisionRequired"] != true {
                     return Ok(None);
                 }
-                session
-                    .public_spatial()
-                    .map(|spatial| Some(spatial.to_string()))
+                session.public_spatial_json().map(Some)
             })
         }))
     }
