@@ -1,7 +1,6 @@
-"""Rust-owned parallel slots, decision ledger, candidates and numeric encoding.
+"""Vectorized Desperation facade for Rust-owned decision slots.
 
-Use the current Core source on PYTHONPATH and an explicitly built _native_slots.
-The module is an experiment, not a replacement installation of the Core package.
+Build the _native_slots extension from benchmarks/native_slots/Cargo.toml.
 """
 import importlib.machinery
 import importlib.util

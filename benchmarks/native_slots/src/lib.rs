@@ -1,5 +1,4 @@
-//! Experimental Rust-owned parallel slots. The current engine and numeric
-//! encoder are dependencies of this isolated experiment crate.
+//! Parallel decision slots sharing the single-session ledger and policy encoder.
 use arkguard_engine::data::Catalog;
 use pyo3::{exceptions::PyValueError, prelude::*};
 use std::sync::Arc;
