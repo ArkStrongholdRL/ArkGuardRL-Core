@@ -140,7 +140,7 @@ python benchmarks/node_compare.py --reference-root /path/to/Stronghold-Protocol 
 
 ## 跨平台构建
 
-`native-build` CI 在每次 main PR、运行时分支推送或手动触发时，编译并导入 `_native`、`_rust_routes`、`_native_slots` 三个模块。覆盖 CPython 3.12，以及 Linux x64、Windows x64、macOS Intel／Apple Silicon，产物名为 `native-py<版本>-<平台>`。
+`native-build` CI 在每次 main PR、main 推送或手动触发时，编译并导入 `_native`、`_rust_routes`、`_native_slots` 三个模块。覆盖 CPython 3.12，以及 Linux x64、Windows x64、macOS Intel／Apple Silicon，产物名为 `native-py<版本>-<平台>`。
 
 Linux 使用 Ubuntu 22.04（glibc 2.35）作为构建基线。迁移 AutoDL 时选择匹配 Python 版本与架构的产物，将三个模块放入同一目录，分别向运行时传入 `_native` 与 `_native_slots` 的路径；特征模块放入 `arkguardrl_core` 包目录。外部 0.3.3 数据另行配置。不同 Python ABI 或更旧的 glibc 环境可在目标机器执行以下构建命令。
 

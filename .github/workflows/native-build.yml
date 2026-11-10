@@ -5,7 +5,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, codex/native-runtime-main, codex/native-win-ci, codex/multi-env-worker]
+    branches: [main]
 
 permissions:
   contents: read
