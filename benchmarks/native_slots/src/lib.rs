@@ -4,6 +4,10 @@ use arkguard_engine::data::Catalog;
 use pyo3::{exceptions::PyValueError, prelude::*};
 use std::sync::Arc;
 mod batch;
+#[path = "../../../crates/python/src/candidates.rs"]
+mod candidates;
+#[path = "../../../crates/python/src/ledger.rs"]
+mod ledger;
 #[path = "../../../crates/python/src/policy.rs"]
 mod policy;
 

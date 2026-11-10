@@ -25,6 +25,7 @@ type PolicyBytes<'py> = (
 struct Episode {
     session: Session,
     public: Option<Value>,
+    ledger: Option<crate::ledger::DecisionLedger>,
 }
 
 /// Join every worker, including after errors; flatten chunks in slot order.
@@ -105,6 +106,7 @@ impl NativeBatch {
     fn invalidate(&mut self) {
         for episode in self.episodes.iter_mut().flatten() {
             episode.public = None;
+            episode.ledger = None;
         }
     }
     fn parse_actions(&self, py: Python<'_>, actions: &[String]) -> PyResult<Vec<Value>> {
@@ -201,6 +203,7 @@ impl NativeBatch {
                             Some(Episode {
                                 session,
                                 public: None,
+                                ledger: None,
                             }),
                             status,
                         ))
@@ -218,6 +221,147 @@ impl NativeBatch {
             statuses.push(status);
         }
         Ok(statuses)
+    }
+
+    /// Selected slots get independent progress streams; inactive slots retain
+    /// their complete ledger, including rejected-action history.
+    fn reset_decision_all(
+        &mut self,
+        py: Python<'_>,
+        seeds: Vec<Option<u32>>,
+        streams: Vec<Option<String>>,
+    ) -> PyResult<Vec<Option<String>>> {
+        self.length(streams.len(), "Streams")?;
+        self.length(seeds.len(), "Seeds")?;
+        if seeds.iter().zip(&streams).any(|(seed, stream)| {
+            seed.is_some() != stream.is_some() || stream.as_ref().is_some_and(|s| s.len() != 32)
+        }) {
+            return Err(PyValueError::new_err(
+                "One progress stream per reset slot required",
+            ));
+        }
+        self.reset(py, seeds)?;
+        runtime(py.detach(|| {
+            parallel(&mut self.episodes, self.threads, |episode, slot| {
+                let Some(stream) = &streams[slot] else {
+                    return Ok(None);
+                };
+                let episode = live(episode)?;
+                let state = Arc::new(episode.session.observation()?);
+                let mut ledger = crate::ledger::DecisionLedger::new(state, stream.clone())?;
+                let snapshot = ledger.snapshot(None, None, 0)?;
+                episode.ledger = Some(ledger);
+                Ok(Some(snapshot))
+            })
+        }))
+    }
+
+    fn step_decision_all(
+        &mut self,
+        py: Python<'_>,
+        actions: Vec<Option<String>>,
+        tick_budget: usize,
+        max_advances: Vec<usize>,
+    ) -> PyResult<Vec<Option<String>>> {
+        self.length(actions.len(), "Actions")?;
+        self.length(max_advances.len(), "Max advances")?;
+        if !(1..=MAX_TICK_BUDGET).contains(&tick_budget)
+            || actions.iter().flatten().any(|a| a.len() > 4096)
+        {
+            return Err(PyValueError::new_err(
+                "Invalid decision action size or tick budget",
+            ));
+        }
+        let actions: Vec<Option<Value>> = actions
+            .iter()
+            .map(|action| {
+                action
+                    .as_ref()
+                    .map(|json| serde_json::from_str(json))
+                    .transpose()
+            })
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        runtime(py.detach(|| {
+            parallel(&mut self.episodes, self.threads, |episode, slot| {
+                let Some(action) = &actions[slot] else {
+                    return Ok(None);
+                };
+                let episode = live(episode)?;
+                episode.public = None;
+                let mut ledger = episode
+                    .ledger
+                    .take()
+                    .ok_or("Reset a decision session before stepping")?;
+                let result = ledger.step(
+                    &mut episode.session,
+                    action,
+                    tick_budget,
+                    max_advances[slot],
+                )?;
+                episode.ledger = Some(ledger);
+                Ok(Some(result))
+            })
+        }))
+    }
+
+    fn build_ledger_policy_all<'py>(
+        &mut self,
+        py: Python<'py>,
+        revisions: Vec<u64>,
+        prefixes: Vec<Vec<u8>>,
+        prepared: Vec<Option<crate::candidates::Prepared>>,
+    ) -> PyResult<(Vec<String>, PolicyBytes<'py>)> {
+        self.length(revisions.len(), "Revisions")?;
+        self.length(prefixes.len(), "Prefixes")?;
+        self.length(prepared.len(), "Prepared domains")?;
+        if prefixes.iter().any(|p| p.len() > 8 << 20) {
+            return Err(PyValueError::new_err("Policy input exceeds byte limit"));
+        }
+        let policy = self
+            .policy
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Configure policy before numeric encoding"))?;
+        // Move each prepared domain into its own worker without retaining a copy.
+        let mut queries: Vec<_> = prepared.into_iter().enumerate().collect();
+        let episodes = &self.episodes;
+        let results = py.detach(|| {
+            parallel(&mut queries, self.threads, |(slot, prepared), _| {
+                let ledger = episodes[*slot]
+                    .as_ref()
+                    .and_then(|e| e.ledger.as_ref())
+                    .ok_or("Reset a decision session before encoding")?;
+                if ledger.state["revision"].as_u64() != Some(revisions[*slot]) {
+                    return Err("Numeric observation revision mismatch".into());
+                }
+                let prefix = serde_json::from_slice(&prefixes[*slot]).map_err(|e| e.to_string())?;
+                let actions = crate::candidates::build(
+                    prefix,
+                    prepared.take(),
+                    &ledger.blocked,
+                    ledger.state["personalEnded"] == true,
+                )?;
+                let encoded = policy.encode(&ledger.state, &ledger.policy_history, &actions)?;
+                Ok((
+                    serde_json::to_string(&actions).map_err(|e| e.to_string())?,
+                    (
+                        f32_bytes(&encoded.observation),
+                        f32_bytes(&encoded.candidates),
+                        i64_bytes(&encoded.schedules),
+                        i64_bytes(&encoded.experts),
+                    ),
+                ))
+            })
+        });
+        let mut actions = Vec::with_capacity(results.len());
+        let mut buffers = Vec::with_capacity(results.len());
+        for (slot, result) in results.into_iter().enumerate() {
+            let (json, wire) =
+                result.map_err(|e| PyValueError::new_err(format!("Slot {slot}: {e}")))?;
+            actions.push(json);
+            buffers.push(Ok(wire));
+        }
+        Ok((actions, policy_bytes(py, buffers)?))
     }
 
     /// Technical errors return a whole-batch error, but successful/partially
@@ -274,6 +418,7 @@ impl NativeBatch {
             if action.is_some() {
                 if let Some(episode) = episode {
                     episode.public = None;
+                    episode.ledger = None;
                 }
             }
         }
@@ -372,7 +517,10 @@ impl NativeBatch {
                 // Reuse only an observation of this same unmodified revision.
                 let state = match &episode.public {
                     Some(state) => state.clone(),
-                    None => episode.session.observation()?,
+                    None => match &episode.ledger {
+                        Some(ledger) => (*ledger.state).clone(),
+                        None => episode.session.observation()?,
+                    },
                 };
                 let json = state.to_string();
                 Ok((state, json))
@@ -467,19 +615,7 @@ impl NativeBatch {
                 ))
             })
         });
-        let mut observations = Vec::with_capacity(results.len());
-        let mut candidates = Vec::with_capacity(results.len());
-        let mut schedules = Vec::with_capacity(results.len());
-        let mut experts = Vec::with_capacity(results.len());
-        for (slot, result) in results.into_iter().enumerate() {
-            let (observation, candidate, schedule, expert) =
-                result.map_err(|e| PyValueError::new_err(format!("Slot {slot}: {e}")))?;
-            observations.push(PyBytes::new(py, &observation));
-            candidates.push(PyBytes::new(py, &candidate));
-            schedules.push(PyBytes::new(py, &schedule));
-            experts.push(PyBytes::new(py, &expert));
-        }
-        Ok((observations, candidates, schedules, experts))
+        policy_bytes(py, results)
     }
 
     fn close(&mut self) {
@@ -487,4 +623,20 @@ impl NativeBatch {
             *episode = None;
         }
     }
+}
+
+fn policy_bytes<'py>(py: Python<'py>, results: Vec<Result<Wire>>) -> PyResult<PolicyBytes<'py>> {
+    let mut observations = Vec::with_capacity(results.len());
+    let mut candidates = Vec::with_capacity(results.len());
+    let mut schedules = Vec::with_capacity(results.len());
+    let mut experts = Vec::with_capacity(results.len());
+    for (slot, result) in results.into_iter().enumerate() {
+        let (observation, candidate, schedule, expert) =
+            result.map_err(|e| PyValueError::new_err(format!("Slot {slot}: {e}")))?;
+        observations.push(PyBytes::new(py, &observation));
+        candidates.push(PyBytes::new(py, &candidate));
+        schedules.push(PyBytes::new(py, &schedule));
+        experts.push(PyBytes::new(py, &expert));
+    }
+    Ok((observations, candidates, schedules, experts))
 }

@@ -1,4 +1,4 @@
-"""Rust-owned parallel slots; existing public Python history/reward are retained.
+"""Rust-owned parallel slots, decision ledger, candidates and numeric encoding.
 
 Use the current Core source on PYTHONPATH and an explicitly built _native_slots.
 The module is an experiment, not a replacement installation of the Core package.
@@ -7,17 +7,16 @@ import importlib.machinery
 import importlib.util
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 import time
+from uuid import uuid4
 
 import numpy as np
 from arkguardrl.catalog import PublicCatalog
-from arkguardrl.candidates import DecisionHistory, build_decision
-from arkguardrl.contracts import action_id, canonical
-from arkguardrl.environment import Transition
-from arkguardrl.feedback import PublicProgress
-from arkguardrl.observation import validate_state
-from arkguardrl.rewards import NativeProgressCore
+from arkguardrl.candidates import build_decision
+from arkguardrl.contracts import canonical
+from arkguardrl_core.native_ledger import NativeLedgerHistory
 from arkguardrl_core.native_policy import metadata
 
 
@@ -38,8 +37,7 @@ class _Slot:
         self.info = {}
 
     def reset(self, engine_seed):
-        self.history, self.progress = DecisionHistory(), PublicProgress()
-        self.reward = NativeProgressCore()
+        self.history = NativeLedgerHistory(self)
         self.decisions = self.advances = 0
         self.reason = None
         self.engine_seed = engine_seed
@@ -96,22 +94,23 @@ class NativeSlotBatch:
         return mask
 
     def _adopt(self, slot, raw):
-        state = json.loads(raw)
-        validate_state(state)
-        slot.state = state
-        return state
+        slot._ledger = json.loads(raw)
+        slot.state = slot._ledger['observation']
 
     def _refresh(self, slot):
+        slot.prefix, slot.prepared = b'[]', None
         if slot.state['decisionRequired'] and not slot.state['personalEnded']:
-            # Enumerate exactly the old public domain/history. The expensive
-            # numerical projection is issued later, once for all slots in Rust.
+            def prepare(state, prefix, catalog, history, prepared):
+                slot.prefix, slot.prepared = canonical(prefix), prepared
+                return prefix, (), (), (), ()
+
+            # Python prepares the small public parameter domain. Enumeration,
+            # history filtering and all numerical projection run together in Rust.
             slot.decision = build_decision(slot.state, self.catalog, slot.history,
-                                           encoder=lambda *_: ((), (), (), ()))
-            if len(slot.decision.actions) > self.max_candidates:
-                raise ValueError('Candidate capacity exceeded; no domain truncation')
+                                           candidate_encoder=prepare)
         else:
             slot.decision = None
-        slot.info = dict(candidate_count=len(slot.decision.actions) if slot.decision else 0,
+        slot.info = dict(candidate_count=0,
                          phase=slot.state['phase'], round=slot.state['round'],
                          engine_seed=slot.engine_seed, reason=slot.reason or '')
 
@@ -119,12 +118,16 @@ class NativeSlotBatch:
         n, k = self.num_envs, self.max_candidates
         for slot in self.slots:
             slot.history._check(slot.state)
-        # The decision already owns the exact immutable history used to enumerate
-        # its candidates. Reuse it instead of copying and serializing it again.
-        histories = [s.decision.history_json if s.decision is not None
-                     else canonical(s.history.snapshot(s.state)) for s in self.slots]
-        actions = [canonical(s.decision.actions if s.decision else ()) for s in self.slots]
-        buffers = self.native.encode_all([s.state['revision'] for s in self.slots], histories, actions)
+        actions, buffers = self.native.build_ledger_policy_all(
+            [s.state['revision'] for s in self.slots],
+            [s.prefix for s in self.slots], [s.prepared for s in self.slots])
+        for slot, raw in zip(self.slots, actions):
+            candidates = tuple(json.loads(raw))
+            if len(candidates) > self.max_candidates:
+                raise ValueError('Candidate capacity exceeded; no domain truncation')
+            if slot.decision is not None:
+                slot.decision = replace(slot.decision, actions=candidates)
+            slot.info['candidate_count'] = len(candidates)
         obs = dict(observation=np.empty((n, 4784), np.float32),
                    candidates=np.zeros((n, k, 41), np.float32),
                    schedules=np.zeros((n, k), np.int64), experts=np.zeros((n, k), np.int64),
@@ -162,16 +165,12 @@ class NativeSlotBatch:
                     slot.rng = np.random.default_rng(s)
                 engines.append(int(slot.rng.integers(1, 2**32)))
         try:
-            self.native.reset(engines)
-            raw = self.native.observe_all()
+            raw = self.native.reset_decision_all(
+                engines, [uuid4().hex if flag else None for flag in mask])
             for i in np.flatnonzero(mask):
                 slot = self.slots[i]
                 slot.reset(engines[i])
-                state = self._adopt(slot, raw[i])
-                slot.progress._observe_validated(state)
-                slot.history.initialize(Transition(state, False, False, None,
-                                                  progress=slot.progress.snapshot(state)))
-                slot.reward.reset(state)
+                self._adopt(slot, raw[i])
                 self._refresh(slot)
             self._faulted = False
             return self._output()
@@ -193,45 +192,32 @@ class NativeSlotBatch:
                 query.append(None); budgets.append(0); continue
             if slot.done or slot.decision is None:
                 raise RuntimeError('Explicit reset required for ended slots')
+            slot.history._check(slot.state)
             if not 0 <= int(index) < len(slot.decision.actions):
                 raise ValueError('Select a current unpadded candidate index')
             query.append(json.dumps(slot.decision.actions[int(index)], allow_nan=False))
             budgets.append(max(0, self.max_advances - slot.advances))
         try:
-            immediate, final, receipts, counts = self.native.step_episode_all(query, self.tick_budget, budgets)
+            packets = self.native.step_decision_all(query, self.tick_budget, budgets)
             rewards = np.zeros(self.num_envs, np.float64)
             for i in np.flatnonzero(mask):
                 slot = self.slots[i]
-                intent = deepcopy(slot.decision.actions[int(actions[i])])
-                receipt = json.loads(receipts[i])
-                before = slot.state
-                state = self._adopt(slot, immediate[i])
-                accepted = receipt['accepted']
-                reply = {'accepted': accepted, 'result': {'ok': accepted}}
-                if not accepted:
-                    reply['result']['error'] = receipt['rejection']
-                execution = slot.progress._observe_validated(state, action=intent, reply=reply)
+                self._adopt(slot, packets[i])
+                ledger = slot._ledger
                 slot.decisions += 1
-                slot.advances += counts[i]
-                if counts[i]:
-                    self._adopt(slot, final[i])
-                    slot.progress._observe_validated(slot.state)
+                slot.advances += ledger['advances']
                 terminated = slot.state['personalEnded']
                 if not terminated:
                     if slot.decisions >= self.max_decisions:
                         slot.reason = 'decision-budget'
                     elif slot.advances >= self.max_advances:
                         slot.reason = 'advance-budget'
-                result = Transition(slot.state, terminated, bool(slot.reason and not terminated),
-                                    slot.reason, accepted=accepted, action_id=action_id(intent),
-                                    execution=execution, progress=slot.progress.snapshot(slot.state))
-                slot.history.record(before, intent, result=result)
-                reward = slot.reward.step(before, slot.state)
+                reward = ledger['reward']
                 if not terminated and self.wall_seconds is not None and time.monotonic() - slot.started >= self.wall_seconds:
                     slot.reason = 'wall-budget'
                 slot.done = terminated or bool(slot.reason)
                 self._refresh(slot)
-                slot.info['accepted'] = accepted
+                slot.info['accepted'] = ledger['execution']['accepted']
                 slot.info['reward_components'] = reward['components']
                 rewards[i] = reward['reward']
             obs, info = self._output()
