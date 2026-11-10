@@ -1,5 +1,10 @@
-//! Native 0.3.3 foundations. Full match and battle execution is not implemented yet.
+//! Native battle runtime and single-player round execution.
 pub mod battle;
 pub mod data;
+pub mod identity;
+pub mod ledger_reward;
+pub mod history;
+pub mod progress;
 pub mod deterministic;
 pub mod reward;
+pub mod solo;

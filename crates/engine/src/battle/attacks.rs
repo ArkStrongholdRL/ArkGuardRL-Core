@@ -17,6 +17,8 @@ pub enum Mode {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Direct {
+    pub attachment: Option<Attachment>,
+    pub element_heal_ratio: f64,
     pub mode: Mode,
     pub hits: u32,
     pub atk_scale: f64,
@@ -25,6 +27,15 @@ pub struct Direct {
     pub split_mul: Option<f64>,
     pub heal_scale: f64,
     pub is_skill: bool,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct Attachment {
+    pub count: u32,
+    pub initial: f64,
+    pub delta: f64,
+    pub cap: f64,
+    pub per_target: bool,
+    pub scale: f64,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Splash {
@@ -79,10 +90,48 @@ pub struct Prepared {
     pub payload: Direct,
 }
 pub trait Hooks: super::skills::Hooks + health::Hooks + Queries {
+    fn heal(&mut self, w: &mut World, source: Id, target: Id, amount: f64) -> Result<f64, String>
+    where
+        Self: Sized,
+    {
+        health::heal(
+            w,
+            self,
+            Some(source),
+            target,
+            amount,
+            HealOptions::default(),
+        )
+    }
+
+    fn prepare_attachment(
+        &mut self,
+        _world: &mut World,
+        _source: Id,
+        _target: Option<Id>,
+        _payload: &mut Direct,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn attachment_damage(
+        &mut self,
+        _world: &mut World,
+        _source: Id,
+        _target: Id,
+        _attack_id: u64,
+        _payload: Direct,
+    ) -> Result<f64, String> {
+        Ok(0.)
+    }
     fn has_before_attack(&self) -> bool;
     fn before_attack(&mut self, c: &mut Context, w: &mut World) -> Result<(), String>;
     fn engage(&mut self, id: Id, w: &mut World) -> Result<(), String>;
-    fn damage(&mut self, w: &mut World, request: &mut Request) -> Result<f64, String>;
+    fn damage(
+        &mut self,
+        w: &mut World,
+        request: &mut Request,
+        skill: Option<&mut Runtime>,
+    ) -> Result<f64, String>;
     /// Raw body-radius or selectable centre-radius query, in battle enemy order.
     fn radius_targets(
         &mut self,
@@ -239,12 +288,15 @@ impl Executor {
         id: Id,
         target: Option<Id>,
         attack_id: u64,
-        p: Direct,
+        mut p: Direct,
         area: Area,
         mut position: [f64; 2],
         mut skill: Option<&mut Runtime>,
     ) -> Result<(), String> {
         self.validate(p)?;
+        if p.attachment.is_some() {
+            h.prepare_attachment(w, id, target, &mut p)?;
+        }
         if let Some(chain) = area.chain {
             // k < count: a fractional count may produce ceil(count) victims.
             let count = if chain.count == 0.0 {
@@ -273,8 +325,11 @@ impl Executor {
         let (amount, heal) = match p.mode {
             Mode::Heal => {
                 let target = target.ok_or("A direct heal requires a target")?;
+                if p.element_heal_ratio > 0. {
+                    super::element::heal(w, target, atk * p.element_heal_ratio, None)?;
+                }
                 let amount = atk * (p.atk_scale * p.heal_scale * atk_mul);
-                health::heal(w, h, Some(id), target, amount, HealOptions::default())?;
+                h.heal(w, id, target, amount)?;
                 (amount, true)
             }
             Mode::Damage(kind) => {
@@ -314,7 +369,10 @@ impl Executor {
                         request.attack_id = Some(attack_id);
                         request.is_attack = true;
                         request.is_skill = p.is_skill;
-                        total += h.damage(w, &mut request)?;
+                        total += h.damage(w, &mut request, skill.as_deref_mut())?;
+                    }
+                    if p.attachment.is_some() {
+                        total += h.attachment_damage(w, id, target, attack_id, p)?;
                     }
                     h.each_hit(
                         Impact {
@@ -365,7 +423,7 @@ impl Executor {
                         let mut r = single_hit(id, victim, attack_id, kind, amount, p.is_skill);
                         r.is_splash = true;
                         r.attack_type = super::hit::AttackType::Splash;
-                        let dealt = h.damage(w, &mut r)?;
+                        let dealt = h.damage(w, &mut r, skill.as_deref_mut())?;
                         total += dealt;
                         h.each_hit(
                             Impact {
@@ -436,7 +494,7 @@ impl Executor {
                             atk * scale * p.skill_damage_mul * powi(1.0 - chain.falloff, k)?;
                         let mut r = single_hit(id, victim, attack_id, kind, amount, p.is_skill);
                         r.tags.push("chain".into());
-                        let dealt = h.damage(w, &mut r)?;
+                        let dealt = h.damage(w, &mut r, skill.as_deref_mut())?;
                         total += dealt;
                         if chain.sluggish != 0.0 && w.unit(victim)?.stats.alive {
                             h.sluggish(id, victim, chain.sluggish, w)?;

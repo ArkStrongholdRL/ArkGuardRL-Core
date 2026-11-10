@@ -3,8 +3,9 @@
 use arkguard_engine::{
     battle::{
         direction::Direction,
+        health::Pool,
         operators::Placement,
-        runtime::{Field, Limits},
+        runtime::{BossConfig, BossKind, BossOvertime, BossRoundConfig, Field, Limits},
         waves::Template,
     },
     data::Catalog,
@@ -31,6 +32,13 @@ fn main() -> Result<(), String> {
     let object = input.as_object().ok_or("Expected field input object")?;
     for key in object.keys() {
         if ![
+            "kind",
+            "map",
+            "bossPool",
+            "bossRound",
+            "branches",
+            "devices",
+            "extraRoutes",
             "stage",
             "stageId",
             "routes",
@@ -87,26 +95,112 @@ fn main() -> Result<(), String> {
         .transpose()
         .map_err(|_| "Seed outside u32")?
         .unwrap_or(1);
-    let mut field = Field::new(
-        Arc::clone(&data),
-        stage,
-        template,
-        seed,
-        input["timeLimit"].as_f64().unwrap_or(60.),
-        limits,
-    )?;
+    let kind = input
+        .get("kind")
+        .map(|v| v.as_str().ok_or("Expected field kind string"))
+        .transpose()?
+        .unwrap_or("normal");
+    let time_limit =
+        input["timeLimit"]
+            .as_f64()
+            .unwrap_or(if kind == "normal" { 60. } else { f64::INFINITY });
+    let mut field = match kind {
+        "normal" => {
+            if input.get("bossPool").is_some() {
+                return Err("bossPool requires boss or hidden kind".into());
+            }
+            Field::new(Arc::clone(&data), stage, template, seed, time_limit, limits)?
+        }
+        "boss" | "hidden" => {
+            let pool = input["bossPool"]
+                .as_object()
+                .ok_or("Specify bossPool for boss or hidden kind")?;
+            if pool
+                .keys()
+                .any(|key| !matches!(key.as_str(), "hp" | "maxHp"))
+            {
+                return Err("Unsupported bossPool input".into());
+            }
+            let max_hp = input["bossPool"]["maxHp"]
+                .as_f64()
+                .ok_or("Expected bossPool.maxHp number")?;
+            let hp = pool
+                .get("hp")
+                .map(|v| v.as_f64().ok_or("Expected bossPool.hp number"))
+                .transpose()?
+                .unwrap_or(max_hp);
+            Field::new_boss(
+                Arc::clone(&data),
+                stage,
+                template,
+                seed,
+                time_limit,
+                limits,
+                BossConfig {
+                    kind: if kind == "boss" {
+                        BossKind::FinalAssault
+                    } else {
+                        BossKind::HiddenCore
+                    },
+                    pool: Pool { hp, max_hp },
+                },
+            )?
+        }
+        _ => return Err(format!("Unsupported field kind: {kind}")),
+    };
+    field.configure_map(arkguard_engine::battle::runtime::MapConfig::parse(
+        &input["map"],
+    )?)?;
+    if let Some(value) = input.get("bossRound") {
+        let object = value.as_object().ok_or("Expected bossRound object")?;
+        if object
+            .keys()
+            .any(|k| !matches!(k.as_str(), "lp" | "overtime"))
+        {
+            return Err("Unsupported bossRound input".into());
+        }
+        let life_points = value["lp"].as_f64().ok_or("Expected bossRound.lp number")?;
+        let overtime = if let Some(o) = value.get("overtime") {
+            let object = o.as_object().ok_or("Expected overtime object")?;
+            if object
+                .keys()
+                .any(|k| !matches!(k.as_str(), "afterReal" | "combatTimeScale" | "lpPerSecond"))
+            {
+                return Err("Unsupported overtime input".into());
+            }
+            Some(BossOvertime {
+                after_real_seconds: o["afterReal"]
+                    .as_f64()
+                    .ok_or("Expected overtime.afterReal number")?,
+                combat_time_scale: o["combatTimeScale"]
+                    .as_f64()
+                    .ok_or("Expected overtime.combatTimeScale number")?,
+                lp_per_real_second: o["lpPerSecond"]
+                    .as_f64()
+                    .ok_or("Expected overtime.lpPerSecond number")?,
+            })
+        } else {
+            None
+        };
+        field.configure_boss_round(BossRoundConfig {
+            life_points,
+            overtime,
+        })?;
+    }
     for u in input["players"][0]["units"]
         .as_array()
         .into_iter()
         .flatten()
     {
         let object = u.as_object().ok_or("Expected operator object")?;
-        if object
-            .keys()
-            .any(|k| !matches!(k.as_str(), "chessId" | "uid" | "row" | "col" | "dir"))
-        {
+        if object.keys().any(|k| {
+            !matches!(
+                k.as_str(),
+                "chessId" | "uid" | "row" | "col" | "dir" | "skillIndex"
+            )
+        }) {
             return Err(
-                "Only default operators without items or loadout overrides are implemented".into(),
+                "Only supported skills with default modules and no items are implemented".into(),
             );
         }
         let direction = u
@@ -128,7 +222,7 @@ fn main() -> Result<(), String> {
             )
             .map_err(|_| "Operator coordinate outside i32".into())
         };
-        field.add_operator(
+        field.add_operator_with_skill(
             u["chessId"].as_str().ok_or("Expected chessId")?,
             Placement {
                 uid: u["uid"]
@@ -137,6 +231,13 @@ fn main() -> Result<(), String> {
                 home: [coordinate("row")?, coordinate("col")?],
                 direction: dir,
             },
+            u.get("skillIndex")
+                .map(|v| {
+                    v.as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or("Expected nonnegative u32 skillIndex")
+                })
+                .transpose()?,
         )?;
     }
     let advance = field.run(budget)?;

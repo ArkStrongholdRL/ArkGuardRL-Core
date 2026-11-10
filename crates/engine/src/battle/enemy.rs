@@ -8,6 +8,7 @@ use super::{
     health::{self, Hit, Id, World},
     hit::Request,
     motion, settlement,
+    stats::Stat,
     targeting::{self, Profile as Selection},
 };
 use crate::deterministic::{math::hypot, rng::Rng};
@@ -44,14 +45,15 @@ pub struct Animation {
     pub duration: f64,
     pub hit: Option<f64>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Profile {
     pub mode: Mode,
     pub no_attack: bool,
     pub melee: bool,
     pub attack_moves: bool,
     pub deferred: bool,
-    pub shot: String,
+    /// Static delivery style; no per-tick string allocation.
+    pub shot: &'static str,
     pub selection: Selection,
     pub max_targets: f64,
     pub atk_scale: f64,
@@ -65,7 +67,7 @@ impl Default for Profile {
             melee: true,
             attack_moves: false,
             deferred: false,
-            shot: "none".into(),
+            shot: "none",
             selection: Selection::default(),
             max_targets: 1.0,
             atk_scale: 1.0,
@@ -136,20 +138,21 @@ pub trait Hooks: motion::Hooks + blocking::Hooks + settlement::Hooks {
         rng: &mut Rng,
     ) -> Result<(), String>;
 }
-fn flags(w: &mut World, id: Id) -> Result<std::collections::BTreeSet<String>, String> {
+/// Single-flag reads stay borrowed; the aggregated flag set is never copied.
+fn flag(w: &mut World, id: Id, key: &str) -> Result<bool, String> {
     Ok(w.unit_mut(id)?
         .stats
         .stats()
         .map_err(str::to_string)?
         .flags
-        .clone())
+        .contains(key))
 }
-fn number(w: &mut World, id: Id, key: &str) -> Result<f64, String> {
+fn number(w: &mut World, id: Id, stat: Stat) -> Result<f64, String> {
     Ok(w.unit_mut(id)?
         .stats
         .stats()
         .map_err(str::to_string)?
-        .n(key))
+        .get(stat))
 }
 pub fn windup(interval: f64, animation: Option<Animation>) -> f64 {
     let Some(a) = animation.filter(|a| a.duration > 0.0) else {
@@ -294,15 +297,13 @@ pub fn attack<H: Hooks>(
     limit: usize,
 ) -> Result<bool, String> {
     let p = h.profile(id, w)?;
-    if p.no_attack || matches!(p.mode, Mode::None) || number(w, id, "atk")? <= 0.0 {
+    if p.no_attack || matches!(p.mode, Mode::None) || number(w, id, Stat::Atk)? <= 0.0 {
         w.unit_mut(id)?.enemy.swing = false;
         return Ok(false);
     }
-    let f = flags(w, id)?;
-    if f.contains("fear")
-        || f.contains("disarm")
-        || f.contains("tremble") && w.unit(id)?.blocked_by().is_some()
-    {
+    let fear = flag(w, id, "fear")?;
+    let disarm = flag(w, id, "disarm")?;
+    if fear || disarm || flag(w, id, "tremble")? && w.unit(id)?.blocked_by().is_some() {
         clear(w, id)?;
         return Ok(false);
     }
@@ -317,7 +318,7 @@ pub fn attack<H: Hooks>(
     } else {
         w.unit(id)?.stats.base_number("rangeRadius")
     };
-    let wind = windup(number(w, id, "interval")?, p.animation);
+    let wind = windup(number(w, id, Stat::Interval)?, p.animation);
     if w.unit(id)?.cadence.cooldown > wind + 1e-9 {
         clear(w, id)?;
         return Ok(false);
@@ -356,7 +357,7 @@ pub fn attack<H: Hooks>(
         if h.enemy_event_enabled(Event::AttackStart) {
             let mut c = context(id, selected.clone());
             h.enemy_event(Event::AttackStart, &mut c, r, w, g, rng)?;
-            if !w.unit(id)?.stats.alive || flags(w, id)?.contains("stun") {
+            if !w.unit(id)?.stats.alive || flag(w, id, "stun")? {
                 return Ok(false);
             }
         }
@@ -385,7 +386,7 @@ pub fn attack<H: Hooks>(
                     r.edit(w, id, palsy.runtime.id(), |b| b.stacks -= 1)?;
                 }
             }
-            w.unit_mut(id)?.cadence.cooldown = number(w, id, "interval")?;
+            w.unit_mut(id)?.cadence.cooldown = number(w, id, Stat::Interval)?;
             let live = h.profile(id, w)?;
             if w.unit(id)?.blocked_by().is_none() && radius > 0.0 && !live.attack_moves {
                 w.unit_mut(id)?.motion.attack_stand_until = w.time + 0.35;
@@ -393,8 +394,8 @@ pub fn attack<H: Hooks>(
             h.palsy_visual(id, w)?;
             return Ok(false);
         }
-        let n =
-            (h.profile(id, w)?.max_targets.floor() + number(w, id, "maxTargets")?.floor()).max(1.0);
+        let n = (h.profile(id, w)?.max_targets.floor() + number(w, id, Stat::MaxTargets)?.floor())
+            .max(1.0);
         if selected.len() as f64 > n {
             selected.truncate(n as usize);
         }
@@ -455,7 +456,7 @@ pub fn attack<H: Hooks>(
                 id,
                 target,
                 if delivery_profile.deferred {
-                    &delivery_profile.shot
+                    delivery_profile.shot
                 } else if ranged {
                     "enemy"
                 } else {
@@ -489,7 +490,7 @@ pub fn attack<H: Hooks>(
             c.attack_id = Some(attack_id);
             h.enemy_event(Event::Attack, &mut c, r, w, g, rng)?;
         }
-        let interval = number(w, id, "interval")?;
+        let interval = number(w, id, Stat::Interval)?;
         w.unit_mut(id)?.cadence.cooldown = interval;
         let current = h.profile(id, w)?;
         w.unit_mut(id)?.motion.attack_stand_until = w.time + stand(interval, &current).1;
@@ -522,7 +523,7 @@ fn heal<H: Hooks>(
         if target == id {
             continue;
         }
-        let max = number(w, target, "maxHp")?;
+        let max = number(w, target, Stat::MaxHp)?;
         let u = w.unit(target)?;
         if u.stats.hp >= max || u.pool.is_some() {
             continue;
@@ -546,9 +547,9 @@ fn heal<H: Hooks>(
     u.last_attack_at = time;
     u.attacks = count;
     h.attack_visual(id, target, "orb")?;
-    let amount = number(w, id, "atk")?;
+    let amount = number(w, id, Stat::Atk)?;
     health::heal(w, h, Some(id), target, amount, Default::default())?;
-    w.unit_mut(id)?.cadence.cooldown = number(w, id, "interval")?;
+    w.unit_mut(id)?.cadence.cooldown = number(w, id, Stat::Interval)?;
     Ok(())
 }
 /// Read current ATK/profile at arrival; the damage type and attack identity belong
@@ -568,7 +569,7 @@ pub fn impact<H: Hooks>(
         return Ok(0.0);
     }
     let scale = h.profile(d.source, w)?.atk_scale;
-    let amount = number(w, d.source, "atk")? * scale;
+    let amount = number(w, d.source, Stat::Atk)? * scale;
     let mut request = Request::new(
         Hit {
             source: Some(d.source),
@@ -615,13 +616,16 @@ pub fn update<H: Hooks>(
                 w.unit_mut(id)?.moving = false;
                 return Ok(());
             }
-            let f = flags(w, id)?;
-            let stunned = f.contains("stun");
+            let (stunned, fear, levitate) = (
+                flag(w, id, "stun")?,
+                flag(w, id, "fear")?,
+                flag(w, id, "levitate")?,
+            );
             let hidden = w.unit(id)?.hidden;
-            if stunned || hidden || f.contains("fear") {
+            if stunned || hidden || fear {
                 h.cut_attack_stand(id, w)?;
             }
-            if f.contains("levitate") && w.unit(id)?.motion.unbalance_until > w.time {
+            if levitate && w.unit(id)?.motion.unbalance_until > w.time {
                 w.unit_mut(id)?.motion.unbalance_until = f64::NEG_INFINITY;
             }
             let unbalanced = w.time < w.unit(id)?.motion.unbalance_until - 1e-9;
@@ -637,24 +641,29 @@ pub fn update<H: Hooks>(
             }
             if stunned && !w.unit(id)?.hidden {
                 w.unit_mut(id)?.motion.attack_stand_until = f64::NEG_INFINITY;
-                if w.unit(id)?.blocked_by().is_some() && flags(w, id)?.contains("sleep") {
+                if w.unit(id)?.blocked_by().is_some() && flag(w, id, "sleep")? {
                     h.unblock_with_buffs(w, r, id)?;
                 }
                 h.check_block(id, w, g)?;
                 return Ok(());
             }
             if let Some(blocker) = w.unit(id)?.blocked_by() {
-                let bf = flags(w, blocker)?;
-                let ef = flags(w, id)?;
+                let (no_block, blocker_sleep) =
+                    (flag(w, blocker, "noBlock")?, flag(w, blocker, "sleep")?);
+                let (unblockable, enemy_levitate, enemy_fear) = (
+                    flag(w, id, "unblockable")?,
+                    flag(w, id, "levitate")?,
+                    flag(w, id, "fear")?,
+                );
                 let bl = w.unit(blocker)?;
                 if !bl.stats.alive
                     || !bl.deployed
                     || bl.hidden
-                    || bf.contains("noBlock")
-                    || bf.contains("sleep")
-                    || ef.contains("unblockable")
-                    || ef.contains("levitate")
-                    || ef.contains("fear")
+                    || no_block
+                    || blocker_sleep
+                    || unblockable
+                    || enemy_levitate
+                    || enemy_fear
                 {
                     h.unblock_with_buffs(w, r, id)?;
                 } else {
@@ -669,8 +678,7 @@ pub fn update<H: Hooks>(
             }
             let standing = winding
                 || unbalanced
-                || w.time < w.unit(id)?.motion.attack_stand_until
-                    && !flags(w, id)?.contains("fear");
+                || w.time < w.unit(id)?.motion.attack_stand_until && !flag(w, id, "fear")?;
             motion::update(w, g, r, rng, h, id, dt, standing, unbalanced)
         })();
         let release = w.unpin_unit(id);

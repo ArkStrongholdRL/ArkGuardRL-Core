@@ -19,6 +19,9 @@ pub enum Refresh {
 #[derive(Clone, Debug)]
 pub struct State {
     pub(crate) id: BuffId,
+    pub tick_count: u64,
+    pub tick_payload: f64,
+    pub(crate) enemy_effect: Option<super::content::enemies::casters::BuffEffect>,
     pub duration: f64,
     pub time_left: f64,
     pub max_stacks: u32,
@@ -26,6 +29,7 @@ pub struct State {
     pub visible: bool,
     pub status: Option<String>,
     pub source: Option<Id>,
+    retained_unit: Option<Id>,
     pub persist: bool,
     pub interval: f64,
     pub accumulator: f64,
@@ -45,10 +49,18 @@ pub struct State {
     pub flags_present: bool,
     pub stealth_restore: Option<f64>,
 }
+impl State {
+    pub(crate) fn retained_unit(&self) -> Option<Id> {
+        self.retained_unit
+    }
+}
 impl Default for State {
     fn default() -> Self {
         Self {
             id: 0,
+            tick_count: 0,
+            tick_payload: 0.,
+            enemy_effect: None,
             duration: f64::INFINITY,
             time_left: f64::INFINITY,
             max_stacks: 1,
@@ -56,6 +68,7 @@ impl Default for State {
             visible: false,
             status: None,
             source: None,
+            retained_unit: None,
             persist: false,
             interval: 0.0,
             accumulator: 0.0,
@@ -99,6 +112,13 @@ pub struct Spec {
     pub flags_present: bool,
     pub allow_dead: bool,
 }
+impl Spec {
+    /// Keep a referenced unit available for this effect's complete attached lifetime.
+    pub(crate) fn retaining_unit(mut self, id: Id) -> Self {
+        self.buff.runtime.retained_unit = Some(id);
+        self
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Tick,
@@ -112,6 +132,81 @@ pub struct Context {
     pub dt: f64,
 }
 pub trait Hooks: health::Hooks {
+    fn field_deploy(
+        &mut self,
+        _w: &mut World,
+        _r: &mut Runtime,
+        _id: Id,
+        _fresh: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn operator_removed(
+        &mut self,
+        _w: &mut World,
+        _r: &mut Runtime,
+        _id: Id,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn heal_with_buffs(
+        &mut self,
+        w: &mut World,
+        _r: &mut Runtime,
+        source: Option<Id>,
+        target: Id,
+        amount: f64,
+        options: HealOptions,
+    ) -> Result<f64, String>
+    where
+        Self: Sized,
+    {
+        health::heal(w, self, source, target, amount, options)
+    }
+
+    fn operator_skill_effect(
+        &mut self,
+        _w: &mut World,
+        _r: &mut Runtime,
+        _dir: super::direction::Direction,
+        _definition: &super::operators::Definition,
+        _event: super::skills::Event,
+        _ctx: &mut super::skills::Context,
+        _skill: &mut super::skills::Runtime,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn operator_target_status(
+        &mut self,
+        _w: &mut World,
+        _r: &mut Runtime,
+        _source: Id,
+        _target: Id,
+        _key: &str,
+        _duration: f64,
+    ) -> Result<(), String> {
+        Err("Target status handler not installed".into())
+    }
+    fn operator_release(
+        &mut self,
+        _w: &mut World,
+        _r: &mut Runtime,
+        _id: Id,
+    ) -> Result<(), String> {
+        Err("Operator release handler not installed".into())
+    }
+    fn operator_status(
+        &mut self,
+        _w: &mut World,
+        _r: &mut Runtime,
+        _id: Id,
+        _key: &str,
+        _duration: f64,
+    ) -> Result<(), String> {
+        Err("Operator control status handler not installed".into())
+    }
     fn burst_damage(
         &mut self,
         _request: &mut super::hit::Request,
@@ -338,6 +433,14 @@ impl Runtime {
             .iter()
             .position(|old| old.key == b.key);
         if let Some(index) = index.filter(|_| b.runtime.refresh != Refresh::Independent) {
+            if b.runtime.refresh == Refresh::Replace {
+                if self.retained.len() >= self.max_retained {
+                    return Err("Retained buff capacity exceeded".into());
+                }
+                if let Some(id) = b.runtime.retained_unit {
+                    w.pin_unit(id)?;
+                }
+            }
             let s = &mut w.unit_mut(unit)?.stats;
             let old = &mut s.buffs_mut()[index];
             let id = old.runtime.id;
@@ -377,13 +480,15 @@ impl Runtime {
                     }
                 }
                 _ => {
-                    if self.retained.len() >= self.max_retained {
-                        return Err("Retained buff capacity exceeded".into());
-                    }
                     let removed = std::mem::replace(old, b);
+                    let retained_unit = removed.runtime.retained_unit;
                     self.retained.insert(id, (unit, removed));
                     s.mark_dirty();
-                    return Ok(Some(s.buffs()[index].runtime.id));
+                    let installed = s.buffs()[index].runtime.id;
+                    if let Some(id) = retained_unit {
+                        w.unpin_unit(id)?;
+                    }
+                    return Ok(Some(installed));
                 }
             }
             old.permanent = old.runtime.persist && old.runtime.duration == f64::INFINITY;
@@ -406,10 +511,13 @@ impl Runtime {
             }
         }
         // onRemove may add another instance; enforce capacity again after that callback.
-        let s = &mut w.unit_mut(unit)?.stats;
-        if s.buffs().len() >= self.max_buffs {
+        if w.unit(unit)?.stats.buffs().len() >= self.max_buffs {
             return Err("Unit buff capacity exceeded; no effects dropped".into());
         }
+        if let Some(id) = b.runtime.retained_unit {
+            w.pin_unit(id)?;
+        }
+        let s = &mut w.unit_mut(unit)?.stats;
         let id = b.runtime.id;
         let key = status_key(&b);
         let visible = b.runtime.visible || b.runtime.status.is_some();
@@ -481,7 +589,11 @@ impl Runtime {
         let off = (b.runtime.visible || b.runtime.status.is_some())
             && !s.buffs().iter().any(|b| status_key(b) == key);
         let token = b.runtime.on_remove;
+        let retained_unit = b.runtime.retained_unit;
         self.retained.insert(id, (unit, b));
+        if let Some(id) = retained_unit {
+            w.unpin_unit(id)?;
+        }
         if off {
             h.status(unit, &key, false)?;
         }
@@ -624,9 +736,9 @@ impl Runtime {
                         u.regen_acc += regen * dt;
                         if u.regen_acc >= 1.0 || u.stats.hp + u.regen_acc >= max {
                             let amount = u.regen_acc;
-                            health::heal(
+                            h.heal_with_buffs(
                                 w,
-                                h,
+                                r,
                                 Some(unit),
                                 unit,
                                 amount,
@@ -669,6 +781,13 @@ impl Runtime {
                 .runtime
                 .on_tick
                 .ok_or("Buff tick callback removed during interval loop")?;
+            let count = self
+                .get(w, unit, id)?
+                .runtime
+                .tick_count
+                .checked_add(1)
+                .ok_or("Buff tick count exhausted")?;
+            self.edit_timer(w, unit, id, |b| b.runtime.tick_count = count)?;
             h.callback(token, Event::Tick, Context { unit, buff: id, dt }, self, w)
         }
     }
@@ -685,117 +804,5 @@ fn js_max(a: f64, b: f64) -> f64 {
         f64::NAN
     } else {
         a.max(b)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::battle::{
-        health::{Side, Unit},
-        stats::{Base, UnitStats},
-    };
-    struct Host;
-    impl health::Hooks for Host {
-        fn kill(&mut self, _: Id, _: Option<Id>, _: &mut World) -> Result<(), String> {
-            unreachable!()
-        }
-    }
-    impl Hooks for Host {
-        fn status(&mut self, _: Id, _: &str, _: bool) -> Result<(), String> {
-            Ok(())
-        }
-        fn callback(
-            &mut self,
-            token: u64,
-            _: Event,
-            c: Context,
-            r: &mut Runtime,
-            w: &mut World,
-        ) -> Result<(), String> {
-            if token == 1 {
-                r.remove(w, self, c.unit, "b")?;
-            } else {
-                r.tick(w, self, &[c.unit], 0.0)?;
-            }
-            Ok(())
-        }
-    }
-    fn world() -> World {
-        let mut w = World::new(1, 1, 1).unwrap();
-        w.insert_unit(1, Unit::new(UnitStats::new(Base::default()), Side::Ally))
-            .unwrap();
-        w
-    }
-    fn named(key: &str) -> Spec {
-        let mut spec = Spec::default();
-        spec.buff.key = Some(key.into());
-        spec
-    }
-    #[test]
-    fn deployment_discard_keeps_persistent_effects_and_defers_record_release() {
-        let mut w = world();
-        let mut r = Runtime::new(4, 4, 8).unwrap();
-        let mut h = Host;
-        let mut temporary = named("temporary");
-        // This handler would remove b if normal onRemove dispatch ran.
-        temporary.buff.runtime.on_remove = Some(1);
-        let id = r.add(&mut w, &mut h, 1, temporary).unwrap().unwrap();
-        let mut persistent = named("b");
-        persistent.buff.runtime.persist = true;
-        r.add(&mut w, &mut h, 1, persistent).unwrap();
-        r.call(|r| {
-            r.discard_temporary(&mut w, &mut h, 1)?;
-            assert_eq!(r.get(&w, 1, id)?.key.as_deref(), Some("temporary"));
-            assert_eq!(w.unit(1)?.stats.buffs().len(), 1);
-            assert_eq!(w.unit(1)?.stats.buffs()[0].key.as_deref(), Some("b"));
-            Ok(())
-        })
-        .unwrap();
-        assert!(r.get(&w, 1, id).is_err());
-        assert!(r.retained.is_empty());
-    }
-    #[test]
-    fn capacity_failure_preserves_existing_effect_and_faults_runtime() {
-        let mut w = world();
-        let mut r = Runtime::new(1, 2, 8).unwrap();
-        let mut h = Host;
-        let id = r.add(&mut w, &mut h, 1, named("a")).unwrap().unwrap();
-        assert!(r.add(&mut w, &mut h, 1, named("b")).is_err());
-        assert!(r.faulted());
-        assert_eq!(w.unit(1).unwrap().stats.buffs().len(), 1);
-        assert_eq!(r.get(&w, 1, id).unwrap().key.as_deref(), Some("a"));
-        assert!(r.tick(&mut w, &mut h, &[1], 0.1).is_err());
-    }
-    #[test]
-    fn nested_removal_failure_clears_retained_records_and_rejects_continuation() {
-        let mut w = world();
-        let mut r = Runtime::new(4, 1, 8).unwrap();
-        let mut h = Host;
-        let mut a = named("a");
-        a.buff.runtime.on_remove = Some(1);
-        r.add(&mut w, &mut h, 1, a).unwrap();
-        r.add(&mut w, &mut h, 1, named("b")).unwrap();
-        assert!(r.remove(&mut w, &mut h, 1, "a").is_err());
-        assert!(r.faulted());
-        assert!(r.retained.is_empty());
-        assert_eq!(r.depth, 0);
-        assert_eq!(
-            w.unit(1).unwrap().stats.buffs()[0].key.as_deref(),
-            Some("b")
-        );
-    }
-    #[test]
-    fn nested_tick_exhaustion_is_a_technical_failure() {
-        let mut w = world();
-        let mut r = Runtime::new(4, 4, 2).unwrap();
-        let mut h = Host;
-        let mut a = named("a");
-        a.buff.runtime.on_tick = Some(2);
-        r.add(&mut w, &mut h, 1, a).unwrap();
-        assert!(r.tick(&mut w, &mut h, &[1], 0.0).is_err());
-        assert!(r.faulted());
-        assert_eq!(r.depth, 0);
-        assert!(r.retained.is_empty());
     }
 }

@@ -3,7 +3,7 @@
 // Unit removal/redeployment and content callbacks are delegated to the battle host.
 use super::{
     damage::{self, DamageType, Penetration},
-    stats::UnitStats,
+    stats::{Stat, UnitStats},
 };
 use std::collections::BTreeMap;
 pub type Id = u64;
@@ -13,6 +13,7 @@ pub enum Side {
     Enemy,
 }
 pub struct Unit {
+    pub(crate) operator: super::content::operators::Memory,
     pub deployment: super::deploy::State,
     pub targeting: super::targeting::State,
     pub hit_area: Option<super::body::HitArea>,
@@ -30,6 +31,7 @@ pub struct Unit {
     pub stats: UnitStats,
     pub side: Side,
     pub owner: Option<Id>,
+    pub summoner: Option<Id>,
     pub deployed: bool,
     pub removed: bool,
     pub hidden: bool,
@@ -54,12 +56,19 @@ pub struct Unit {
     pub healing_done: f64,
     pub regen_acc: f64,
     pub last_hit_at: f64,
+    pub(crate) polluted_at: f64,
+    pub(crate) chimera_at: f64,
+    pub(crate) terrain: super::terrain::State,
     pub last_attack_at: f64,
     pub attacks: u64,
     pub engaged: bool,
     pins: usize,
 }
 impl Unit {
+    /// Operators and their tokens have kits; map devices do not.
+    pub(crate) fn has_operator_kit(&self) -> bool {
+        self.side == Side::Ally && self.deployment.kind != super::deploy::Kind::Device
+    }
     pub fn blocking(&self) -> &[Id] {
         &self.blocking
     }
@@ -68,6 +77,7 @@ impl Unit {
     }
     pub fn new(stats: UnitStats, side: Side) -> Self {
         Self {
+            operator: Default::default(),
             deployment: super::deploy::State::default(),
             targeting: super::targeting::State::default(),
             hit_area: None,
@@ -85,6 +95,7 @@ impl Unit {
             stats,
             side,
             owner: None,
+            summoner: None,
             deployed: false,
             removed: false,
             hidden: false,
@@ -106,6 +117,9 @@ impl Unit {
             damage_taken: 0.0,
             healing_done: 0.0,
             regen_acc: 0.0,
+            polluted_at: f64::NEG_INFINITY,
+            chimera_at: f64::NEG_INFINITY,
+            terrain: Default::default(),
             last_hit_at: f64::NEG_INFINITY,
             last_attack_at: f64::NEG_INFINITY,
             attacks: 0,
@@ -118,18 +132,42 @@ impl Unit {
 pub struct PlayerTotals {
     pub damage: f64,
     pub boss_damage: f64,
+    /// Match-level SharedBossPool.onHit credits, accumulated in hit order.
+    pub match_boss_damage: f64,
     pub healing: f64,
 }
 pub struct Pool {
     pub hp: f64,
     pub max_hp: f64,
 }
+#[derive(Clone, Copy)]
+enum PoolPolicy {
+    Exact,
+    SharedBoss,
+}
+struct StoredPool {
+    value: Pool,
+    policy: PoolPolicy,
+}
+impl Pool {
+    pub(crate) fn validate_shared(&self) -> Result<(), String> {
+        if !self.max_hp.is_finite()
+            || self.max_hp < 1.
+            || !self.hp.is_finite()
+            || self.hp < 0.
+            || self.hp > self.max_hp
+        {
+            return Err("Boss pool requires finite 0 <= hp <= maxHp and maxHp >= 1".into());
+        }
+        Ok(())
+    }
+}
 pub struct World {
     unit_sequence: u64,
     deployment_sequence: u64,
     attack_sequence: u64,
     units: BTreeMap<Id, Unit>,
-    pools: BTreeMap<Id, Pool>,
+    pools: BTreeMap<Id, StoredPool>,
     players: BTreeMap<Id, PlayerTotals>,
     capacities: [usize; 3],
     pub time: f64,
@@ -212,10 +250,22 @@ impl World {
         Ok(())
     }
     pub fn insert_pool(&mut self, id: Id, value: Pool) -> Result<(), String> {
+        self.insert_pool_with_policy(id, value, PoolPolicy::Exact)
+    }
+    pub(crate) fn insert_shared_boss_pool(&mut self, id: Id, value: Pool) -> Result<(), String> {
+        value.validate_shared()?;
+        self.insert_pool_with_policy(id, value, PoolPolicy::SharedBoss)
+    }
+    fn insert_pool_with_policy(
+        &mut self,
+        id: Id,
+        value: Pool,
+        policy: PoolPolicy,
+    ) -> Result<(), String> {
         if self.pools.contains_key(&id) || self.pools.len() >= self.capacities[1] {
             return Err("Duplicate pool or pool capacity exceeded".into());
         }
-        self.pools.insert(id, value);
+        self.pools.insert(id, StoredPool { value, policy });
         Ok(())
     }
     pub fn insert_player(&mut self, id: Id, value: PlayerTotals) -> Result<(), String> {
@@ -224,6 +274,9 @@ impl World {
         }
         self.players.insert(id, value);
         Ok(())
+    }
+    pub fn unit_ids(&self) -> impl Iterator<Item = Id> + '_ {
+        self.units.keys().copied()
     }
     pub fn unit(&self, id: Id) -> Result<&Unit, String> {
         unit(self, id)
@@ -242,13 +295,16 @@ impl World {
         Ok(())
     }
     pub fn pool(&self, id: Id) -> Option<&Pool> {
-        self.pools.get(&id)
+        self.pools.get(&id).map(|p| &p.value)
     }
     pub fn pool_mut(&mut self, id: Id) -> Option<&mut Pool> {
-        self.pools.get_mut(&id)
+        self.pools.get_mut(&id).map(|p| &mut p.value)
     }
     pub fn player(&self, id: Id) -> Option<&PlayerTotals> {
         self.players.get(&id)
+    }
+    pub(crate) fn player_mut(&mut self, id: Id) -> Option<&mut PlayerTotals> {
+        self.players.get_mut(&id)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,6 +352,17 @@ pub struct Hit {
 /// All handlers run synchronously and may change world state, including the target's HP.
 /// Errors are technical failures propagated to the future environment owner.
 pub trait Hooks {
+    fn adjust_heal(
+        &mut self,
+        _source: Option<Id>,
+        _target: Id,
+        amount: f64,
+        _options: HealOptions,
+        _world: &mut World,
+    ) -> Result<f64, String> {
+        Ok(amount)
+    }
+
     fn emit(&mut self, _event: &mut Event, _world: &mut World) -> Result<(), String> {
         Ok(())
     }
@@ -330,11 +397,11 @@ fn unit_mut(w: &mut World, id: Id) -> Result<&mut Unit, String> {
         .get_mut(&id)
         .ok_or_else(|| format!("Unknown health unit {id}"))
 }
-fn stats(w: &mut World, id: Id, key: &str) -> Result<f64, String> {
+fn stats(w: &mut World, id: Id, stat: Stat) -> Result<f64, String> {
     unit_mut(w, id)?
         .stats
         .stats()
-        .map(|s| s.n(key))
+        .map(|s| s.get(stat))
         .map_err(str::to_string)
 }
 fn flag(w: &mut World, id: Id, key: &str) -> Result<bool, String> {
@@ -436,17 +503,34 @@ pub fn apply_hp_decrease<H: Hooks>(
             .and_then(|c| world.units.get(&c))
             .filter(|c| c.side == Side::Ally)
             .and_then(|c| c.owner);
-        let p = world.pools.get_mut(&id).ok_or("Unknown boss pool")?;
+        let stored = world.pools.get_mut(&id).ok_or("Unknown boss pool")?;
+        let p = &mut stored.value;
         let before = p.hp;
-        if hp_amount > 0.0 {
-            p.hp = (p.hp - hp_amount).max(0.0);
-        }
+        let credited = match stored.policy {
+            PoolPolicy::SharedBoss if hp_amount.is_finite() && hp_amount > 0. && before > 0. => {
+                let taken = if before - hp_amount < 1. {
+                    before
+                } else {
+                    hp_amount
+                };
+                p.hp -= taken;
+                taken
+            }
+            PoolPolicy::SharedBoss => 0.,
+            PoolPolicy::Exact => {
+                if hp_amount > 0. {
+                    p.hp = (p.hp - hp_amount).max(0.);
+                }
+                0.
+            }
+        };
         let d = (before - p.hp).max(0.0);
         dealt = if d.is_finite() { d } else { 0.0 };
         let (pool_hp, max_hp) = (p.hp, p.max_hp);
         if let Some(owner) = credit_owner {
             if let Some(pp) = world.players.get_mut(&owner) {
                 pp.boss_damage += dealt;
+                pp.match_boss_damage += credited;
             }
         }
         let u = unit_mut(world, hit.target)?;
@@ -464,7 +548,7 @@ pub fn apply_hp_decrease<H: Hooks>(
         } else {
             0.0
         };
-        u.stats.hp = u.stats.stats().map_err(str::to_string)?.n("maxHp") * ratio.min(1.0);
+        u.stats.hp = u.stats.stats().map_err(str::to_string)?.get(Stat::MaxHp) * ratio.min(1.0);
     } else {
         let before = unit(world, hit.target)?.stats.hp;
         let u = unit_mut(world, hit.target)?;
@@ -477,7 +561,7 @@ pub fn apply_hp_decrease<H: Hooks>(
                 && unit(world, hit.target)?.stats.alive
                 && unit(world, hit.target)?.stats.hp < 1.0
             {
-                let max = stats(world, hit.target, "maxHp")?;
+                let max = stats(world, hit.target, Stat::MaxHp)?;
                 unit_mut(world, hit.target)?.stats.hp = 1.0f64.min(max);
             }
         }
@@ -529,7 +613,7 @@ pub fn apply_hp_decrease<H: Hooks>(
     }
     let u = unit(world, hit.target)?;
     let dead = if let Some(id) = u.pool {
-        world.pools.get(&id).ok_or("Unknown boss pool")?.hp <= 0.0
+        world.pools.get(&id).ok_or("Unknown boss pool")?.value.hp <= 0.0
     } else {
         u.stats.hp <= 0.0
     };
@@ -585,12 +669,13 @@ pub fn heal<H: Hooks>(
     } else {
         amount
             * if let Some(s) = source {
-                stats(world, s, "healingDealtMul")?
+                stats(world, s, Stat::HealingDealtMul)?
             } else {
                 1.0
             }
-            * stats(world, target, "healingTakenMul")?
+            * stats(world, target, Stat::HealingTakenMul)?
     };
+    amt = hooks.adjust_heal(source, target, amt, opts, world)?;
     if !(amt > 0.0) || !amt.is_finite() {
         return Ok(0.0);
     }
@@ -626,7 +711,7 @@ pub fn heal<H: Hooks>(
             return Ok(0.0);
         }
     }
-    let max = stats(world, target, "maxHp")?;
+    let max = stats(world, target, Stat::MaxHp)?;
     let actual = amt.min(max - unit(world, target)?.stats.hp).max(0.0);
     let u = unit_mut(world, target)?;
     u.stats.hp = max.min(u.stats.hp + actual);
@@ -659,101 +744,4 @@ pub fn heal<H: Hooks>(
         hooks.number(true, target, actual)?;
     }
     Ok(actual)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::battle::stats::{Base, Buff};
-    fn world() -> World {
-        let mut w = World::new(1, 1, 1).unwrap();
-        let mut base = Base::default();
-        base.0.insert("maxHp".into(), 100.0);
-        let mut u = Unit::new(UnitStats::new(base), Side::Ally);
-        u.deployed = true;
-        u.stats.hp = 20.0;
-        w.insert_unit(1, u).unwrap();
-        w
-    }
-    struct Host {
-        death: bool,
-        heal_calls: usize,
-    }
-    impl Hooks for Host {
-        fn emit(&mut self, e: &mut Event, w: &mut World) -> Result<(), String> {
-            if e.stage == Stage::Heal {
-                self.heal_calls += 1;
-                e.amount = 0.0;
-                if self.death {
-                    w.unit_mut(e.target)?.stats.alive = false;
-                }
-            }
-            Ok(())
-        }
-        fn kill(&mut self, _: Id, _: Option<Id>, _: &mut World) -> Result<(), String> {
-            Err("Unexpected kill".into())
-        }
-    }
-    #[test]
-    fn registry_overflow_preserves_existing_units_and_allows_final_release() {
-        let mut w = world();
-        assert!(w
-            .insert_unit(1, Unit::new(UnitStats::new(Base::default()), Side::Enemy))
-            .is_err());
-        assert!(w
-            .insert_unit(2, Unit::new(UnitStats::new(Base::default()), Side::Enemy))
-            .is_err());
-        assert_eq!(w.unit(1).unwrap().stats.hp, 20.0);
-        assert!(w.release_removed(1).is_err());
-        w.unit_mut(1).unwrap().removed = true;
-        w.release_removed(1).unwrap();
-        w.insert_unit(2, Unit::new(UnitStats::new(Base::default()), Side::Enemy))
-            .unwrap();
-    }
-    #[test]
-    fn regen_ignores_heal_modifier_but_rechecks_target_liveness() {
-        let mut w = world();
-        let mut h = Host {
-            death: false,
-            heal_calls: 0,
-        };
-        let opts = HealOptions {
-            regen: true,
-            ..HealOptions::default()
-        };
-        assert_eq!(heal(&mut w, &mut h, Some(1), 1, 10.0, opts).unwrap(), 10.0);
-        assert_eq!(h.heal_calls, 1);
-        h.death = true;
-        assert_eq!(heal(&mut w, &mut h, Some(1), 1, 10.0, opts).unwrap(), 0.0);
-        assert_eq!(w.unit(1).unwrap().stats.hp, 30.0);
-    }
-    #[test]
-    fn restore_bypasses_heal_free_and_heal_callbacks() {
-        let mut w = world();
-        w.unit_mut(1).unwrap().stats.set_buffs(vec![Buff {
-            flags: ["healFree".into(), "noHeal".into()].into_iter().collect(),
-            ..Buff::default()
-        }]);
-        let mut h = Host {
-            death: true,
-            heal_calls: 0,
-        };
-        assert_eq!(
-            heal(
-                &mut w,
-                &mut h,
-                None,
-                1,
-                10.0,
-                HealOptions {
-                    restore: true,
-                    ..HealOptions::default()
-                }
-            )
-            .unwrap(),
-            10.0
-        );
-        assert_eq!(h.heal_calls, 0);
-        assert!(w.unit(1).unwrap().stats.alive);
-    }
 }

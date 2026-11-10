@@ -9,6 +9,8 @@
 
 [Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) 的 Gymnasium 环境。
 
+当前维护与原生迁移范围仅限绝境（`mode_single_abyss`），进度见 [迁移文档](docs/NATIVE-033.md)。
+
 ## 安装
 
 Python 3.10+、Node 22+
@@ -55,6 +57,34 @@ with gym.make("ArkGuardRL-v0", engine_root="/path/to/engine") as env:
   通用 `check_env()` 的无掩码随机动作会选中 padding，请按掩码采样。
 - 难度与预算只能在构造时配置，`reset(options=...)` 不接受其他选项。
 
+## 原生绝境开发入口
+
+Rust 0.3.3 内核可通过 `ArkGuardRL-v1` 使用；核心固定为实验参数，不进入动作空间。先按上文安装 Python 包及特征内核，再用同一 Python 编译对局绑定：
+
+```sh
+PYO3_PYTHON="$(command -v python)" cargo build --release -p arkguard-python
+```
+
+```python
+import gymnasium as gym
+import arkguardrl_core.native_gym
+
+with gym.make(
+    "ArkGuardRL-v1",
+    data_root="/path/to/0.3.3/data",
+    core="band_sarkazb",  # band_amiya / band_sarkazb / band_chen / band_sciurus
+    native_library="target/release/lib_native.dylib",  # Linux: lib_native.so
+) as env:
+    obs, info = env.reset(seed=42)
+    done = False
+    while not done:
+        action = env.action_space.sample(mask=obs["action_mask"])
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+```
+
+运行时只读取数据目录，不启动 Node，也不检查游戏源码仓库。观测维度、候选特征、奖励和按掩码采样方式沿用上表；`banned` 可传手动禁用干员 ID。`tick_budget` 控制每次原生战斗续跑的帧数，Gym 自动推进到下一决策。决策/时间预算在完整决策边界返回截断；战斗中途耗尽 `max_advances` 会抛异常，不返回无法 bootstrap 的半场状态。整局原版联合验收、原生批量接口与性能目标尚未完成。
+
 ## 并行与测量
 
 支持 `SyncVectorEnv` / `AsyncVectorEnv`。Async 使用 `spawn` 和共享内存，入口需要
@@ -63,14 +93,6 @@ with gym.make("ArkGuardRL-v0", engine_root="/path/to/engine") as env:
 ```sh
 python benchmarks/gym_env.py --engine-root /path/to/engine \
   --vector async --envs 4 --steps 256 --repeats 3 --out artifacts/gym-async-4.json
-```
-
-## 测试
-
-原生集成测试需显式提供引擎路径，会实际运行对局：
-
-```sh
-ARKGUARD_ENGINE_ROOT=/path/to/engine python -m unittest discover -s tests -p test_gym_env.py -v
 ```
 
 ## 文档

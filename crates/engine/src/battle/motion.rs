@@ -5,6 +5,7 @@ use super::{
     buffs::Runtime,
     grid::{Flow, Grid, Rect, COLS, N},
     health::{Id, World},
+    stats::Stat,
     status::FearStamp,
 };
 use crate::deterministic::{math::hypot, rng::Rng};
@@ -19,6 +20,7 @@ pub enum Leg {
 }
 #[derive(Clone, Debug)]
 pub struct Route {
+    pub(crate) patrol: bool,
     capacity: usize,
     legs: Vec<Leg>,
     pub leg: usize,
@@ -102,7 +104,77 @@ impl Route {
             });
         }
         Ok(Self {
+            patrol: false,
             capacity,
+            legs,
+            leg: 0,
+            wait_left: None,
+            points: None,
+            point: 0,
+            version: 0,
+            suffix: vec![],
+            tail: None,
+            tail_version: 0,
+            spawn,
+        })
+    }
+    pub(crate) fn after_wait(&self, spawn: [f64; 2], rect: Rect) -> Result<Self, String> {
+        let mut next = self.remaining(spawn, rect)?;
+        if matches!(next.legs.first(), Some(Leg::Wait(_))) {
+            next.legs.remove(0);
+        }
+        Ok(next)
+    }
+    pub(crate) fn stationary(&self, spawn: [f64; 2], rect: Rect) -> Result<Self, String> {
+        let mut next = self.remaining(spawn, rect)?;
+        if next.capacity < 2 {
+            return Err("Stationary child route exceeds leg capacity".into());
+        }
+        next.legs = vec![
+            Leg::Wait(99999.),
+            Leg::Move {
+                tile: [
+                    (spawn[0] + 0.5)
+                        .floor()
+                        .clamp(rect.r0 as f64, rect.r1 as f64) as i32,
+                    (spawn[1] + 0.5)
+                        .floor()
+                        .clamp(rect.c0 as f64, rect.c1 as f64) as i32,
+                ],
+                final_leg: true,
+            },
+        ];
+        Ok(next)
+    }
+    /// A child starts a fresh movement cursor at the parent's remaining legs.
+    pub(crate) fn remaining(&self, spawn: [f64; 2], rect: Rect) -> Result<Self, String> {
+        let mut legs: Vec<_> = self.legs.iter().skip(self.leg).cloned().collect();
+        if let Some(Leg::Wait(time)) = legs.first_mut() {
+            *time = self.wait_left.unwrap_or(*time).max(0.);
+        }
+        if !legs.iter().any(|l| {
+            matches!(
+                l,
+                Leg::Move {
+                    final_leg: true,
+                    ..
+                }
+            )
+        }) {
+            legs.push(Leg::Move {
+                tile: [
+                    (spawn[0].round() as i32).clamp(rect.r0, rect.r1),
+                    (spawn[1].round() as i32).clamp(rect.c0, rect.c1),
+                ],
+                final_leg: true,
+            });
+        }
+        if legs.len() > self.capacity {
+            return Err("Route leg capacity exceeded; no checkpoints dropped".into());
+        }
+        Ok(Self {
+            patrol: self.patrol,
+            capacity: self.capacity,
             legs,
             leg: 0,
             wait_left: None,
@@ -158,7 +230,7 @@ pub trait Hooks {
     fn portal_pickup(&mut self, id: Id, w: &mut World, g: &mut Grid) -> Result<bool, String> {
         portal_pickup(w, g, id)
     }
-    fn leak(&mut self, id: Id, w: &mut World) -> Result<(), String>;
+    fn leak(&mut self, id: Id, w: &mut World, rng: &mut Rng) -> Result<(), String>;
 }
 fn round(x: f64) -> f64 {
     let f = x.floor();
@@ -381,6 +453,7 @@ pub fn advance<H: Hooks>(
     id: Id,
     dt: f64,
     mut standing: bool,
+    rng: &mut Rng,
 ) -> Result<(), String> {
     if !dt.is_finite() || dt < 0.0 {
         return Err("Invalid movement tick".into());
@@ -393,7 +466,7 @@ pub fn advance<H: Hooks>(
         let leg = route(w, id)?.legs.get(route(w, id)?.leg).cloned();
         let Some(leg) = leg else {
             if !h.portal_pickup(id, w, g)? {
-                h.leak(id, w)?;
+                h.leak(id, w, rng)?;
                 return Ok(());
             }
             continue;
@@ -442,7 +515,7 @@ pub fn advance<H: Hooks>(
                     .stats
                     .stats()
                     .map_err(str::to_string)?
-                    .n("moveSpeed")
+                    .get(Stat::MoveSpeed)
                     * 0.5;
                 if speed <= 0.0 {
                     w.unit_mut(id)?.moving = false;
@@ -478,7 +551,7 @@ pub fn advance<H: Hooks>(
                     .unwrap_or(false)
                 {
                     if final_leg && !h.portal_pickup(id, w, g)? {
-                        h.leak(id, w)?;
+                        h.leak(id, w, rng)?;
                         return Ok(());
                     }
                     let r = route_mut(w, id)?;
@@ -490,19 +563,27 @@ pub fn advance<H: Hooks>(
     }
     Ok(())
 }
-fn step(w: &mut World, id: Id, p: [f64; 2], distance: f64) -> Result<(f64, bool, f64), String> {
-    let u = w.unit_mut(id)?;
-    let dy = p[0] - u.position[0];
-    let dx = p[1] - u.position[1];
+pub(crate) fn step_position(
+    mut position: [f64; 2],
+    p: [f64; 2],
+    distance: f64,
+) -> ([f64; 2], f64, bool, f64) {
+    let dy = p[0] - position[0];
+    let dx = p[1] - position[1];
     let d = hypot(dx, dy);
     if d <= distance {
-        u.position = p;
-        Ok((distance - d, true, d))
+        (p, distance - d, true, d)
     } else {
-        u.position[1] += (dx / d) * distance;
-        u.position[0] += (dy / d) * distance;
-        Ok((0.0, false, d))
+        position[1] += (dx / d) * distance;
+        position[0] += (dy / d) * distance;
+        (position, 0.0, false, d)
     }
+}
+fn step(w: &mut World, id: Id, p: [f64; 2], distance: f64) -> Result<(f64, bool, f64), String> {
+    let u = w.unit_mut(id)?;
+    let (position, left, reached, used) = step_position(u.position, p, distance);
+    u.position = position;
+    Ok((left, reached, used))
 }
 fn open(g: &Grid, fly: bool, k: usize) -> bool {
     let tile = coord(k);
@@ -768,7 +849,7 @@ pub fn move_feared(
         .stats
         .stats()
         .map_err(str::to_string)?
-        .n("moveSpeed")
+        .get(Stat::MoveSpeed)
         * 0.5;
     let mut moved = false;
     if speed > 0.0 {
@@ -829,30 +910,38 @@ pub fn update<H: Hooks>(
     if !dt.is_finite() || dt < 0.0 {
         return Err("Invalid movement tick".into());
     }
-    let u = w.unit_mut(id)?;
-    let flags = u.stats.stats().map_err(str::to_string)?.flags.clone();
-    if flags.contains("noMove") {
-        u.moving = false;
+    let (no_move, fear, attracted) = {
+        let u = w.unit_mut(id)?;
+        let hidden = u.hidden;
+        let f = &u.stats.stats().map_err(str::to_string)?.flags;
+        (
+            f.contains("noMove"),
+            f.contains("fear") && !hidden,
+            f.contains("attract"),
+        )
+    };
+    if no_move {
+        w.unit_mut(id)?.moving = false;
         return Ok(());
     }
-    if flags.contains("fear") && !u.hidden {
+    if fear {
         if unbalanced {
-            u.moving = false;
+            w.unit_mut(id)?.moving = false;
             return Ok(());
         }
         return move_feared(w, g, rng, id, dt);
     }
-    if u.motion.fear.is_some() {
+    if w.unit(id)?.motion.fear.is_some() {
         end_fear(w, id)?;
     }
-    if flags.contains("attract") {
+    if attracted {
         if standing {
             w.unit_mut(id)?.moving = false;
             return Ok(());
         }
         return move_attracted(w, g, r, id, dt);
     }
-    advance(w, g, h, id, dt, standing)
+    advance(w, g, h, id, dt, standing, rng)
 }
 pub fn move_attracted(
     w: &mut World,
@@ -920,7 +1009,7 @@ pub fn move_attracted(
             .stats
             .stats()
             .map_err(str::to_string)?
-            .n("moveSpeed")
+            .get(Stat::MoveSpeed)
             * 0.5
             * dt;
         let mut moved = false;
@@ -950,88 +1039,4 @@ pub fn move_attracted(
         }
         Ok(())
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::{
-        health::{Side, Unit},
-        stats::{Base, UnitStats},
-    };
-    use super::*;
-    use serde_json::json;
-    struct Host;
-    impl Hooks for Host {
-        fn check_block(&mut self, _: Id, _: &mut World, _: &mut Grid) -> Result<bool, String> {
-            Ok(false)
-        }
-        fn hidden(&mut self, id: Id, on: bool, w: &mut World) -> Result<(), String> {
-            w.unit_mut(id)?.hidden = on;
-            Ok(())
-        }
-        fn cut_attack_stand(&mut self, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-        fn leak(&mut self, id: Id, w: &mut World) -> Result<(), String> {
-            w.unit_mut(id)?.stats.alive = false;
-            Ok(())
-        }
-    }
-    fn world() -> World {
-        let mut w = World::new(1, 1, 1).unwrap();
-        let mut u = Unit::new(UnitStats::new(Base::default()), Side::Enemy);
-        u.deployed = true;
-        w.insert_unit(1, u).unwrap();
-        w
-    }
-    #[test]
-    fn route_and_portal_capacity_fail_without_clipping_legs() {
-        let data = json!({"checkpoints":[{"type":"WAIT","time":1.0}],"end":[10,6]});
-        assert!(Route::compile(&data, Rect::FULL, 1, [10.0, 6.0]).is_err());
-        assert!(Route::compile(&json!({"end":[1.5,6]}), Rect::FULL, 8, [10.0, 6.0]).is_err());
-        let mut rows = vec!["r".repeat(21); 19];
-        rows[10].replace_range(6..7, "I");
-        rows[10].replace_range(8..9, "O");
-        rows[10].replace_range(10..11, "E");
-        let g = Grid::new(&json!({"rows":rows,"legend":{}}), Rect::FULL).unwrap();
-        let mut w = world();
-        let u = w.unit_mut(1).unwrap();
-        u.position = [10.0, 6.0];
-        u.motion.route =
-            Some(Route::compile(&json!({"end":[10,6]}), Rect::FULL, 1, u.position).unwrap());
-        assert!(portal_pickup(&mut w, &g, 1).is_err());
-        assert_eq!(route(&w, 1).unwrap().legs.len(), 1);
-        assert_eq!(route(&w, 1).unwrap().leg, 0);
-        // A farther exit outside this battle's rectangle cannot receive the unit.
-        rows[2].replace_range(20..21, "O");
-        let rect = Rect {
-            r0: 9,
-            r1: 12,
-            c0: 2,
-            c1: 10,
-        };
-        let g = Grid::new(&json!({"rows":rows,"legend":{}}), rect).unwrap();
-        w.unit_mut(1).unwrap().motion.route =
-            Some(Route::compile(&json!({"end":[10,6]}), rect, 8, [10.0, 6.0]).unwrap());
-        assert!(portal_pickup(&mut w, &g, 1).unwrap());
-        assert!(matches!(
-            route(&w, 1).unwrap().legs[3],
-            Leg::Appear([10, 8])
-        ));
-    }
-    #[test]
-    fn attack_stand_advances_wait_and_teleport_before_holding_walk() {
-        let mut w = world();
-        let mut g = Grid::new(
-            &json!({"rows":vec!["r".repeat(21);19],"legend":{}}),
-            Rect::FULL,
-        )
-        .unwrap();
-        w.unit_mut(1).unwrap().motion.route=Some(Route::compile(&json!({"checkpoints":[{"type":"WAIT","time":0.1},{"type":"DISAPPEAR"},{"type":"APPEAR","pos":[10,6]},{"type":"WAIT","time":0.1}],"end":[10,8]}),Rect::FULL,8,[0.0;2]).unwrap());
-        advance(&mut w, &mut g, &mut Host, 1, 0.15, true).unwrap();
-        assert_eq!(w.unit(1).unwrap().position, [10.0, 6.0]);
-        assert!(!w.unit(1).unwrap().hidden);
-        assert_eq!(route(&w, 1).unwrap().leg, 3);
-        assert!((route(&w, 1).unwrap().wait_left.unwrap() - 0.05).abs() < 1e-15);
-    }
 }

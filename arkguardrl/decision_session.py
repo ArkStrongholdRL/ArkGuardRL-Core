@@ -32,7 +32,8 @@ class DecisionSession:
     def decision(self):
         if self.result is None:
             raise RuntimeError("Reset before constructing a decision")
-        return build_decision(self.result.observation, self.catalog, self.history)
+        return build_decision(self.result.observation, self.catalog, self.history,
+                              encoder=getattr(self.environment, 'numeric_encoder', None))
 
     def step(self, action):
         if self.result is None:
@@ -50,4 +51,9 @@ class DecisionSession:
     def observation_features(self):
         if self.result is None:
             raise RuntimeError("Reset before encoding a successor")
+        encoder = getattr(self.environment, 'numeric_encoder', None)
+        if encoder is not None:
+            state = self.result.observation
+            self.catalog.validate_state(state)
+            return encoder(state, (), self.catalog, self.history.snapshot(state))[0]
         return encode_observation(self.result.observation, self.catalog, self.history)

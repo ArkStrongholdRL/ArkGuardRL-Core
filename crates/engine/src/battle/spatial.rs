@@ -3,10 +3,10 @@
 use super::{
     body,
     grid::N,
-    health::{Id, World},
+    health::{Id, Side, World},
     targeting::{self, Profile, Queries},
 };
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 /// Content may permit a particular healer to bypass a target's noHeal flag.
 /// The target profile's noHeal restriction still applies.
 pub trait Healing {
@@ -60,14 +60,11 @@ pub fn enemies_in_radius<Q: Queries>(
     let mut out = vec![];
     for id in candidates {
         if foes {
-            let f = w
-                .unit_mut(id)?
-                .stats
-                .stats()
-                .map_err(str::to_string)?
-                .flags
-                .clone();
-            if f.contains("untargetable") || f.contains("stealth") && q.enemy_stealthed(id, w)? {
+            let (untargetable, stealth) = {
+                let f = &w.unit_mut(id)?.stats.stats().map_err(str::to_string)?.flags;
+                (f.contains("untargetable"), f.contains("stealth"))
+            };
+            if untargetable || stealth && q.enemy_stealthed(id, w)? {
                 continue;
             }
         }
@@ -189,13 +186,29 @@ pub fn injured_allies<H: Healing>(
 pub struct Index {
     range: Vec<Vec<Id>>,
     tiles: Vec<Vec<Id>>,
-    multi: BTreeMap<Id, bool>,
-    huge: BTreeMap<Id, bool>,
+    // Lookup only: bucket insertion order, never hash iteration, orders targets.
+    membership: HashMap<Id, (bool, bool)>,
+    range_keys: Vec<usize>,
+    range_used: Vec<usize>,
+    tiles_used: Vec<usize>,
     max_enemies: usize,
     max_rows: usize,
     valid: bool,
 }
 impl Index {
+    /// Retired units must leave the index before next frame's scheduled queries.
+    pub fn retire(&mut self, id: Id) {
+        if self.membership.remove(&id).is_none() {
+            return;
+        }
+        for &key in &self.range_used {
+            self.range[key].retain(|&candidate| candidate != id);
+        }
+        for &key in &self.tiles_used {
+            self.tiles[key].retain(|&candidate| candidate != id);
+        }
+    }
+
     pub fn new(max_enemies: usize, max_rows: usize) -> Result<Self, String> {
         if max_enemies == 0 || max_rows == 0 {
             return Err("Spatial index limits must be positive".into());
@@ -203,8 +216,10 @@ impl Index {
         Ok(Self {
             range: vec![vec![]; N],
             tiles: vec![vec![]; N],
-            multi: BTreeMap::new(),
-            huge: BTreeMap::new(),
+            membership: HashMap::new(),
+            range_keys: Vec::new(),
+            range_used: Vec::new(),
+            tiles_used: Vec::new(),
             max_enemies,
             max_rows,
             valid: false,
@@ -212,11 +227,14 @@ impl Index {
     }
     pub fn rebuild(&mut self, w: &World, enemies: &[Id]) -> Result<(), String> {
         self.valid = false;
-        for bucket in self.range.iter_mut().chain(self.tiles.iter_mut()) {
-            bucket.clear();
+        // Node queries.js only resets the buckets used by the previous build.
+        for key in self.range_used.drain(..) {
+            self.range[key].clear();
         }
-        self.multi.clear();
-        self.huge.clear();
+        for key in self.tiles_used.drain(..) {
+            self.tiles[key].clear();
+        }
+        self.membership.clear();
         if enemies.len() > self.max_enemies {
             return Err("Spatial enemy capacity exceeded".into());
         }
@@ -226,20 +244,42 @@ impl Index {
             if !e.stats.alive || e.hidden {
                 continue;
             }
-            let range = body::collider_keys(e);
-            let tiles = body::keys(e);
-            if self.multi.insert(id, range.len() > 1).is_some() {
+            let mut point_range = [0; 4];
+            let point_tile = body::position_key(e);
+            let (range, tiles): (&[usize], &[usize]) =
+                if e.hit_area.is_some() || e.side == Side::Ally {
+                    // Rectangle coverage is identical for the two indices.
+                    body::keys_into(e, &mut self.range_keys);
+                    (&self.range_keys, &self.range_keys)
+                } else {
+                    let mut len = 0;
+                    body::enemy_collider_keys(e.position, |key| {
+                        point_range[len] = key;
+                        len += 1;
+                    });
+                    (&point_range[..len], point_tile.as_slice())
+                };
+            if self
+                .membership
+                .insert(id, (range.len() > 1, e.hit_area.is_some()))
+                .is_some()
+            {
                 return Err("Duplicate indexed enemy".into());
             }
-            self.huge.insert(id, e.hit_area.is_some());
             rows += range.len() + tiles.len();
             if rows > self.max_rows {
                 return Err("Spatial row capacity exceeded; no memberships dropped".into());
             }
-            for k in range {
+            for &k in range {
+                if self.range[k].is_empty() {
+                    self.range_used.push(k);
+                }
                 self.range[k].push(id);
             }
-            for k in tiles {
+            for &k in tiles {
+                if self.tiles[k].is_empty() {
+                    self.tiles_used.push(k);
+                }
                 self.tiles[k].push(id);
             }
         }
@@ -268,9 +308,9 @@ impl Index {
             };
             for &id in bucket {
                 let dedup = if tile_rule {
-                    self.huge[&id]
+                    self.membership[&id].1
                 } else {
-                    self.multi[&id]
+                    self.membership[&id].0
                 };
                 if dedup && !seen.insert(id) {
                     continue;

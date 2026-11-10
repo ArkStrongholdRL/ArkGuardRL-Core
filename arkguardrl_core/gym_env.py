@@ -50,9 +50,26 @@ class ArkGuardEnv(gym.Env):
         self.catalog = None
         # Gym inputs do not consume route geometry. Keep explicit geometry()
         # available on demand without projecting paths on every decision.
-        self._pool = RouteSessionPool(inline_geometry=False)
+        self._pool = self._make_pool()
         self._session = self._decision = self._result = None
         self._done = True
+
+    def _make_pool(self):
+        return RouteSessionPool(inline_geometry=False)
+
+    def _load_catalog(self):
+        return PublicCatalog(self.engine_root, self.expected_data_sha256)
+
+    def _make_environment(self):
+        return RouteEnv(self.engine_root, session_pool=self._pool, deadline=float("inf"),
+            expected_data_sha256=self.catalog.data_sha256, timeout=self.timeout,
+            max_decisions=self.max_decisions, max_advances=self.max_advances)
+
+    def _make_decision_session(self, environment):
+        return DecisionSession(environment, self.catalog)
+
+    def _make_reward(self):
+        return NativeProgressCore()
 
     def _close_episode(self, error=False):
         if self._session is not None:
@@ -69,18 +86,16 @@ class ArkGuardEnv(gym.Env):
         started = time.perf_counter()
         try:
             if self.catalog is None:
-                self.catalog = PublicCatalog(self.engine_root, self.expected_data_sha256)
+                self.catalog = self._load_catalog()
             # Gym seeds include zero and arbitrarily large integers. The engine
             # accepts nonzero uint32; derive it from Gym's reproducible RNG stream.
             self._engine_seed = int(self.np_random.integers(1, 2**32))
-            environment = RouteEnv(self.engine_root, session_pool=self._pool, deadline=float("inf"),
-                expected_data_sha256=self.catalog.data_sha256, timeout=self.timeout,
-                max_decisions=self.max_decisions, max_advances=self.max_advances)
-            self._session = DecisionSession(environment, self.catalog)
+            environment = self._make_environment()
+            self._session = self._make_decision_session(environment)
             self._session.__enter__()
             self._result = self._session.reset(seed=self._engine_seed, difficulty=self.difficulty)
             engine_seconds = time.perf_counter()-started
-            self._reward = NativeProgressCore()
+            self._reward = self._make_reward()
             self._reward.reset(self._result.observation)
             observation, info = self._observe(self._result.reason)
             if self.profile:
@@ -107,7 +122,7 @@ class ArkGuardEnv(gym.Env):
             self._decision, count = None, 0
             features = self._session.observation_features()
         observation = {
-            "observation": np.asarray(features, dtype=np.float32),
+            "observation": np.array(features, dtype=np.float32, copy=True),
             "candidates": np.zeros((self.max_candidates, ACTION_DIM), dtype=np.float32),
             "schedules": np.zeros(self.max_candidates, dtype=np.int64),
             "experts": np.zeros(self.max_candidates, dtype=np.int64),

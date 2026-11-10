@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Stronghold Protocol attack/calculation.js. Pure arithmetic only: no injury hooks or HP mutation.
-use super::stats::Stats;
+use super::stats::{Stat, Stats};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DamageType {
     Physical,
@@ -47,11 +47,11 @@ pub fn mitigate(
 ) -> f64 {
     match kind {
         DamageType::Physical => {
-            let eff = max(0.0, target.n("def") - ign.def_flat) * (1.0 - clamp01(ign.def_pct));
+            let eff = max(0.0, target.get(Stat::Def) - ign.def_flat) * (1.0 - clamp01(ign.def_pct));
             max(amount - eff, 0.05 * amount)
         }
         DamageType::Arts => {
-            let eff = max(0.0, target.n("res") - ign.res_flat) * (1.0 - clamp01(ign.res_pct));
+            let eff = max(0.0, target.get(Stat::Res) - ign.res_flat) * (1.0 - clamp01(ign.res_pct));
             let eff = if eff.is_nan() { eff } else { eff.min(100.0) };
             max(amount * (1.0 - eff / 100.0), 0.05 * amount)
         }
@@ -68,8 +68,8 @@ pub fn mitigate(
 }
 pub fn attack_input(amount: f64, kind: DamageType, target: &Stats) -> f64 {
     amount
-        + if matches!(kind, DamageType::Arts) && target.n("artsAttackAddition").is_finite() {
-            target.n("artsAttackAddition")
+        + if matches!(kind, DamageType::Arts) && target.get(Stat::ArtsAttackAddition).is_finite() {
+            target.get(Stat::ArtsAttackAddition)
         } else {
             0.0
         }
@@ -100,10 +100,10 @@ pub fn calculate(
 ) -> f64 {
     let mut ign = dmg.penetration;
     if let Some(s) = source {
-        ign.def_flat += s.n("defIgnoreFlat");
-        ign.def_pct += s.n("defIgnorePct");
-        ign.res_flat += s.n("resIgnoreFlat");
-        ign.res_pct += s.n("resIgnorePct");
+        ign.def_flat += s.get(Stat::DefIgnoreFlat);
+        ign.def_pct += s.get(Stat::DefIgnorePct);
+        ign.res_flat += s.get(Stat::ResIgnoreFlat);
+        ign.res_pct += s.get(Stat::ResIgnorePct);
     }
     let mut final_ = if dmg.resolved {
         dmg.amount
@@ -113,10 +113,10 @@ pub fn calculate(
     let mut mul = dmg.mul;
     if let Some(s) = source {
         if !dmg.resolved {
-            mul *= s.n("dmgDealtMul")
+            mul *= s.get(Stat::DmgDealtMul)
                 * match kind {
-                    DamageType::Physical => s.n("physDealtMul"),
-                    DamageType::Arts => s.n("artsDealtMul"),
+                    DamageType::Physical => s.get(Stat::PhysDealtMul),
+                    DamageType::Arts => s.get(Stat::ArtsDealtMul),
                     _ => 1.0,
                 };
         }
@@ -128,12 +128,12 @@ pub fn estimate(base: f64, kind: DamageType, target: &Stats) -> f64 {
     let mul = (if matches!(kind, DamageType::Elemental) {
         1.0
     } else {
-        target.n("dmgTakenMul")
-    }) * target.n(match kind {
-        DamageType::Physical => "physTakenMul",
-        DamageType::Arts => "artsTakenMul",
-        DamageType::Elemental => "elementalTakenMul",
-        DamageType::True => "trueTakenMul",
+        target.get(Stat::DmgTakenMul)
+    }) * target.get(match kind {
+        DamageType::Physical => Stat::PhysTakenMul,
+        DamageType::Arts => Stat::ArtsTakenMul,
+        DamageType::Elemental => Stat::ElementalTakenMul,
+        DamageType::True => Stat::TrueTakenMul,
     });
     positive(base * mul)
 }

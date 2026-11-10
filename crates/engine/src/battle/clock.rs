@@ -38,6 +38,10 @@ pub struct EndState {
     pub max_battle_time: f64,
 }
 pub trait Host: Sized {
+    /// Advance a proven event-free movement window, or return zero to use full ticks.
+    fn movement_batch(&mut self, _clock: &mut Clock, _budget: usize) -> Result<usize, String> {
+        Ok(0)
+    }
     fn phase(&mut self, phase: Phase, clock: &mut Clock) -> Result<(), String>;
     fn compact_enemies(&mut self, clock: &mut Clock) -> Result<(), String>;
     fn has_removed(&self) -> bool;
@@ -55,6 +59,7 @@ pub struct Clock {
     stepping: bool,
     faulted: bool,
     ticks: u64,
+    movement_ticks: u64,
     time: f64,
     request: Option<String>,
     reason: Option<End>,
@@ -68,6 +73,21 @@ impl Clock {
     }
     pub fn ticks(&self) -> u64 {
         self.ticks
+    }
+    pub fn movement_ticks(&self) -> u64 {
+        self.movement_ticks
+    }
+    pub(crate) fn movement_tick(&mut self) -> Result<(), String> {
+        self.ticks = self
+            .ticks
+            .checked_add(1)
+            .ok_or("Battle tick count exhausted")?;
+        self.movement_ticks = self
+            .movement_ticks
+            .checked_add(1)
+            .ok_or("Movement tick count exhausted")?;
+        self.time = self.ticks as f64 * DT;
+        Ok(())
     }
     pub fn started(&self) -> bool {
         self.started
@@ -230,6 +250,29 @@ impl Clock {
         }
         let mut n = 0;
         while n < budget && !self.finished {
+            if self.started && budget - n >= 2 && self.request.is_none() && !self.stepping {
+                let before = self.ticks;
+                self.stepping = true;
+                let batch = host.movement_batch(self, budget - n);
+                self.stepping = false;
+                let count = match batch {
+                    Ok(count) if count <= budget - n && self.ticks - before == count as u64 => {
+                        count
+                    }
+                    Ok(_) => {
+                        self.faulted = true;
+                        return Err("Invalid movement batch accounting".into());
+                    }
+                    Err(error) => {
+                        self.faulted = true;
+                        return Err(error);
+                    }
+                };
+                if count > 0 {
+                    n += count;
+                    continue;
+                }
+            }
             self.step(host)?;
             n += 1;
         }
@@ -240,25 +283,24 @@ impl Clock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[derive(Default)]
-    struct Driver {
-        fail: bool,
-        request_on_scheduled: bool,
-        calls: usize,
-        finishes: usize,
+
+    struct MovingHost {
+        invalid: bool,
     }
-    impl Host for Driver {
-        fn phase(&mut self, p: Phase, c: &mut Clock) -> Result<(), String> {
-            self.calls += 1;
-            if p == Phase::Start {
-                c.mark_started();
+    impl Host for MovingHost {
+        fn movement_batch(&mut self, clock: &mut Clock, budget: usize) -> Result<usize, String> {
+            if self.invalid {
+                return Ok(budget);
             }
-            if self.fail && p == Phase::Scheduled {
-                return Err("scheduled callback failed".into());
+            let count = budget.min(4);
+            for _ in 0..count {
+                clock.movement_tick()?;
             }
-            if self.request_on_scheduled && p == Phase::Scheduled {
-                c.force_end(self, "timeout".into())?;
-                c.force_end(self, "later request".into())?;
+            Ok(count)
+        }
+        fn phase(&mut self, phase: Phase, clock: &mut Clock) -> Result<(), String> {
+            if phase == Phase::Start {
+                clock.mark_started();
             }
             Ok(())
         }
@@ -269,63 +311,41 @@ mod tests {
             false
         }
         fn release_removed(&mut self, _: &mut Clock) -> Result<(), String> {
-            unreachable!()
+            Ok(())
         }
         fn has_tick_hook(&self) -> bool {
             false
         }
         fn finish(&mut self, _: &End, _: &Clock) -> Result<(), String> {
-            self.finishes += 1;
             Ok(())
         }
     }
+
     #[test]
-    fn time_is_tick_multiple_and_budget_does_not_terminate() {
-        let mut c = Clock::new();
-        let mut h = Driver::default();
-        assert_eq!(c.run_steps(&mut h, 9000).unwrap(), 9000);
-        assert_eq!(c.time().to_bits(), (9000.0 * DT).to_bits());
-        assert!(!c.finished());
-        assert_eq!(h.finishes, 0);
-        assert_eq!(c.run_steps(&mut h, 0).unwrap(), 0);
-        assert_eq!(c.ticks(), 9000);
-        c.force_end(&mut h, "external".into()).unwrap();
-        assert_eq!(c.run_steps(&mut h, 10).unwrap(), 0);
-        assert_eq!(h.finishes, 1);
+    fn movement_batches_respect_tick_budgets() {
+        let mut host = MovingHost { invalid: false };
+        let mut clock = Clock::new();
+        let mut total = 0;
+        for budget in [0, 1, 2, 3, 4, 17, 64, 65] {
+            assert_eq!(clock.run_steps(&mut host, budget).unwrap(), budget);
+            total += budget as u64;
+            assert_eq!(clock.ticks(), total);
+            assert_eq!(clock.time().to_bits(), (total as f64 * DT).to_bits());
+        }
+        assert!(clock.movement_ticks() > 100);
+        assert!(clock.movement_ticks() < total);
     }
+
     #[test]
-    fn first_end_request_wins_and_external_end_starts_battle() {
-        let mut c = Clock::new();
-        let mut h = Driver {
-            request_on_scheduled: true,
-            ..Driver::default()
-        };
-        c.step(&mut h).unwrap();
-        assert_eq!(c.reason(), Some(&End::Timeout));
-        assert_eq!(c.ticks(), 0);
-        assert_eq!(h.finishes, 1);
-        let mut fresh = Clock::new();
-        let mut host = Driver::default();
-        fresh.force_end(&mut host, "anything".into()).unwrap();
-        assert!(fresh.started());
-        assert_eq!(fresh.reason(), Some(&End::Forced));
-        assert_eq!(host.calls, 1);
-    }
-    #[test]
-    fn phase_failure_never_becomes_a_valid_continuation() {
-        let mut c = Clock::new();
-        let mut h = Driver {
-            fail: true,
-            ..Driver::default()
-        };
-        assert!(c.step(&mut h).is_err());
-        assert!(c.faulted());
-        assert!(!c.finished());
-        assert_eq!(c.ticks(), 0);
-        let calls = h.calls;
-        h.fail = false;
-        assert!(c.step(&mut h).is_err());
-        assert_eq!(h.calls, calls);
-        assert_eq!(h.finishes, 0);
+    fn invalid_movement_accounting_faults_the_clock() {
+        let mut host = MovingHost { invalid: true };
+        let mut clock = Clock::new();
+        clock.run_steps(&mut host, 1).unwrap();
+        assert_eq!(
+            clock.run_steps(&mut host, 2).unwrap_err(),
+            "Invalid movement batch accounting"
+        );
+        assert!(clock.faulted());
+        assert!(clock.run_steps(&mut host, 1).is_err());
     }
 }

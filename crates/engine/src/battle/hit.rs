@@ -36,6 +36,7 @@ pub struct Request {
     pub attack_type: AttackType,
     pub element: Option<super::element::Element>,
     pub attack_id: Option<u64>,
+    pub trait_ally: Option<u64>,
     pub is_attack: bool,
     pub is_skill: bool,
     pub is_splash: bool,
@@ -61,6 +62,7 @@ impl Request {
             attack_type: AttackType::Normal,
             element: None,
             attack_id: None,
+            trait_ally: None,
             is_attack: false,
             is_skill: false,
             is_splash: false,
@@ -165,7 +167,7 @@ pub trait Hooks: health::Hooks + Sized {
     ) -> HookResult {
         Ok(())
     }
-    fn cleanup(&mut self, _token: u64, _world: &mut World) -> HookResult {
+    fn cleanup(&mut self, _token: u64, _target: health::Id, _world: &mut World) -> HookResult {
         Ok(())
     }
     /// Runs after HP guards, before HP application. The concrete content host owns
@@ -270,7 +272,8 @@ impl<H: Hooks> injury::Hooks for Adapter<'_, H> {
             .notice(n, self.expected, self.request, self.world, effects, rng)
     }
     fn cleanup(&mut self, token: u64) -> HookResult {
-        self.host.cleanup(token, self.world)
+        self.host
+            .cleanup(token, self.request.hit.target, self.world)
     }
 }
 pub fn resolve<H: Hooks>(

@@ -5,11 +5,15 @@ from .native_runtime import kernel
 
 
 def piece_actions(state, catalog, context, *, recovery):
+    return kernel().prep_piece_actions(*piece_inputs(state, catalog, context, recovery=recovery))
+
+
+def piece_inputs(state, catalog, context, *, recovery):
     from arkguardrl.candidates import empty_deployment_allowed
 
     own = state['own']
     if recovery and own['canReady']:
-        return []
+        return ([], 0, own['deployCount'] >= own['deployCap'], recovery, True)
     locations, _, cells = context
     terrain = {'all': 0, 'melee': 0, 'high': 0}
     for (row, col), kind in cells.items():
@@ -40,5 +44,5 @@ def piece_actions(state, catalog, context, *, recovery):
         pieces.append((uid, {'board': 0, 'hand': 1, 'temp': 2}[area], kind,
                        cell, direction, mask, [item['uid'] for item in piece['items']]))
     empty_hand = sum(1 << i for i, piece in enumerate(own['hand']) if piece is None)
-    return kernel().prep_piece_actions(pieces, empty_hand,
+    return (pieces, empty_hand,
         own['deployCount'] >= own['deployCap'], recovery, own['canReady'])

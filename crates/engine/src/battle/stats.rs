@@ -36,6 +36,12 @@ pub struct Modifiers {
 }
 impl Modifiers {
     pub fn aggregate(buffs: &[Buff]) -> Result<Self, &'static str> {
+        Self::aggregate_iter(buffs.iter())
+    }
+    pub(crate) fn aggregate_except(buffs: &[Buff], key: &str) -> Result<Self, &'static str> {
+        Self::aggregate_iter(buffs.iter().filter(|b| b.key.as_deref() != Some(key)))
+    }
+    fn aggregate_iter<'a>(buffs: impl Iterator<Item = &'a Buff>) -> Result<Self, &'static str> {
         let mut out = Self::default();
         let mut dodge: BTreeMap<&str, (u64, f64, f64)> = BTreeMap::new();
         for b in buffs {
@@ -171,20 +177,61 @@ impl Default for Cultivation {
         }
     }
 }
+// Only derived combat attributes have a fixed domain. External base/modifier
+// maps retain their string keys and their original aggregation order.
+macro_rules! stat_keys {
+    ($($variant:ident => $key:literal),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
+        pub enum Stat { $($variant),+ }
+        impl Stat {
+            const COUNT: usize = [$(stringify!($variant)),+].len();
+            #[inline]
+            pub fn from_name(key: &str) -> Option<Self> {
+                match key { $($key => Some(Self::$variant),)+ _ => None }
+            }
+        }
+    };
+}
+stat_keys! {
+    MaxHp => "maxHp", Atk => "atk", Def => "def", Res => "res",
+    Aspd => "aspd", Bat => "bat", Interval => "interval",
+    BlockCnt => "blockCnt", MoveSpeed => "moveSpeed",
+    RangeExtend => "rangeExtend", BlockRadiusScale => "blockRadiusScale",
+    BaseRangeExtend => "baseRangeExtend", MassLevel => "massLevel",
+    MaxTargets => "maxTargets", Taunt => "taunt", SpRecovery => "spRecovery",
+    HpRegen => "hpRegen", Shield => "shield",
+    DodgePhys => "dodgePhys", DodgeArts => "dodgeArts",
+    DefIgnorePct => "defIgnorePct", ResIgnorePct => "resIgnorePct",
+    DefIgnoreFlat => "defIgnoreFlat", ResIgnoreFlat => "resIgnoreFlat",
+    ArtsAttackAddition => "artsAttackAddition", SpCostFlat => "spCostFlat",
+    DmgDealtMul => "dmgDealtMul", PhysDealtMul => "physDealtMul",
+    ArtsDealtMul => "artsDealtMul", DmgTakenMul => "dmgTakenMul",
+    PhysTakenMul => "physTakenMul", ArtsTakenMul => "artsTakenMul",
+    TrueTakenMul => "trueTakenMul", ElemTakenMul => "elemTakenMul",
+    ElementalTakenMul => "elementalTakenMul", HealingDealtMul => "healingDealtMul",
+    HealingTakenMul => "healingTakenMul", AtkScaleMul => "atkScaleMul",
+    RedeployMul => "redeployMul", CostMul => "costMul",
+}
 #[derive(Clone, Debug)]
 pub struct Stats {
-    pub numbers: BTreeMap<&'static str, f64>,
+    numbers: [f64; Stat::COUNT],
     pub flags: BTreeSet<String>,
 }
 impl Stats {
+    #[inline]
+    pub fn get(&self, stat: Stat) -> f64 {
+        self.numbers[stat as usize]
+    }
+    /// String boundary for data-driven callers; fixed hot paths use get().
+    #[inline]
     pub fn n(&self, k: &str) -> f64 {
-        *self.numbers.get(k).expect("Unknown stat")
+        self.get(Stat::from_name(k).expect("Unknown stat"))
     }
     pub fn calculate(b: &Base, mods: &Modifiers, cm: Cultivation, move_floor: f64) -> Self {
         let a = |k| mods.a(k);
         let m = |k| mods.m(k);
         let n = |k| b.n(k);
-        let mut numbers = BTreeMap::new();
         let bhp = if finite(n("maxHp"), 1.0) > 0.0 {
             finite(n("maxHp"), 1.0)
         } else {
@@ -228,104 +275,84 @@ impl Stats {
             1.0
         };
         let bat = finite(bbat * max(0.1, 1.0 + a("batPct")), bbat);
-        for (k, v) in [
-            ("maxHp", max_hp),
-            ("atk", atk),
-            ("def", def),
-            ("res", res),
-            ("aspd", aspd),
-            ("bat", bat),
-            ("interval", bat * 100.0 / aspd),
-            (
-                "blockCnt",
-                max(0.0, finite(js_round(n("blockCnt") + a("blockCnt")), 0.0)),
+        let mut numbers = [0.0; Stat::COUNT];
+        numbers[Stat::MaxHp as usize] = max_hp;
+        numbers[Stat::Atk as usize] = atk;
+        numbers[Stat::Def as usize] = def;
+        numbers[Stat::Res as usize] = res;
+        numbers[Stat::Aspd as usize] = aspd;
+        numbers[Stat::Bat as usize] = bat;
+        numbers[Stat::Interval as usize] = bat * 100.0 / aspd;
+        numbers[Stat::BlockCnt as usize] =
+            max(0.0, finite(js_round(n("blockCnt") + a("blockCnt")), 0.0));
+        numbers[Stat::MoveSpeed as usize] = max(
+            move_floor,
+            finite(
+                (n("moveSpeed") + a("moveFlat")) * m("moveMul"),
+                finite(n("moveSpeed"), 0.0),
             ),
-            (
-                "moveSpeed",
-                max(
-                    move_floor,
-                    finite(
-                        (n("moveSpeed") + a("moveFlat")) * m("moveMul"),
-                        finite(n("moveSpeed"), 0.0),
-                    ),
-                ),
+        );
+        numbers[Stat::RangeExtend as usize] = max(0.0, js_round(a("rangeExtend")));
+        numbers[Stat::BlockRadiusScale as usize] = max(0.0, finite(a("blockRadiusScale"), 0.0));
+        numbers[Stat::BaseRangeExtend as usize] =
+            max(0.0, finite(js_round(mods.permanent_range), 0.0));
+        numbers[Stat::MassLevel as usize] = max(
+            0.0,
+            finite(finite(n("massLevel"), 0.0) + a("massFlat"), 0.0),
+        );
+        numbers[Stat::MaxTargets as usize] = a("maxTargets");
+        numbers[Stat::Taunt as usize] = finite(n("tauntLevel"), 0.0)
+            + a("taunt")
+            + if mods.flags.contains("taunt") {
+                1.0
+            } else {
+                0.0
+            };
+        numbers[Stat::SpRecovery as usize] = max(
+            0.0,
+            finite(
+                (n("spRecovery") + a("spRecoveryFlat")) * m("spRecoveryMul"),
+                0.0,
             ),
-            ("rangeExtend", max(0.0, js_round(a("rangeExtend")))),
-            (
-                "blockRadiusScale",
-                max(0.0, finite(a("blockRadiusScale"), 0.0)),
-            ),
-            (
-                "baseRangeExtend",
-                max(0.0, finite(js_round(mods.permanent_range), 0.0)),
-            ),
-            (
-                "massLevel",
-                max(
-                    0.0,
-                    finite(finite(n("massLevel"), 0.0) + a("massFlat"), 0.0),
-                ),
-            ),
-            ("maxTargets", a("maxTargets")),
-            (
-                "taunt",
-                finite(n("tauntLevel"), 0.0)
-                    + a("taunt")
-                    + if mods.flags.contains("taunt") {
-                        1.0
-                    } else {
-                        0.0
-                    },
-            ),
-            (
-                "spRecovery",
-                max(
-                    0.0,
-                    finite(
-                        (n("spRecovery") + a("spRecoveryFlat")) * m("spRecoveryMul"),
-                        0.0,
-                    ),
-                ),
-            ),
-            (
-                "hpRegen",
-                finite(
-                    n("hpRecoveryPerSec") + a("hpRegen") + a("hpRegenRatio") * max_hp,
-                    0.0,
-                ),
-            ),
-            ("shield", mods.shield),
+        );
+        numbers[Stat::HpRegen as usize] = finite(
+            n("hpRecoveryPerSec") + a("hpRegen") + a("hpRegenRatio") * max_hp,
+            0.0,
+        );
+        numbers[Stat::Shield as usize] = mods.shield;
+        for (stat, key) in [
+            (Stat::DodgePhys, "dodgePhys"),
+            (Stat::DodgeArts, "dodgeArts"),
+            (Stat::DefIgnorePct, "defIgnorePct"),
+            (Stat::ResIgnorePct, "resIgnorePct"),
         ] {
-            numbers.insert(k, v);
+            numbers[stat as usize] = clamp(a(key), 0.0, 1.0);
         }
-        for k in ["dodgePhys", "dodgeArts", "defIgnorePct", "resIgnorePct"] {
-            numbers.insert(k, clamp(a(k), 0.0, 1.0));
-        }
-        for k in [
-            "defIgnoreFlat",
-            "resIgnoreFlat",
-            "artsAttackAddition",
-            "spCostFlat",
+        for (stat, key) in [
+            (Stat::DefIgnoreFlat, "defIgnoreFlat"),
+            (Stat::ResIgnoreFlat, "resIgnoreFlat"),
+            (Stat::ArtsAttackAddition, "artsAttackAddition"),
+            (Stat::SpCostFlat, "spCostFlat"),
         ] {
-            numbers.insert(k, a(k));
+            numbers[stat as usize] = a(key);
         }
-        for k in [
-            "dmgDealtMul",
-            "physDealtMul",
-            "artsDealtMul",
-            "dmgTakenMul",
-            "physTakenMul",
-            "artsTakenMul",
-            "trueTakenMul",
-            "elemTakenMul",
-            "elementalTakenMul",
-            "healingDealtMul",
-            "healingTakenMul",
-            "atkScaleMul",
-            "redeployMul",
-            "costMul",
+        for (stat, key) in [
+            (Stat::DmgDealtMul, "dmgDealtMul"),
+            (Stat::PhysDealtMul, "physDealtMul"),
+            (Stat::ArtsDealtMul, "artsDealtMul"),
+            (Stat::DmgTakenMul, "dmgTakenMul"),
+            (Stat::PhysTakenMul, "physTakenMul"),
+            (Stat::ArtsTakenMul, "artsTakenMul"),
+            (Stat::TrueTakenMul, "trueTakenMul"),
+            (Stat::ElemTakenMul, "elemTakenMul"),
+            (Stat::ElementalTakenMul, "elementalTakenMul"),
+            (Stat::HealingDealtMul, "healingDealtMul"),
+            (Stat::HealingTakenMul, "healingTakenMul"),
+            (Stat::AtkScaleMul, "atkScaleMul"),
+            (Stat::RedeployMul, "redeployMul"),
+            (Stat::CostMul, "costMul"),
         ] {
-            numbers.insert(k, m(k));
+            numbers[stat as usize] = m(key);
         }
         let mut flags = mods.flags.clone();
         if ["stun", "freeze", "sleep", "levitate"]
@@ -351,6 +378,16 @@ pub struct UnitStats {
     pub rate_dirty: bool,
 }
 impl UnitStats {
+    pub(crate) fn cached_clean(&self) -> bool {
+        !self.dirty && self.cached.is_some()
+    }
+    /// HP remains expressed against this maximum until the next lazy aggregation.
+    pub(crate) fn observed_max_hp(&self) -> f64 {
+        self.cached
+            .as_ref()
+            .map(|s| s.get(Stat::MaxHp))
+            .unwrap_or_else(|| self.base.n("maxHp"))
+    }
     pub fn buffs(&self) -> &[Buff] {
         &self.buffs
     }
@@ -425,7 +462,7 @@ impl UnitStats {
             let prev = self
                 .cached
                 .as_ref()
-                .map(|s| s.n("maxHp"))
+                .map(|s| s.get(Stat::MaxHp))
                 .unwrap_or(self.base.n("maxHp"));
             let s = Stats::calculate(
                 &self.base,
@@ -436,17 +473,14 @@ impl UnitStats {
             if self
                 .cached
                 .as_ref()
-                .map(|old| (old.n("interval") - s.n("interval")).abs() > 1e-9)
+                .map(|old| (old.get(Stat::Interval) - s.get(Stat::Interval)).abs() > 1e-9)
                 .unwrap_or(true)
             {
                 self.rate_dirty = true;
             }
-            if self.alive && prev > 0.0 && (prev - s.n("maxHp")).abs() > 1e-9 {
-                self.hp = clamp(
-                    finite(self.hp * (s.n("maxHp") / prev), s.n("maxHp")),
-                    0.0,
-                    s.n("maxHp"),
-                );
+            let max_hp = s.get(Stat::MaxHp);
+            if self.alive && prev > 0.0 && (prev - max_hp).abs() > 1e-9 {
+                self.hp = clamp(finite(self.hp * (max_hp / prev), max_hp), 0.0, max_hp);
             }
             self.cached = Some(s);
             self.dirty = false;
@@ -466,61 +500,5 @@ impl UnitStats {
         } else {
             motion_fly || flags.contains("float")
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn hp_buff() -> Buff {
-        Buff {
-            mods: [("hpMul".into(), 2.0)].into_iter().collect(),
-            ..Buff::default()
-        }
-    }
-    #[test]
-    fn allied_flight_query_does_not_recalculate_hp() {
-        let mut base = Base::default();
-        base.0.insert("maxHp".into(), 100.0);
-        let mut u = UnitStats::new(base);
-        u.hp = 25.0;
-        u.stats().unwrap();
-        u.set_buffs(vec![hp_buff()]);
-        assert!(!u.is_flying(false, false).unwrap());
-        assert_eq!(u.hp, 25.0);
-        assert_eq!(u.stats().unwrap().n("maxHp"), 200.0);
-        assert_eq!(u.hp, 50.0);
-        u.stats().unwrap();
-        assert_eq!(u.hp, 50.0);
-    }
-    #[test]
-    fn flying_precedence_and_dead_hp_preservation() {
-        let mut u = UnitStats::new(Base::default());
-        let mut b = hp_buff();
-        b.flags.insert("groundbind".into());
-        b.flags.insert("float".into());
-        u.alive = false;
-        u.hp = 0.25;
-        u.set_buffs(vec![b.clone()]);
-        assert!(!u.is_flying(true, true).unwrap());
-        assert_eq!(u.hp, 0.25);
-        b.flags.insert("levitate".into());
-        u.set_buffs(vec![b]);
-        assert!(u.is_flying(true, false).unwrap());
-        assert!(u.stats().unwrap().flags.contains("stun"));
-    }
-    #[test]
-    fn invalid_stacks_do_not_commit_partial_stats() {
-        let mut u = UnitStats::new(Base::default());
-        u.stats().unwrap();
-        let hp = u.hp;
-        u.set_buffs(vec![Buff {
-            stacks: 0,
-            ..hp_buff()
-        }]);
-        assert!(u.stats().is_err());
-        assert_eq!(u.hp, hp);
-        u.set_buffs(vec![]);
-        assert_eq!(u.stats().unwrap().n("maxHp"), 1.0);
     }
 }

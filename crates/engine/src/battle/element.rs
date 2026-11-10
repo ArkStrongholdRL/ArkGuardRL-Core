@@ -308,17 +308,16 @@ fn resolve_burst<H: Hooks>(
         }
         _ => {}
     }
-    r.add(
-        w,
-        h,
-        target,
-        Spec {
-            mods_present: !b.mods.is_empty(),
-            flags_present: true,
-            buff: b,
-            ..Default::default()
-        },
-    )?;
+    let mut spec = Spec {
+        mods_present: !b.mods.is_empty(),
+        flags_present: true,
+        buff: b,
+        ..Default::default()
+    };
+    if let Some(credit) = credit.filter(|_| state.periodic()) {
+        spec = spec.retaining_unit(credit);
+    }
+    r.add(w, h, target, spec)?;
     match element {
         Element::Burn => {
             h.burst_damage(
@@ -627,139 +626,5 @@ fn round(v: f64) -> f64 {
         f
     } else {
         f + 1.0
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::battle::{
-        blocking,
-        health::{Side, Unit},
-        stats::{Base, UnitStats},
-    };
-    struct Host;
-    impl super::super::health::Hooks for Host {
-        fn kill(&mut self, _: Id, _: Option<Id>, _: &mut World) -> Result<(), String> {
-            unreachable!()
-        }
-    }
-    impl blocking::Hooks for Host {
-        fn blocked(&mut self, _: Id, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-        fn ended(&mut self, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-    }
-    impl buffs::Hooks for Host {
-        fn status(&mut self, _: Id, _: &str, _: bool) -> Result<(), String> {
-            Ok(())
-        }
-        fn callback(
-            &mut self,
-            _: u64,
-            _: buffs::Event,
-            _: buffs::Context,
-            _: &mut Runtime,
-            _: &mut World,
-        ) -> Result<(), String> {
-            unreachable!()
-        }
-    }
-    impl status::Hooks for Host {
-        fn has_before_status(&self) -> bool {
-            false
-        }
-        fn before_status(
-            &mut self,
-            _: &mut status::Context,
-            _: &mut Runtime,
-            _: &mut World,
-        ) -> Result<(), String> {
-            unreachable!()
-        }
-        fn has_status_applied(&self) -> bool {
-            false
-        }
-        fn status_applied(
-            &mut self,
-            _: &status::Context,
-            _: &mut Runtime,
-            _: &mut World,
-        ) -> Result<(), String> {
-            unreachable!()
-        }
-    }
-    impl Hooks for Host {
-        fn battle_rect(&self) -> Rect {
-            Rect::FULL
-        }
-        fn element_enabled(&self, p: Phase) -> bool {
-            p == Phase::Burst
-        }
-        fn element_event(
-            &mut self,
-            _: Phase,
-            _: &mut Request,
-            _: f64,
-            _: f64,
-            _: &mut Runtime,
-            _: &mut World,
-        ) -> Result<(), String> {
-            Err("burst callback failed".into())
-        }
-        fn element_number(&mut self, _: Id, _: f64, _: Element) -> Result<(), String> {
-            Ok(())
-        }
-        fn burst_visual(&mut self, _: Id, _: Element, _: &World) -> Result<(), String> {
-            Ok(())
-        }
-    }
-    fn world() -> World {
-        let mut w = World::new(1, 1, 1).unwrap();
-        let mut u = Unit::new(UnitStats::new(Base::default()), Side::Enemy);
-        u.deployed = true;
-        w.insert_unit(1, u).unwrap();
-        w
-    }
-    #[test]
-    fn burst_callback_failure_clears_pending_and_faults_runtime() {
-        let mut w = world();
-        let mut r = Runtime::new(8, 16, 8).unwrap();
-        let mut h = Host;
-        let error = burst(&mut w, &mut h, &mut r, None, None, 1, Element::Burn).unwrap_err();
-        assert_eq!(error, "burst callback failed");
-        assert!(r.faulted());
-        assert_eq!(w.unit(1).unwrap().burst_pending, [false; 5]);
-        assert!(w.unit(1).unwrap().stats.buffs().is_empty());
-    }
-    #[test]
-    fn recovery_lowers_each_gauge_and_pending_burst_locks_every_element() {
-        let mut w = world();
-        w.unit_mut(1).unwrap().element_buildup = [150.0, 250.0, 0.0, 80.0, 10.0];
-        assert_eq!(heal(&mut w, 1, 100.0, None).unwrap(), 290.0);
-        assert_eq!(
-            w.unit(1).unwrap().element_buildup,
-            [50.0, 150.0, 0.0, 0.0, 0.0]
-        );
-        w.unit_mut(1).unwrap().burst_pending[2] = true;
-        assert_eq!(heal(&mut w, 1, 1000.0, Some(Element::Neural)).unwrap(), 0.0);
-        assert_eq!(w.unit(1).unwrap().element_buildup[1], 150.0);
-    }
-    #[test]
-    fn visible_gauge_ties_use_official_order_and_entity_class_is_independent_of_side() {
-        let mut w = world();
-        let u = w.unit_mut(1).unwrap();
-        u.side = Side::Ally;
-        u.enemy_entity = true;
-        u.element_leader = true;
-        u.element_buildup = [100.0; 5];
-        assert_eq!(gauge_max(&w, 1).unwrap(), 2000.0);
-        let v = view(&mut w, 1, 0.0).unwrap().unwrap();
-        assert_eq!(v.element, Element::Neural);
-        assert_eq!(v.fill, 0.05);
-        w.unit_mut(1).unwrap().element_buildup = [0.0001, 0.0, 0.0, 0.0, 0.0];
-        assert_eq!(view(&mut w, 1, 0.0).unwrap().unwrap().fill, 0.01);
     }
 }

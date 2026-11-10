@@ -1,0 +1,40 @@
+name: windows-native
+
+# Build the native extensions used by the Desperation RL environment for
+# Windows x64 / CPython 3.12 so a separate machine can run without cargo.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [codex/native-win-ci]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build engine and feature kernels
+        shell: pwsh
+        env:
+          PYO3_PYTHON: ${{ env.pythonLocation }}\python.exe
+        run: |
+          cargo build --release --locked -p arkguard-python
+          cargo build --release --locked --manifest-path arkguardrl_core/native/Cargo.toml
+          cargo build --release --locked --manifest-path benchmarks/native_slots/Cargo.toml
+      - name: Collect importable modules
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Copy-Item target/release/_native.dll artifacts/_native.pyd
+          Copy-Item arkguardrl_core/native/target/release/_rust_routes.dll artifacts/_rust_routes.pyd
+          Copy-Item benchmarks/native_slots/target/release/_native_slots.dll artifacts/_native_slots.pyd
+          Get-ChildItem artifacts | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-cp312-win_amd64
+          path: artifacts/*.pyd
