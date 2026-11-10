@@ -187,9 +187,12 @@ class DecisionHistory:
         if state["phase"] == "PREP" and action["t"] != "g.choice":
             self.prep_used += 1
 
-    def snapshot(self, state):
+    def _check(self, state):
         if self.progress is None or self.progress["observation_id"] != fingerprint(state):
             raise ValueError("Initialize/update history with the real environment result before encoding")
+
+    def snapshot(self, state):
+        self._check(state)
         key = self._sync(state)
         return {"schema": self.schema, "progress": deepcopy(self.progress), "used": self.prep_used, "limit": PREP_ACTION_LIMIT,
                 "blocked_count": len(self.attempts.get(key, ()))}
@@ -210,13 +213,17 @@ class Decision:
     history_json: bytes | None = field(default=None, repr=False, compare=False)
 
 
-def build_decision(state, catalog, history):
+def build_decision(state, catalog, history, *, encoder=None, candidate_encoder=None, state_copy=None):
     locations, occupied, cells = public_context(state, catalog)
     own, public = state["own"], state["public"]
     if not isinstance(history, DecisionHistory):
         raise ValueError("Explicit native DecisionHistory required")
-    blocked, actions, seen = history.blocked(state), [], set()
+    blocked = history.blocked(state) if candidate_encoder is None else ()
+    actions, seen, prepared = [], set(), None
     def add(action):
+        if candidate_encoder is not None:
+            actions.append(action)
+            return
         key = action_id(action)
         if key in blocked or key in seen:
             return
@@ -284,16 +291,23 @@ def build_decision(state, catalog, history):
                 add({"t": "g.freeze"})
                 if shop["level"] < shop["maxLevel"] and own["funds"] >= shop["upgradePrice"]:
                     add({"t": "g.levelUp"})
-            from arkguardrl_core.env_actions import piece_actions
-            for action in piece_actions(state, catalog, (locations, occupied, cells), recovery=recovery):
-                add(action)
+            from arkguardrl_core.env_actions import piece_actions, piece_inputs
+            if candidate_encoder is not None:
+                prepared = piece_inputs(state, catalog, (locations, occupied, cells), recovery=recovery)
+            else:
+                for action in piece_actions(state, catalog, (locations, occupied, cells), recovery=recovery):
+                    add(action)
         else:
             raise CandidateBlocked("Unsupported actionable native phase")
-        if not actions:
+        if not actions and (candidate_encoder is None or prepared is None):
             raise CandidateBlocked("History/public domain exhausted; no fallback wait or forced Ready")
     snapshot = history.snapshot(state)
-    observation, features, schedules, experts = encode_decision(state, actions, catalog, snapshot)
+    if candidate_encoder is not None:
+        actions, observation, features, schedules, experts = candidate_encoder(
+            state, actions, catalog, snapshot, prepared)
+    else:
+        observation, features, schedules, experts = (encoder or encode_decision)(state, actions, catalog, snapshot)
     # Retain the exact history used for the feature tensors, independently of
     # subsequent history advancement. Bytes cannot alias mutable progress.
-    return Decision(deepcopy(state), observation, features, tuple(actions), schedules, experts,
+    return Decision((state_copy or deepcopy)(state), observation, features, tuple(actions), schedules, experts,
                     state["personalEnded"], history_json=canonical(snapshot))

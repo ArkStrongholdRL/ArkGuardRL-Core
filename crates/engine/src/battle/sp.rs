@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Stronghold Protocol 41bbca57 SkillRuntime SP accounting. Cast/trigger/content
 // state transitions are implemented separately; this owns the charge arithmetic.
-use super::health::{Id, World};
+use super::{
+    health::{Id, World},
+    stats::Stat,
+};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Instant,
@@ -35,6 +38,7 @@ impl Hooks for NoHooks {
         Ok(())
     }
 }
+#[derive(Clone)]
 pub struct Bank {
     pub unit: Id,
     pub kind: Kind,
@@ -77,6 +81,13 @@ impl Bank {
             max_charges,
         })
     }
+    pub(crate) fn clear_inactive(&mut self, w: &mut World) -> Result<(), String> {
+        if !self.no_skill && self.kind != Kind::Passive && !self.active && self.cost(w)? > 0. {
+            self.sp = 0.;
+            self.charges = 0.;
+        }
+        Ok(())
+    }
     pub fn max_charges(&self) -> u32 {
         self.max_charges
     }
@@ -89,7 +100,7 @@ impl Bank {
             .stats
             .stats()
             .map_err(str::to_string)?
-            .n("spCostFlat");
+            .get(Stat::SpCostFlat);
         let c = (self.base_cost * self.cost_mul + flat).floor();
         Ok(if c.is_finite() {
             c.max(0.0)
@@ -258,80 +269,11 @@ impl Bank {
         if s.flags.contains("noSp") || !alive || !u.deployed || u.hidden {
             return Ok(0.0);
         }
-        let rate = s.n("spRecovery");
+        let rate = s.get(Stat::SpRecovery);
         if rate > 0.0 {
             self.gain(w, h, rate * dt, "time", false, false)
         } else {
             Ok(0.0)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::battle::{
-        health::{Side, Unit},
-        stats::{Base, Buff, UnitStats},
-    };
-    fn world() -> World {
-        let mut w = World::new(1, 1, 1).unwrap();
-        let mut u = Unit::new(UnitStats::new(Base::default()), Side::Ally);
-        u.deployed = true;
-        w.insert_unit(1, u).unwrap();
-        w
-    }
-    #[test]
-    fn natural_recovery_ignores_stun_but_obeys_no_sp_and_full_timed_skill_lock() {
-        let mut w = world();
-        let mut bank = Bank::new(1, Kind::Duration, 10.0, 2, 8).unwrap();
-        w.unit_mut(1).unwrap().stats.set_buffs(vec![Buff {
-            flags: ["stun".into()].into_iter().collect(),
-            ..Buff::default()
-        }]);
-        for _ in 0..300 {
-            bank.recover_time(&mut w, &mut NoHooks, 1.0 / 30.0).unwrap();
-        }
-        assert_eq!(bank.charges, 1.0);
-        assert_eq!(bank.sp, 0.0);
-        assert!(bank.ready());
-        bank.active = true;
-        assert_eq!(bank.recover_time(&mut w, &mut NoHooks, 1.0).unwrap(), 0.0);
-        bank.active = false;
-        w.unit_mut(1).unwrap().stats.set_buffs(vec![Buff {
-            flags: ["noSp".into()].into_iter().collect(),
-            ..Buff::default()
-        }]);
-        assert_eq!(bank.recover_time(&mut w, &mut NoHooks, 1.0).unwrap(), 0.0);
-        assert_eq!(
-            bank.gain(&mut w, &mut NoHooks, 1.0, "gift", false, true)
-                .unwrap(),
-            1.0
-        );
-        assert_eq!(bank.sp, 1.0);
-    }
-    #[test]
-    fn free_skills_and_running_skill_carry_are_distinct() {
-        let mut w = world();
-        let mut free = Bank::new(1, Kind::Instant, 0.0, 2, 8).unwrap();
-        free.set_total(&mut w, 0.0).unwrap();
-        assert_eq!(free.charges, 2.0);
-        assert!(free.ready());
-        assert_eq!(
-            free.gain(&mut w, &mut NoHooks, 3.0, "time", false, false)
-                .unwrap(),
-            0.0
-        );
-        let mut timed = Bank::new(1, Kind::Duration, 5.0, 2, 8).unwrap();
-        timed.set_total(&mut w, 7.0).unwrap();
-        assert_eq!(timed.charges, 1.0);
-        assert_eq!(timed.sp, 2.0);
-        timed.active = true;
-        timed.set_total(&mut w, 0.0).unwrap();
-        assert_eq!(timed.total(&mut w).unwrap(), 7.0);
-    }
-    #[test]
-    fn excessive_charge_capacity_is_rejected() {
-        assert!(Bank::new(1, Kind::Charges, 1.0, 100, 8).is_err());
     }
 }

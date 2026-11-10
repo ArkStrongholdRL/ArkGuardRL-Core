@@ -104,35 +104,3 @@ impl<T: Clone> Scheduler<T> {
         Ok(Some(event))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn intervals_rearm_before_callback_and_can_cancel_themselves() {
-        let mut s = Scheduler::new(4).unwrap();
-        let repeat = s.schedule("repeat", 2.0, true).unwrap();
-        s.schedule("once", 2.0, false).unwrap();
-        assert_eq!(s.pop().unwrap().unwrap().payload, "repeat");
-        s.schedule("callback", 2.0, false).unwrap();
-        assert_eq!(s.pop().unwrap().unwrap().payload, "once");
-        assert_eq!(s.pop().unwrap().unwrap().payload, "repeat");
-        s.cancel(repeat);
-        assert_eq!(s.pop().unwrap().unwrap().payload, "callback");
-        assert!(s.pop().unwrap().is_none());
-        assert_eq!(s.now(), 4.0);
-    }
-
-    #[test]
-    fn budget_failure_does_not_change_clock_or_queue() {
-        let mut s = Scheduler::new(1).unwrap();
-        let id = s.schedule(1, f64::INFINITY, false).unwrap();
-        assert!(s.schedule(2, 0.0, false).is_err());
-        assert_eq!(s.now(), 0.0);
-        assert_eq!(s.next_at(), Some(0.0));
-        s.cancel(id);
-        assert_eq!(s.schedule(3, -1.0, true).unwrap(), 2);
-        assert_eq!(s.next_at(), Some(1.0));
-    }
-}

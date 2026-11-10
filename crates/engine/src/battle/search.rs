@@ -3,6 +3,7 @@
 use super::{
     grid::COLS,
     health::{Id, World},
+    stats::Stat,
     targeting::{self, Priority, Profile, Queries},
 };
 use std::collections::BTreeMap;
@@ -109,11 +110,11 @@ fn take(mut ids: Vec<Id>, n: f64) -> Vec<Id> {
     ids.truncate(end);
     ids
 }
-fn number(w: &mut World, id: Id, key: &str) -> Result<f64, String> {
+fn number(w: &mut World, id: Id, stat: Stat) -> Result<f64, String> {
     w.unit_mut(id)?
         .stats
         .stats()
-        .map(|s| s.n(key))
+        .map(|s| s.get(stat))
         .map_err(str::to_string)
 }
 pub fn acquire<H: Host>(
@@ -135,7 +136,7 @@ pub fn acquire<H: Host>(
         if heal.hp_at_most > 0.0 {
             let mut eligible = Vec::with_capacity(c.len());
             for target in c {
-                let max = number(w, target, "maxHp")?;
+                let max = number(w, target, Stat::MaxHp)?;
                 let hp = w.unit(target)?.stats.hp;
                 let ratio = if max > 0.0 { hp / max } else { 0.0 };
                 if ratio <= heal.hp_at_most + 1e-9 {
@@ -162,7 +163,7 @@ pub fn acquire<H: Host>(
         if p.max_targets > n {
             n = p.max_targets.floor();
         }
-        let extra = number(w, id, "maxTargets")?.floor().max(0.0);
+        let extra = number(w, id, Stat::MaxTargets)?.floor().max(0.0);
         return Ok(Selection {
             targets: take(c, n + extra),
             fortress_melee: None,
@@ -258,6 +259,9 @@ pub struct Commitments {
     max_total: usize,
 }
 impl Commitments {
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
     pub fn new(max_units: usize, max_targets: usize, max_total: usize) -> Result<Self, String> {
         if [max_units, max_targets, max_total].contains(&0) {
             return Err("Commitment limits must be positive".into());

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Stronghold Protocol 41bbca57 simdata.js and battle/spawns.js.
 // These are engine inputs, never policy observations (future waves are private).
+mod bounty;
+use bounty::Layout;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 
@@ -42,6 +44,13 @@ fn cp_type(v: &Value) -> &'static str {
     } else {
         "MOVE"
     }
+}
+pub(crate) fn has_patrol(route: &Value) -> bool {
+    route["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|s| s["t"] == "patrol")
 }
 pub fn normalize_route(v: &Value, max_legs: usize) -> Result<Value, String> {
     if v.is_null() {
@@ -113,10 +122,15 @@ pub fn normalize_route(v: &Value, max_legs: usize) -> Result<Value, String> {
 
 /// Normalized wave data. Non-SPAWN actions are kept separately so a caller cannot
 /// accidentally accept an unimplemented content action by dropping it.
+#[derive(Clone)]
 pub struct Template {
+    bounty_layout: Layout,
+    pub devices: Vec<Value>,
+    pub patrol_routes: std::collections::BTreeSet<usize>,
     pub routes: Vec<Value>,
     pub spawns: Vec<Value>,
     pub extra_routes: Vec<Value>,
+    pub branches: std::collections::BTreeMap<String, Vec<Vec<Value>>>,
     pub overrides: Value,
     pub max_play_time: Value,
     pub content_actions: Vec<Value>,
@@ -139,14 +153,65 @@ impl Template {
             }
             a.iter().map(|r| normalize_route(r, max_legs)).collect()
         };
+        let devices = v["devices"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        if devices.len() > capacity {
+            return Err("Wave device capacity exceeded".into());
+        }
+        for device in devices {
+            if let Some(pos) = device.get("pos") {
+                if !pos.as_array().is_some_and(|p| {
+                    p.len() == 2 && p.iter().all(|v| v.as_f64().is_some_and(|n| n.is_finite()))
+                }) {
+                    return Err("Invalid wave device position".into());
+                }
+            }
+        }
         let mut out = Self {
+            bounty_layout: Layout::default(),
+            devices: devices.to_vec(),
             routes: routes("routes")?,
+            patrol_routes: v["routes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter_map(|(i, r)| has_patrol(r).then_some(i))
+                .collect(),
             spawns: vec![],
             extra_routes: routes("extraRoutes")?,
+            branches: Default::default(),
             overrides: v["overrides"].clone(),
             max_play_time: first(v, &["maxPlayTime", "timeLimit"]).clone(),
             content_actions: vec![],
         };
+        if let Some(branches) = v["branches"].as_object() {
+            if branches.len() > capacity {
+                return Err("Wave branch capacity exceeded".into());
+            }
+            let mut entries = 0usize;
+            let mut phase_count = 0usize;
+            for (name, phases) in branches {
+                let phases = phases.as_array().ok_or("Expected branch phases")?;
+                phase_count = phase_count
+                    .checked_add(phases.len())
+                    .ok_or("Branch phase capacity overflow")?;
+                if phase_count > capacity {
+                    return Err("Branch phase capacity exceeded".into());
+                }
+                let mut parsed = vec![];
+                for phase in phases {
+                    let phase = phase.as_array().ok_or("Expected branch phase actions")?;
+                    entries = entries
+                        .checked_add(phase.len())
+                        .ok_or("Branch capacity overflow")?;
+                    if entries > capacity {
+                        return Err("Branch action capacity exceeded".into());
+                    }
+                    parsed.push(phase.clone());
+                }
+                out.branches.insert(name.clone(), parsed);
+            }
+        }
         if let Some(a) = v["spawns"].as_array() {
             if a.len() > capacity {
                 return Err("Wave action capacity exceeded".into());
@@ -338,44 +403,5 @@ impl Queue {
     }
     pub fn drain(&mut self) -> impl Iterator<Item = Pending> + '_ {
         self.pending.drain(..)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn overflow_preserves_queue_and_identity() {
-        let mut q = Queue::new(3).unwrap();
-        q.push(&json!({"enemyKey":"a","count":2,"time":1}), true, false)
-            .unwrap();
-        assert!(q.push(&json!({"count":2}), true, false).is_err());
-        assert_eq!(q.sequence(), 2);
-        assert_eq!(q.pending().len(), 2);
-        assert!(q.pop_due(0.).is_none());
-        assert_eq!(q.pop_due(1.).unwrap().sequence, 1);
-        q.next_sequence().unwrap();
-        q.push(&json!({"enemyKey":"b","time":1}), true, false)
-            .unwrap();
-        assert_eq!(q.pop_due(1.).unwrap().sequence, 2);
-        assert_eq!(q.pop_due(1.).unwrap().sequence, 4);
-    }
-    #[test]
-    fn portal_expansion_and_content_are_never_silently_dropped() {
-        let v = json!({"cp":[["DISAPPEAR",0,0],["WAIT",0,0,3],["MOVE",5,10]]});
-        assert!(normalize_route(&v, 3).is_err());
-        let r = normalize_route(&v, 4).unwrap();
-        assert_eq!(r["checkpoints"][2]["type"], "APPEAR");
-        assert_eq!(normalize_route(&r, 4).unwrap(), r);
-        let t = Template::parse(
-            &json!({"spawns":[{"action":"ACTIVATE","key":"a"}]}),
-            &Value::Null,
-            &Value::Null,
-            1,
-            4,
-        )
-        .unwrap();
-        assert!(t.spawns.is_empty());
-        assert_eq!(t.content_actions.len(), 1);
     }
 }

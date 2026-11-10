@@ -23,6 +23,16 @@ pub trait Hooks: buffs::Hooks + Sized {
     ) -> HookResult {
         self.kill(target, credit, w)
     }
+    fn damage_kill(
+        &mut self,
+        target: Id,
+        credit: Option<Id>,
+        r: &mut Runtime,
+        w: &mut World,
+        _rng: &mut Rng,
+    ) -> HookResult {
+        self.health_kill(target, credit, r, w)
+    }
     fn phase_enabled(&self, _phase: Phase) -> bool {
         false
     }
@@ -54,7 +64,13 @@ pub trait Hooks: buffs::Hooks + Sized {
     ) -> HookResult {
         Ok(())
     }
-    fn damage_cleanup(&mut self, _token: u64, _r: &mut Runtime, _w: &mut World) -> HookResult {
+    fn damage_cleanup(
+        &mut self,
+        _token: u64,
+        _target: Id,
+        _r: &mut Runtime,
+        _w: &mut World,
+    ) -> HookResult {
         Err("Deferred injury cleanup handler not installed".into())
     }
     fn health_event(
@@ -369,8 +385,8 @@ impl<H: Hooks> hit::Hooks for Pipeline<'_, H> {
             ignore_block,
         )
     }
-    fn cleanup(&mut self, token: u64, w: &mut World) -> HookResult {
-        self.h.damage_cleanup(token, self.r, w)
+    fn cleanup(&mut self, token: u64, target: Id, w: &mut World) -> HookResult {
+        self.h.damage_cleanup(token, target, self.r, w)
     }
     fn transfers(
         &mut self,
@@ -400,7 +416,9 @@ impl<H: Hooks> health::Hooks for DamageEvents<'_, '_, H> {
         self.pipeline.hit_cap(target, amount)
     }
     fn kill(&mut self, target: Id, credit: Option<Id>, w: &mut World) -> HookResult {
-        self.pipeline.kill(target, credit, w)
+        self.pipeline
+            .h
+            .damage_kill(target, credit, self.pipeline.r, w, self.rng)
     }
     fn heal_through(&mut self, source: Id, target: Id, w: &World) -> bool {
         self.pipeline.heal_through(source, target, w)
@@ -424,6 +442,27 @@ pub fn resolve<H: Hooks>(
     request: &mut Request,
 ) -> Result<f64, String> {
     r.call(|r| {
+        if request.hit.hp_loss {
+            request.hit.no_sp = true;
+            if !request.tags.iter().any(|tag| tag == "hpLoss") {
+                request.tags.push("hpLoss".into());
+            }
+            let hit = request.hit;
+            let amount = request.damage.amount;
+            let penetration = request.damage.penetration;
+            return health::lose_hp(
+                w,
+                &mut DamageEvents {
+                    pipeline: &mut Pipeline { h, r },
+                    request,
+                    rng,
+                },
+                hit,
+                amount,
+                penetration,
+                false,
+            );
+        }
         // Empty legacy callback argument: the canonical backend never reads or writes it.
         // BTreeMap::new allocates no pool; all effects remain in World.unit.stats.buffs.
         let mut unused = Effects::new(1)?;

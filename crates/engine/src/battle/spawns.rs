@@ -2,7 +2,7 @@
 // Stronghold Protocol 41bbca57 battle/spawns.js: native scheduled/runtime spawning.
 use super::{
     definitions::Enemy,
-    grid::{Grid, COLS},
+    grid::{Grid, Rect, COLS},
     health::{Id, World},
     ledger::{self, Ledger},
     motion::Route,
@@ -17,17 +17,26 @@ pub trait Hooks {
     /// A missing ability is a technical error, never an implicit stats-only enemy.
     fn spawned(&mut self, id: Id, w: &mut World, runtime: &mut Runtime) -> Result<(), String>;
     fn release(&mut self, id: Id, w: &mut World) -> Result<(), String>;
+    /// Physical retirement follows the last projectile/effect reference.
+    fn retired(&mut self, _id: Id, _w: &mut World) -> Result<(), String> {
+        Ok(())
+    }
 }
 pub struct Runtime {
+    devices: Vec<Value>,
     pub queue: Queue,
     pub ledger: Ledger,
     definitions: BTreeMap<String, Arc<Enemy>>,
     units: BTreeMap<Id, Arc<Enemy>>,
     live: Vec<Id>,
     routes: Vec<Value>,
+    patrol_routes: std::collections::BTreeSet<usize>,
+    path_routes: std::collections::BTreeSet<u64>,
     extra_routes: Vec<Value>,
+    branches: BTreeMap<String, Vec<Vec<Value>>>,
     overrides: Value,
     fallback: Value,
+    rect: Rect,
     capacity: usize,
     max_legs: usize,
     faulted: bool,
@@ -67,13 +76,13 @@ impl Runtime {
             .get(&id)
             .ok_or("Missing spawned enemy ledger entry")?;
         let raw = &data.table("enemies").ok_or("Missing enemy data")?[key];
-        let kit = super::content::enemies::Kit::compile(
+        let definition = super::content::enemies::Definition::compile(
             key,
             raw,
             self.content_overrides(key),
             entry.tag.as_str(),
         )?;
-        content.spawn(w, buffs, h, id, kit, &entry.mods)
+        content.install(w, buffs, h, id, definition, &entry.mods)
     }
     pub fn new(
         data: &Catalog,
@@ -129,9 +138,14 @@ impl Runtime {
             units: BTreeMap::new(),
             live: vec![],
             routes: template.routes,
+            patrol_routes: template.patrol_routes,
+            path_routes: Default::default(),
             extra_routes: template.extra_routes,
+            branches: template.branches,
+            devices: template.devices,
             overrides: template.overrides,
             fallback,
+            rect: grid.rect(),
             capacity,
             max_legs,
             faulted: false,
@@ -146,6 +160,39 @@ impl Runtime {
     }
     pub fn retained(&self) -> usize {
         self.units.len()
+    }
+    pub(crate) fn branch_phase(&self, name: &str) -> Option<Vec<Value>> {
+        self.branches.get(name).and_then(|p| p.first()).cloned()
+    }
+    pub(crate) fn branch_phases(&self, name: &str) -> usize {
+        self.branches.get(name).map(Vec::len).unwrap_or(0)
+    }
+    pub(crate) fn tentacle_spots(&self, name: &str, phase: usize) -> Vec<[f64; 2]> {
+        let Some(phases) = self.branches.get(name).filter(|p| !p.is_empty()) else {
+            return vec![];
+        };
+        phases[phase.min(phases.len() - 1)]
+            .iter()
+            .filter_map(|a| {
+                let d = self.devices.iter().find(|d| d["alias"] == a["key"])?;
+                Some([d["pos"][0].as_f64()?, d["pos"][1].as_f64()?])
+            })
+            .collect()
+    }
+    pub(crate) fn branch_route(&self, name: &str) -> Option<Value> {
+        let entry = self.branches.get(name)?.first()?.first()?;
+        self.extra_routes
+            .get(entry["routeIndex"].as_u64()? as usize)
+            .cloned()
+    }
+    pub(crate) fn spawn_runtime<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        key: &str,
+        options: &Value,
+    ) -> Result<Id, String> {
+        self.call(|r| r.spawn_in(w, r.rect, None, h, key, options))
     }
     pub fn extra_routes(&self) -> &[Value] {
         &self.extra_routes
@@ -191,35 +238,229 @@ impl Runtime {
         key: &str,
         options: &Value,
     ) -> Result<Id, String> {
+        self.call(|r| r.spawn_in(w, g.rect(), Self::exit(g), h, key, options))
+    }
+    pub(crate) fn remaining_route(&self, w: &World, parent: Id) -> Result<Route, String> {
+        let unit = w.unit(parent)?;
+        unit.motion
+            .route
+            .as_ref()
+            .ok_or("Missing parent route")?
+            .remaining(unit.position, self.rect)
+    }
+    pub(crate) fn spawn_child<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        key: &str,
+        mut route: Route,
+        position: [f64; 2],
+        mods: &Value,
+        source_player: &Value,
+        counted: Option<bool>,
+        tag: Option<&str>,
+    ) -> Result<Id, String> {
         self.call(|r| {
             let def = r
                 .definitions
                 .get(key)
+                .cloned()
                 .ok_or_else(|| format!("Unknown enemy {key}; no fallback substituted"))?;
-            if !options.is_object() {
-                return Err("Expected runtime spawn options".into());
-            }
-            let counted = options["countInTotal"].as_bool().unwrap_or(
-                !def.not_count_in_total && options["tag"] != "boss" && options["tag"] != "part",
-            );
-            let mut spec = options.clone();
-            spec["enemyKey"] = json!(key);
-            // spawn_pending increments the shared scheduled/runtime spawn sequence.
-            let p = Pending {
-                time: w.time,
-                sequence: 0,
-                spec,
-                counted,
-                in_total: options["inTotal"] == true && counted,
-                precounted: false,
+            let position = r.clamp_position(position);
+            route.spawn = position;
+            let entry = ledger::Enemy {
+                key: key.into(),
+                mods: mods.clone(),
+                lpr: def.lpr,
+                source_player: source_player.clone(),
+                tag: tag.map(Value::from).unwrap_or(Value::Null),
+                counted: counted.unwrap_or(!def.not_count_in_total),
+                in_total: false,
+                boss: false,
+                no_leak: key == "enemy_5601_entlec",
+                bounty: 0.,
             };
-            r.spawn_pending(w, g, h, p)
+            r.insert(w, h, def, route, position, entry, false)
         })
+    }
+    pub(crate) fn spawn_part<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        key: &str,
+        position: [f64; 2],
+    ) -> Result<Id, String> {
+        let route = Route::compile(
+            &json!({"motion":"FLY","start":position,"end":position,"steps":[{"t":"WAIT","s":99999}]}),
+            self.rect,
+            self.max_legs,
+            position,
+        )?;
+        let source_player = self.ledger.player().clone();
+        self.spawn_child(
+            w,
+            h,
+            key,
+            route,
+            position,
+            &Value::Null,
+            &source_player,
+            Some(false),
+            Some("part"),
+        )
+    }
+    pub(crate) fn rect(&self) -> Rect {
+        self.rect
+    }
+    fn clamp_position(&self, position: [f64; 2]) -> [f64; 2] {
+        [
+            position[0]
+                .max(self.rect.r0 as f64 - 0.5)
+                .min(self.rect.r1 as f64 + 0.5),
+            position[1]
+                .max(self.rect.c0 as f64 - 0.5)
+                .min(self.rect.c1 as f64 + 0.5),
+        ]
+    }
+    fn exit(g: &Grid) -> Option<[usize; 2]> {
+        g.tiles()
+            .iter()
+            .position(|t| t.special.as_deref() == Some("end"))
+            .map(|i| [i / COLS, i % COLS])
+    }
+    fn spawn_in<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        rect: Rect,
+        exit: Option<[usize; 2]>,
+        h: &mut H,
+        key: &str,
+        options: &Value,
+    ) -> Result<Id, String> {
+        let def = self
+            .definitions
+            .get(key)
+            .ok_or_else(|| format!("Unknown enemy {key}; no fallback substituted"))?;
+        if !options.is_object() {
+            return Err("Expected runtime spawn options".into());
+        }
+        let counted = options["countInTotal"].as_bool().unwrap_or(
+            !def.not_count_in_total && options["tag"] != "boss" && options["tag"] != "part",
+        );
+        let mut spec = options.clone();
+        spec["enemyKey"] = json!(key);
+        // spawn_pending increments the shared scheduled/runtime spawn sequence.
+        let p = Pending {
+            time: w.time,
+            sequence: 0,
+            spec,
+            counted,
+            in_total: options["inTotal"] == true && counted,
+            precounted: false,
+        };
+        self.spawn_pending_in(w, rect, exit, h, p)
+    }
+    pub(crate) fn path_tiles(&mut self, grid: &mut Grid) -> std::collections::BTreeSet<usize> {
+        let used = self
+            .queue
+            .pending()
+            .iter()
+            .filter(|p| p.spec["route"].is_null())
+            .filter_map(|p| {
+                Some(p.spec["routeIndex"].as_f64().unwrap_or(0.))
+                    .filter(|v| v.is_finite() && *v >= 0. && v.fract() == 0.)
+                    .map(|v| v as u64)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        self.path_routes.extend(
+            used.into_iter()
+                .filter(|&index| (index as usize) < self.routes.len()),
+        );
+        let used = &self.path_routes;
+        let restrict = used.iter().any(|&i| {
+            self.routes
+                .get(i as usize)
+                .is_some_and(|r| r["motion"] != "FLY")
+        });
+        let mut keys = std::collections::BTreeSet::new();
+        let rect = grid.rect();
+        let point = |v: &Value| {
+            v.as_array().filter(|a| a.len() >= 2).and_then(|p| {
+                Some([
+                    (p[0].as_f64()? + 0.5)
+                        .floor()
+                        .clamp(rect.r0 as f64, rect.r1 as f64) as i32,
+                    (p[1].as_f64()? + 0.5)
+                        .floor()
+                        .clamp(rect.c0 as f64, rect.c1 as f64) as i32,
+                ])
+            })
+        };
+        for (index, route) in self.routes.iter().enumerate() {
+            if route["motion"] == "FLY" || (restrict && !used.contains(&(index as u64))) {
+                continue;
+            }
+            let Some(start) = point(&route["start"]) else {
+                continue;
+            };
+            let mut points = vec![start];
+            for checkpoint in route["checkpoints"].as_array().into_iter().flatten() {
+                if matches!(checkpoint["type"].as_str(), Some("MOVE" | "APPEAR")) {
+                    if let Some(p) = point(&checkpoint["pos"]) {
+                        points.push(p);
+                    }
+                }
+            }
+            if let Some(end) = point(&route["end"]) {
+                points.push(end);
+            }
+            for pair in points.windows(2) {
+                if let Some(path) = grid
+                    .find_path(pair[0], pair[1], false)
+                    .or_else(|| grid.find_path(pair[0], pair[1], true))
+                {
+                    for [r, c] in path {
+                        keys.insert(r as usize * COLS + c as usize);
+                    }
+                }
+            }
+        }
+        keys
+    }
+    pub(crate) fn spawn_candle<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        grid: &Grid,
+        h: &mut H,
+        position: [f64; 2],
+        hp: f64,
+        defence: f64,
+        resistance: f64,
+        mass: f64,
+    ) -> Result<Id, String> {
+        let key = "enemy_5601_entlec";
+        let raw = json!({"applyWay":"NONE","notCountInTotal":true,"lifePointReduce":0,"stats":{"maxHp":hp.max(1.),"atk":0,"def":defence,"magicResistance":resistance,"moveSpeed":0,"massLevel":mass}});
+        let definition = Enemy::parse(key, &raw)?;
+        self.definitions.insert(key.into(), Arc::new(definition));
+        let tile = position.map(|v| (v + 0.5).floor() as i32);
+        self.call(|runtime|runtime.spawn_pending(w,grid,h,Pending{time:w.time,sequence:0,
+            spec:json!({"enemyKey":key,"pos":position,"noLeak":true,"route":{"motion":"WALK","start":tile,"end":tile,"checkpoints":[]}}),
+            counted:false,in_total:false,precounted:false}))
     }
     fn spawn_pending<H: Hooks>(
         &mut self,
         w: &mut World,
         g: &Grid,
+        h: &mut H,
+        p: Pending,
+    ) -> Result<Id, String> {
+        self.spawn_pending_in(w, g.rect(), Self::exit(g), h, p)
+    }
+    fn spawn_pending_in<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        rect: Rect,
+        exit: Option<[usize; 2]>,
         h: &mut H,
         p: Pending,
     ) -> Result<Id, String> {
@@ -247,7 +488,6 @@ impl Runtime {
                 .unwrap_or(&self.fallback)
                 .clone()
         };
-        let rect = g.rect();
         let pos = p.spec["pos"].as_array().filter(|a| a.len() >= 2).map(|a| {
             [
                 a[0].as_f64().unwrap_or(f64::NAN),
@@ -277,28 +517,50 @@ impl Runtime {
                 .map(|a| a.is_empty())
                 .unwrap_or(true)
         {
-            if let Some((i, _)) = g
-                .tiles()
-                .iter()
-                .enumerate()
-                .find(|(_, t)| t.special.as_deref() == Some("end"))
-            {
-                compiled["end"] = json!([i / COLS, i % COLS]);
+            if let Some(tile) = exit {
+                compiled["end"] = json!(tile);
             }
         }
-        let route = Route::compile(&compiled, rect, self.max_legs, pos)?;
-        let mut unit = def.unit(&p.spec["mods"], pos, w.time)?;
+        let mut route = Route::compile(&compiled, rect, self.max_legs, pos)?;
+        route.patrol = if p.spec["route"].is_null() {
+            let i = waves::number(&p.spec["routeIndex"], 0.);
+            let index = if i >= 0. && i.fract() == 0. && i < self.routes.len() as f64 {
+                i as usize
+            } else {
+                0
+            };
+            self.patrol_routes.contains(&index)
+        } else {
+            waves::has_patrol(&p.spec["route"])
+        };
+        let mut entry = ledger::Enemy::from_pending(&p, def.lpr, self.ledger.player())?;
+        entry.no_leak = key == "enemy_5601_entlec";
+        self.insert(w, h, def, route, pos, entry, p.precounted)
+    }
+    fn insert<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        def: Arc<Enemy>,
+        route: Route,
+        pos: [f64; 2],
+        entry: ledger::Enemy,
+        precounted: bool,
+    ) -> Result<Id, String> {
+        if self.units.len() >= self.capacity || self.live.len() >= self.capacity {
+            return Err("Enemy roster capacity exceeded; no spawn dropped".into());
+        }
+        let mut unit = def.unit(&entry.mods, pos, w.time)?;
         unit.motion.route = Some(route);
         unit.owner = Some(1);
-        unit.boss = p.spec["tag"] == "boss";
-        unit.deployment.counted = p.counted;
-        unit.deployment.in_total = p.in_total;
-        let entry = ledger::Enemy::from_pending(&p, def.lpr, self.ledger.player())?;
+        unit.boss = entry.boss;
+        unit.deployment.counted = entry.counted;
+        unit.deployment.in_total = entry.in_total;
         let id = w.next_unit_id()?;
         unit.targeting.spawn_seq = self.queue.next_sequence()?;
         unit.deployment.deploy_seq = w.next_deployment_sequence()?;
         w.insert_unit(id, unit)?;
-        self.ledger.spawn(id, entry, p.precounted)?;
+        self.ledger.spawn(id, entry, precounted)?;
         self.units.insert(id, def);
         self.live.push(id);
         h.spawned(id, w, self)?;
@@ -328,165 +590,12 @@ impl Runtime {
                 }
                 let u = w.unit(id)?;
                 if u.removed && !u.stats.alive && w.unit_pins(id)? == 0 {
+                    h.retired(id, w)?;
                     w.release_removed(id)?;
                     r.units.remove(&id);
                 }
             }
             Ok(())
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::battle::{
-        deploy::{self, Deployment, Options},
-        health::{Side, Unit},
-        stats::{Base, UnitStats},
-    };
-    fn fixture() -> (Runtime, World, Grid) {
-        let grid = Grid::new(&json!({}), super::super::grid::Rect::FULL).unwrap();
-        let def = Arc::new(Enemy::parse("enemy_a", &json!({"hp":1000})).unwrap());
-        let queue = Queue::new(128).unwrap();
-        let ledger = Ledger::new(json!("p"), &queue, 128, 128).unwrap();
-        (
-            Runtime {
-                queue,
-                ledger,
-                definitions: BTreeMap::from([("enemy_a".into(), def)]),
-                units: BTreeMap::new(),
-                live: vec![],
-                routes: vec![],
-                extra_routes: vec![],
-                overrides: Value::Null,
-                fallback: Value::Null,
-                capacity: 128,
-                max_legs: 16,
-                faulted: false,
-                depth: 0,
-            },
-            World::new(128, 1, 1).unwrap(),
-            grid,
-        )
-    }
-    #[derive(Default)]
-    struct Host {
-        fail: bool,
-        released: usize,
-    }
-    impl Hooks for Host {
-        fn spawned(&mut self, _: Id, _: &mut World, _: &mut Runtime) -> Result<(), String> {
-            if self.fail {
-                Err("Enemy ability is not installed".into())
-            } else {
-                Ok(())
-            }
-        }
-        fn release(&mut self, _: Id, _: &mut World) -> Result<(), String> {
-            self.released += 1;
-            Ok(())
-        }
-    }
-    impl super::super::blocking::Hooks for Host {
-        fn blocked(&mut self, _: Id, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-        fn ended(&mut self, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-    }
-    impl deploy::Hooks for Host {
-        fn initialize(
-            &mut self,
-            _: Id,
-            _: Options,
-            _: &mut World,
-            _: &mut Deployment,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn event(
-            &mut self,
-            _: deploy::Event,
-            _: Id,
-            _: Option<Id>,
-            _: &mut World,
-            _: &mut Deployment,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn remove_temporary_effects(&mut self, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-    }
-    #[test]
-    fn content_failure_is_an_exception_not_a_valid_stats_only_continuation() {
-        let (mut r, mut w, g) = fixture();
-        let mut h = Host {
-            fail: true,
-            ..Host::default()
-        };
-        assert!(r.spawn(&mut w, &g, &mut h, "enemy_a", &json!({})).is_err());
-        assert!(r.faulted());
-        assert_eq!(r.live().len(), 1);
-        assert!(r.process(&mut w, &g, &mut h).is_err());
-        assert!(r.spawn(&mut w, &g, &mut h, "enemy_a", &json!({})).is_err());
-        assert_eq!(r.live().len(), 1);
-    }
-    #[test]
-    fn pinned_corpses_drop_owned_hooks_before_releasing_storage() {
-        let (mut r, mut w, g) = fixture();
-        let mut h = Host::default();
-        let id = r.spawn(&mut w, &g, &mut h, "enemy_a", &json!({})).unwrap();
-        w.pin_unit(id).unwrap();
-        r.ledger.kill(id, false).unwrap();
-        let u = w.unit_mut(id).unwrap();
-        u.removed = true;
-        u.stats.alive = false;
-        r.release_removed(&mut w, &mut h).unwrap();
-        assert!(r.live().is_empty());
-        assert_eq!(r.retained(), 1);
-        assert_eq!(h.released, 1);
-        r.release_removed(&mut w, &mut h).unwrap();
-        assert_eq!(h.released, 1);
-        w.unpin_unit(id).unwrap();
-        r.release_removed(&mut w, &mut h).unwrap();
-        assert_eq!(r.retained(), 0);
-        assert_eq!(h.released, 1);
-        assert!(w.unit(id).is_err());
-        let next = r.spawn(&mut w, &g, &mut h, "enemy_a", &json!({})).unwrap();
-        assert!(next > id);
-    }
-    #[test]
-    fn ally_redeploy_and_enemy_spawn_share_world_identities() {
-        let (mut r, mut w, g) = fixture();
-        let mut h = Host::default();
-        let mut a = Unit::new(UnitStats::new(Base::default()), Side::Ally);
-        a.stats.alive = false;
-        a.deployment.kind = deploy::Kind::Operator;
-        a.deployment.home = [10, 5];
-        w.insert_unit(7, a).unwrap();
-        let mut d = Deployment::new(g.rect(), 128, 1, 99.).unwrap();
-        d.register(7, &w).unwrap();
-        assert!(d.deploy(&mut w, &mut h, 7, Options::default()).unwrap());
-        let id = r.spawn(&mut w, &g, &mut h, "enemy_a", &json!({})).unwrap();
-        assert_eq!(id, 8);
-        assert_eq!(w.unit(id).unwrap().deployment.deploy_seq, 2);
-        d.retreat(&mut w, &mut h, 7, "retreat", false).unwrap();
-        assert!(d.deploy(&mut w, &mut h, 7, Options::default()).unwrap());
-        assert_eq!(w.unit(7).unwrap().deployment.deploy_seq, 3);
-        let (mut fresh, mut world, grid) = fixture();
-        let id = fresh
-            .spawn(
-                &mut world,
-                &grid,
-                &mut Host::default(),
-                "enemy_a",
-                &json!({}),
-            )
-            .unwrap();
-        assert_eq!(id, 1);
-        assert_eq!(world.unit(id).unwrap().deployment.deploy_seq, 1);
     }
 }

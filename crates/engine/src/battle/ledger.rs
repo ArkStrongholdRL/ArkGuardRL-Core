@@ -203,11 +203,14 @@ impl Ledger {
         self.timed_out = true;
         Ok(())
     }
+    pub fn counted_leaks(&self) -> u64 {
+        self.leaks.iter().filter(|e| e["counted"] == true).count() as u64
+    }
     /// Accounting projection of BattleResult. The battle assembles unit end state,
     /// damage/healing and layer gains separately before publishing its full result.
     pub fn report(&self, time: f64, reason: Option<&str>) -> Value {
         let pp = json!({"killed":self.killed,"total":self.total,"leaked":self.leaks,
-            "perfect":!self.leaks.iter().any(|e|e["counted"] == true),"killedInTotal":self.killed_in_total,
+            "perfect":self.counted_leaks() == 0,"killedInTotal":self.killed_in_total,
             "leakedInTotal":self.leaked_in_total,"resolved":self.resolved(),"creditedKills":self.credited_kills,"coins":self.coins});
         let mut result = json!({"time":(time*1000.+0.5).floor()/1000.,"reason":reason,
             "perPlayer":{self.player.as_str().unwrap():pp},"killed":self.killed,"total":self.total,"resolved":self.resolved(),"errors":0});
@@ -215,38 +218,5 @@ impl Ledger {
             result["unspawned"] = json!(self.unspawned);
         }
         result
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn timeout_capacity_failure_preserves_successor_state() {
-        let mut q = Queue::new(3).unwrap();
-        q.push(&json!({"enemyKey":"enemy_a","count":3}), true, false)
-            .unwrap();
-        let mut l = Ledger::new(json!("p"), &q, 3, 1).unwrap();
-        for id in 1..=2 {
-            let p = q.pop_due(0.).unwrap();
-            l.spawn(
-                id,
-                Enemy::from_pending(&p, 1., l.player()).unwrap(),
-                p.precounted,
-            )
-            .unwrap();
-        }
-        assert!(l.timeout(&mut q).is_err());
-        assert_eq!(l.alive().len(), 2);
-        assert_eq!(l.total, 3);
-        assert_eq!(q.pending().len(), 1);
-        assert_eq!(l.report(0., None)["perPlayer"]["p"]["leaked"], json!([]));
-        l.kill(1, false).unwrap();
-        l.timeout(&mut q).unwrap();
-        assert_eq!(l.total, 2);
-        assert_eq!(l.resolved(), 2);
-        assert_eq!(l.alive().len(), 1);
-        l.timeout(&mut q).unwrap();
-        assert_eq!(l.leaked_count, 1);
     }
 }

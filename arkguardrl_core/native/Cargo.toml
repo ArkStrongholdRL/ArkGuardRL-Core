@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "arkguardrl-route-kernels"
 version = "0.1.0"
@@ -13,6 +15,9 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "=0.27.2", features = ["extension-module"] }
 numpy = "=0.27.1"
+
+[build-dependencies]
+pyo3-build-config = "=0.27.2"
 
 [profile.release]
 lto = "thin"

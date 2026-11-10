@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Native battle replay</title>
+<style>
+body { background:#121923; color:#e2e8f0; font:15px system-ui; max-width:1100px; margin:24px auto; }
+canvas { width:100%; background:#1d2938; border-radius:8px; }
+nav { display:flex; gap:14px; align-items:center; margin:16px 0; }
+input[type=range] { flex:1; } button,select { padding:6px; }
+#status { white-space:pre-wrap; } small { color:#a6b4c6; }
+</style>
+<h1>原生战斗回放</h1>
+<input id="file" type="file" accept=".jsonl">
+<nav><button id="play">播放</button><input id="seek" type="range" min="0" value="0" max="0">
+<select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></nav>
+<p id="status">选择 native_replay.py 导出的 JSONL</p>
+<canvas id="board" width="1050" height="760"></canvas>
+<p><small>蓝色为友方，红色为敌方，金色描边表示技能开启，黄色点为弹道。按采样帧显示位置和血条，回合间直接切换。</small></p>
+<script>
+let records = /*REPLAY_DATA*/ null;
+let frames = [];
+let position = 0;
+let playing = false;
+let last = 0;
+let interval = 100;
+let outcome = null;
+const board = document.getElementById('board'), ctx = board.getContext('2d');
+const seek = document.getElementById('seek'), status = document.getElementById('status');
+function load(rows) {
+  if (rows[0]?.schema !== 'arkguardrl/native-battle-replay-v1') throw Error('未知回放格式');
+  frames = rows.filter(row => row.kind === 'frame');
+  if (!frames.length) throw Error('轨迹中没有战斗帧');
+  records = rows;
+  position = 0;
+  playing = false;
+  outcome = rows.find(row => row.kind === 'footer')?.outcome;
+  interval = 1000 * rows[0].sample_ticks / rows[0].tick_rate;
+  seek.max = frames.length - 1;
+  document.getElementById('play').textContent = '播放';
+  draw();
+}
+function draw() {
+  if (!frames.length) return;
+  const f = frames[position], [r0,c0,r1,c1] = f.bounds;
+  const size = Math.min(board.width/(c1-c0+2), board.height/(r1-r0+2));
+  const xy = p => [(p[1]-c0+1)*size,(p[0]-r0+1)*size];
+  ctx.clearRect(0,0,board.width,board.height);
+  for (let r=r0;r<=r1;r++) for (let c=c0;c<=c1;c++) {
+    const [x,y] = xy([r,c]), glyph = f.tiles?.[r*21+c];
+    ctx.fillStyle = glyph === 'h' || glyph === '#' || glyph === 'X' ? '#344357' : '#26364a';
+    if (glyph === 'S') ctx.fillStyle = '#674047';
+    if (glyph === 'E') ctx.fillStyle = '#315d6a';
+    ctx.fillRect(x-size/2+1,y-size/2+1,size-2,size-2);
+  }
+  for (const u of f.units) {
+    const [x,y] = xy(u.position), radius = size*0.29;
+    ctx.fillStyle = u.side === 'ally' ? '#58b5eb' : '#ed787e';
+    ctx.beginPath();
+    ctx.arc(x,y,radius,0,2*Math.PI);
+    ctx.fill();
+    if (u.skillActive) {
+      ctx.strokeStyle='#f6cd63';
+      ctx.lineWidth=3;
+      ctx.stroke();
+    }
+    ctx.fillStyle='#111';
+    ctx.fillRect(x-radius,y-radius-7,2*radius,4);
+    ctx.fillStyle='#79dc9c';
+    ctx.fillRect(x-radius,y-radius-7,2*radius*Math.max(0,Math.min(1,u.hp/u.maxHp)),4);
+    ctx.fillStyle='#fff';
+    ctx.font=`${Math.max(9,size*0.2)}px system-ui`;
+    ctx.textAlign='center';
+    ctx.fillText(String(u.id),x,y+3);
+  }
+  for (const p of f.projectiles) {
+    const [x,y] = xy(p.position);
+    ctx.fillStyle='#ffe497';
+    ctx.beginPath();
+    ctx.arc(x,y,3,0,2*Math.PI);
+    ctx.fill();
+  }
+  status.textContent=`回合 ${f.round} · ${f.time.toFixed(2)} s · 帧 ${position+1}/${frames.length}`+
+    ` · 终局 ${JSON.stringify(outcome ?? '未完成')}`;
+  seek.value=position;
+}
+document.getElementById('file').onchange=async event=>{
+  try { load((await event.target.files[0].text()).trim().split('\n').map(line=>JSON.parse(line))); }
+  catch(error) { status.textContent=String(error); }
+};
+seek.oninput=()=>{
+  position=Number(seek.value);
+  last=0;
+  draw();
+};
+document.getElementById('play').onclick=()=>{
+  if (!frames.length) return;
+  if (position===frames.length-1) position=0;
+  playing=!playing;
+  last=0;
+  document.getElementById('play').textContent=playing?'暂停':'播放';
+};
+function animate(now) {
+  if (playing && now-last>=interval/Number(document.getElementById('speed').value)) {
+    last=now;
+    if (position<frames.length-1) {
+      position++;
+      draw();
+    } else {
+      playing=false;
+      document.getElementById('play').textContent='播放';
+    }
+  }
+  requestAnimationFrame(animate);
+}
+if (records) { try {load(records);} catch(error) {status.textContent=String(error);} }
+requestAnimationFrame(animate);
+</script>
+</html>

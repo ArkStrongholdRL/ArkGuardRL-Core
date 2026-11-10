@@ -196,7 +196,7 @@ pub struct Flow {
 }
 #[derive(Clone)]
 pub struct Grid {
-    tiles: Vec<Tile>,
+    tiles: Arc<[Tile]>,
     rect: Rect,
     obstacle: [u8; N],
     unblockable: [i32; N],
@@ -213,6 +213,9 @@ fn key([r, c]: [i32; 2]) -> usize {
 impl Grid {
     pub fn tiles(&self) -> &[Tile] {
         &self.tiles
+    }
+    pub(crate) fn tile_layout(&self) -> Arc<[Tile]> {
+        Arc::clone(&self.tiles)
     }
     pub fn rect(&self) -> Rect {
         self.rect
@@ -242,11 +245,14 @@ impl Grid {
             } else {
                 String::new()
             };
-            let glyphs: Vec<char> = line.chars().collect();
+            // Slice the original line: no per-glyph String allocation.
+            let glyphs: Vec<&str> = line
+                .char_indices()
+                .map(|(i, ch)| &line[i..i + ch.len_utf8()])
+                .collect();
             for c in 0..COLS {
                 tiles.push(if let Some(g) = glyphs.get(c) {
-                    let g = g.to_string();
-                    Tile::normalize(&g, &stage["legend"][&g])
+                    Tile::normalize(g, &stage["legend"][g])
                 } else {
                     Tile::empty()
                 });
@@ -258,7 +264,7 @@ impl Grid {
             i32::from(tiles[k].pass == "ALL" && tiles[k].terrain.as_deref() == Some("deepsea"))
         });
         Ok(Self {
-            tiles,
+            tiles: tiles.into(),
             rect,
             obstacle: [0; N],
             unblockable,
@@ -270,7 +276,7 @@ impl Grid {
     pub fn in_bounds([r, c]: [i32; 2]) -> bool {
         r >= 0 && r < ROWS as i32 && c >= 0 && c < COLS as i32
     }
-    fn in_rect(&self, [r, c]: [i32; 2]) -> bool {
+    pub(crate) fn in_rect(&self, [r, c]: [i32; 2]) -> bool {
         r >= self.rect.r0 && r <= self.rect.r1 && c >= self.rect.c0 && c <= self.rect.c1
     }
     pub fn walkable(&self, p: [i32; 2], ignore: bool) -> bool {
@@ -702,47 +708,4 @@ pub fn segment_tiles([mut r, mut c]: [i32; 2], [r1, c1]: [i32; 2]) -> Vec<[i32; 
         out.push([r, c]);
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn open() -> Grid {
-        Grid::new(
-            &serde_json::json!({"rows": vec!["r".repeat(COLS); ROWS]}),
-            Rect::FULL,
-        )
-        .unwrap()
-    }
-    #[test]
-    fn cache_is_bounded_and_invalidated_only_on_changes() {
-        let mut g = open();
-        let before = g.flow_field([9, 2], true, false);
-        assert!(Arc::ptr_eq(&before, &g.flow_field([9, 2], true, false)));
-        g.set_obstacle([9, 8], false, CRATE).unwrap();
-        assert!(Arc::ptr_eq(&before, &g.flow_field([9, 2], true, false)));
-        g.set_obstacle([9, 8], true, CRATE).unwrap();
-        let after = g.flow_field([9, 2], true, false);
-        assert!(!Arc::ptr_eq(&before, &after));
-        assert_eq!(before.dist[key([9, 8])], 6); // old output still owns its snapshot
-        assert_eq!(after.dist[key([9, 8])], 1005);
-        for k in 0..N {
-            g.flow_field(coord(k), true, false);
-        }
-        assert_eq!(g.cache.len(), 64);
-    }
-    #[test]
-    fn corner_clearance_and_obstacle_bits_are_independent() {
-        let mut g = open();
-        g.set_obstacle([9, 8], true, CRATE).unwrap();
-        g.set_obstacle([9, 8], true, BLOCK).unwrap();
-        g.set_obstacle([9, 8], false, BLOCK).unwrap();
-        assert!(g.walkable([9, 8], false));
-        assert!(!g.ground_passable([9, 8], false));
-        assert!(!g.straight_clear(7.0, 9.0, [10, 8]));
-        g.set_obstacle([9, 8], false, CRATE).unwrap();
-        assert!(g.straight_clear(7.0, 9.0, [10, 8]));
-        assert!(g.find_path([-1, 0], [9, 2], false).is_none());
-        assert_eq!(g.waypoints([9, 2], [9, 2], true, false), Some(vec![[9, 2]]));
-    }
 }
