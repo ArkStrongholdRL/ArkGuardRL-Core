@@ -187,9 +187,12 @@ class DecisionHistory:
         if state["phase"] == "PREP" and action["t"] != "g.choice":
             self.prep_used += 1
 
-    def snapshot(self, state):
+    def _check(self, state):
         if self.progress is None or self.progress["observation_id"] != fingerprint(state):
             raise ValueError("Initialize/update history with the real environment result before encoding")
+
+    def snapshot(self, state):
+        self._check(state)
         key = self._sync(state)
         return {"schema": self.schema, "progress": deepcopy(self.progress), "used": self.prep_used, "limit": PREP_ACTION_LIMIT,
                 "blocked_count": len(self.attempts.get(key, ()))}

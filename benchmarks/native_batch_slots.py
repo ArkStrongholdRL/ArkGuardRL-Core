@@ -117,7 +117,12 @@ class NativeSlotBatch:
 
     def _output(self):
         n, k = self.num_envs, self.max_candidates
-        histories = [canonical(s.history.snapshot(s.state)) for s in self.slots]
+        for slot in self.slots:
+            slot.history._check(slot.state)
+        # The decision already owns the exact immutable history used to enumerate
+        # its candidates. Reuse it instead of copying and serializing it again.
+        histories = [s.decision.history_json if s.decision is not None
+                     else canonical(s.history.snapshot(s.state)) for s in self.slots]
         actions = [canonical(s.decision.actions if s.decision else ()) for s in self.slots]
         buffers = self.native.encode_all([s.state['revision'] for s in self.slots], histories, actions)
         obs = dict(observation=np.empty((n, 4784), np.float32),
