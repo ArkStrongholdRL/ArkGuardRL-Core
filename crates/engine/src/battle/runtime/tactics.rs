@@ -469,7 +469,8 @@ impl Host {
                 .map(|(at, id, kind)| (at, Due::Periodic(id, kind)))
                 .collect();
             for &id in &ids {
-                if matches!(self.tac_def(id)?.extra.tactics, Tactics::Ines(_)) {
+                let definition = &self.roster.as_ref().unwrap().entry(id)?.definition;
+                if matches!(definition.extra.tactics, Tactics::Ines(_)) {
                     let at = w.unit(id)?.operator.tactical.next[1].max(0.2);
                     if at <= w.time + 1e-9 {
                         due.push((at, Due::KitAura(id)));

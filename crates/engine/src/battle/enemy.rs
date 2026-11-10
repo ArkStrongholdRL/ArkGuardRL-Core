@@ -616,11 +616,14 @@ pub fn update<H: Hooks>(
                 w.unit_mut(id)?.moving = false;
                 return Ok(());
             }
-            let (stunned, fear, levitate) = (
-                flag(w, id, "stun")?,
-                flag(w, id, "fear")?,
-                flag(w, id, "levitate")?,
-            );
+            let (stunned, fear, levitate) = {
+                let flags = &w.unit_mut(id)?.stats.stats().map_err(str::to_string)?.flags;
+                (
+                    flags.contains("stun"),
+                    flags.contains("fear"),
+                    flags.contains("levitate"),
+                )
+            };
             let hidden = w.unit(id)?.hidden;
             if stunned || hidden || fear {
                 h.cut_attack_stand(id, w)?;
@@ -648,13 +651,23 @@ pub fn update<H: Hooks>(
                 return Ok(());
             }
             if let Some(blocker) = w.unit(id)?.blocked_by() {
-                let (no_block, blocker_sleep) =
-                    (flag(w, blocker, "noBlock")?, flag(w, blocker, "sleep")?);
-                let (unblockable, enemy_levitate, enemy_fear) = (
-                    flag(w, id, "unblockable")?,
-                    flag(w, id, "levitate")?,
-                    flag(w, id, "fear")?,
-                );
+                let (no_block, blocker_sleep) = {
+                    let flags = &w
+                        .unit_mut(blocker)?
+                        .stats
+                        .stats()
+                        .map_err(str::to_string)?
+                        .flags;
+                    (flags.contains("noBlock"), flags.contains("sleep"))
+                };
+                let (unblockable, enemy_levitate, enemy_fear) = {
+                    let flags = &w.unit_mut(id)?.stats.stats().map_err(str::to_string)?.flags;
+                    (
+                        flags.contains("unblockable"),
+                        flags.contains("levitate"),
+                        flags.contains("fear"),
+                    )
+                };
                 let bl = w.unit(blocker)?;
                 if !bl.stats.alive
                     || !bl.deployed
