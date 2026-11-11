@@ -42,25 +42,13 @@ for route in spatial['routes']:
 
 接口上限为 64 条路线、每条 256 个检查点、总计 65,536 个地面路径格、399 个装置及 8 MiB JSON。超限、revision 不匹配或非决策阶段调用会报错。
 
-### 增量空间读取与张量缓存
+### 增量空间读取
 
 `env.unwrapped.public_spatial_update(key=None)` 返回 `(key, geometry_json, dynamic_json)`。几何相同时 `geometry_json` 为 `None`，动态报文始终包含 schema、revision、回合、阶段、地图机变、当前预览关联及路径来源。key 依据公开地图、有效装置开关及当前模板生成，限定在同一不可变 catalog 内复用。原生 `NativeSolo` 还接受 `expected_revision`。slots 外观接受每槽 key 列表，底层为 `public_spatial_updates(revisions, keys)`，非决策槽位返回 `None`。现有完整空间报文保持原格式。
-
-研究侧 `SpatialCache.read(environment, decision.state)` 持有一份当前几何及其张量，地图／模板变化时重建。批量入口用 `SpatialCache.update(packet, state)` 消费每槽增量包。候选空间行从 36 个目标格的预编码表批量索引，预览关联及 summary 的预览计数逐次更新。返回张量独立持有内存，布局与数值保持一致。BC 和在线采集入口已接线，研究侧改动在 ArkGuardRL 工作树。
-
-63 份真实记录、9,262 个决策中，完整报文保持逐字节一致，增量字段合并后与完整报文一致，8,433 次复用几何、829 次重建。四核心 137 个决策的全部空间张量与改动前逐字节一致，另覆盖四核心 72 个槽位快照、1／4 线程及局部 reset／step。9 项 Rust 测试通过。
-
-陈核心完整对局、5 轮交替 A/B，双方均包含完整空间张量化。单环境吞吐为 171.3 → 341.9 决策/秒（2.00 倍），空间读取与编码平均 3.410 → 0.470 ms；四环境四线程为 188.3 → 517.3 决策/秒（2.75 倍），空间部分平均 3.926 → 0.466 ms/决策。包含冷缓存，未计模型前向或训练。这组负载增加了空间张量化，前文较早的吞吐仅包含空间 JSON 读取。[单环境 A/B](../../benchmarks/local/spatial-tensor-cache-ab-20261110.json) [四环境 A/B](../../benchmarks/local/spatial-tensor-cache-batch-ab-20261110.json) [真实记录](../../benchmarks/local/spatial-update-records-20261110.json)
 
 ### 原生候选准备与索引执行
 
 `NativeSolo.build_current_policy(revision)` 返回 `(token, actions_json, buffers)`，`step_index(revision, token, index, tick_budget, max_advances)` 执行该候选。批量对应 `build_current_policy_all(revisions)` 和 `step_index_all(revisions, tokens, indices, tick_budget, max_advances)`，暂停槽位的索引为 `None`。token 限定在所属原生实例内使用，跨 reset 单调递增；重新构造候选会替换旧 token，动作执行后候选缓存失效。每槽只保留当前一份、最多 16,384 个候选，清理在 GIL 外完成。批量索引在推进前整组验证。单环境动作字典入口与带参数的既有编码入口继续供记录回放和兼容调用。
-
-Gym 和 slots 已接入此路径。研究侧 `open_session` 改为按 Python／原生 API 能力选择 Rust 账本，在线采集使用索引执行；旧构建回退至可用入口。仅有完整空间投影的原生构建也能通过完整报文适配空间缓存。这两处研究接线在 ArkGuardRL 工作树。
-
-63 份记录共 9,262 次动作，新旧执行报文逐字节一致。原特征接口可编码的 9,183 个决策，候选顺序与四类数值 buffer 一致，其中 8,979 次使用原生索引执行。另 204 次记录动作位于原有候选域外，通过字典入口回放；一份自选记录的 79 个状态仍受原有自选特征定义缺失限制，两路均无法编码。四核心 384 个槽位快照，以及旧 token、越界索引、整批非法选择、局部 reset／step、错误恢复与旧构建兼容检查通过。
-
-同负载交替 A/B，Gym 420.7 → 437.2 决策/秒（+3.9%，不含空间张量化），四环境四线程 slots 555.9 → 585.7（+5.4%，含空间 JSON 读取）。实际研究采集入口包含完整空间张量化，从 293.0 → 338.5（+15.5%）；该项同时计入原生账本接线的收益。均为完整购买部署对局，未计模型前向或训练。[Gym A/B](../../benchmarks/local/native-domain-gym-ab-20261110.json) [slots A/B](../../benchmarks/local/native-domain-slots-ab-20261110.json) [采集入口 A/B](../../benchmarks/local/native-domain-research-ab-20261110.json) [记录对照](../../benchmarks/local/native-domain-records-20261110.json)
 
 ## 原生战斗回放
 
@@ -81,7 +69,7 @@ Huawei 的 `stronghold-human-seat-trajectory/v1` JSONL 也可作为 `action_file
 
 ## 真实单人记录回归
 
-当前以 Huawei 的完整单人绝境轨迹作为主要回归输入，保留 9 项针对性 Rust 测试，覆盖预算、回执、快照隔离及已发现的重入错误。本机轨迹存放在忽略目录 `benchmarks/local/huawei-solo/`。
+使用 Huawei 的完整单人绝境轨迹进行回归，轨迹目录由调用者提供。
 
 ```python
 from benchmarks.human_records import run
@@ -92,14 +80,6 @@ run(records_dir="benchmarks/local/huawei-solo", data_root="/path/to/data",
 ```
 
 逐决策比较阶段、回合、LP、资金、棋子与装备库存、部署、盟约层数、选择和商店，并比较动作接受情况及最终胜负、通过回合数和隐藏关进度。显示元数据和战斗浮点累计统计在这个比较范围之外。只读的 `g.unitStats` 请求会跳过。缺少种子、尚未支持的核心与房间配置单独报告；漂移或执行错误会让函数抛出异常。
-
-当前 63 份记录共 9,262 个决策，61 份一致、2 份已知漂移、0 执行错误；全部最终胜负、通过回合数及隐藏关进度一致。[回归结果](../../benchmarks/local/huawei-pr-cleanup-regression-20261110.json)
-
-剩余两份沿用前次处理。`7929e734` 保留快照遍历，完整命中原版断崖因删除数组元素而漏打的目标。`1c8ee89d` 保留寒风先施加寒冷、冰泪随后检查的同帧顺序。验收仍以逐决策状态和最终战果为准。`320cd8b5` 的逐帧诊断还可见 35.70 秒原版属性缓存延迟刷新，以及再生流形在 66.07 秒复制技能晚一帧，均未造成决策状态差异。
-
-召唤物缺卡及相关 UID 动作错误已在语料中消除。新增一致记录包括 `4337fae1-1e3a-46d5-9f52-b2608f01a819-seat0.jsonl` 的 14 回合胜利，包含医疗探机手牌，原策略未部署探机。其成功动作另行导出为可渲染回放，省略了原记录的两个拒绝动作。[通关回放](../../benchmarks/local/huawei-summons-clear.html)
-
-另用 `18eed0b8-9891-4b21-97fd-77dd0a51016a-seat0.jsonl` 验证探机实际部署、治疗、10 秒退场及库存再部署，导出 1,151 个采样帧。这份原记录与原生重执行均为败局，13 回合通过，仍有第 13 回合起的 LP 差异。HTML 已检查内嵌数据，未完成浏览器视觉验收。[探机部署回放](../../benchmarks/local/huawei-drone-deployment.html)
 
 Gym 通过 `ArkGuardNativeEnv(..., diy=picks)` 固定配置。也可先调用 `NativeCatalog.with_diy(json.dumps(picks))`，将返回的目录同时交给 `NativeSolo` 和 `PublicCatalog.from_native`，保证运行数据与候选／编码元数据一致。自选配置须与公开状态完全匹配，既有观测及候选数组形状保持一致。
 
@@ -166,12 +146,3 @@ cargo build --release --locked -p arkguard-python
 cargo build --release --locked --manifest-path crates/routes/Cargo.toml
 cargo build --release --locked --manifest-path crates/slots/Cargo.toml
 ```
-
-## Node v0 历史测量
-
-2026-11-02 的 Node 0.3.1 + Rust 特征内核测量记录如下。Apple M5／16 GiB，每环境预热 64 步、测量 1,024 步，各版本六次测量。
-单环境优化后中位数为 494.75 决策／秒，四环境 Async 为 937.19 决策／秒。动作按掩码随机采样，计时包含观测、奖励、Gym 通信与循环内 reset。
-
-![Node v0 单环境与四环境的六次测量及中位数](../assets/benchmark-throughput.svg)
-
-图表从已提交的 JSON 生成，可安装 Matplotlib 后执行 `python benchmarks/plot_throughput.py` 重建。[原始记录](../../benchmarks/env-hotspots-20261102.json) · [测量说明](HOTSPOTS-20261102.md)

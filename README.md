@@ -122,14 +122,14 @@ with gym.make(
 | Rust slots，4 环境／4 线程，含空间 JSON 读取 | 585.7 |
 
 以上为原生候选准备与索引执行后的完整对局 A/B 记录，计时覆盖环境执行与接口开销。
-模型前向与训练另行计时。负载定义、真实记录回归、历史测量与复现命令见性能文档。[性能基准](docs/benchmarks/README.md)
+模型前向与训练另行计时。负载定义、真实记录回归与复现用法见性能文档。[性能基准](docs/benchmarks/README.md)
 
 ## 目录结构
 
 ```text
 src/          Python 环境包
 crates/       Rust 引擎、Python 绑定与并行扩展
-docs/         接口说明、迁移记录与性能文档
+docs/         接口说明与性能文档
 benchmarks/   基准脚本与测量数据
 .github/      跨平台 CI
 ```
@@ -139,14 +139,10 @@ benchmarks/   基准脚本与测量数据
 | 文档 | 内容 |
 | --- | --- |
 | [性能基准](docs/benchmarks/README.md) | 测量结果、计时边界与运行命令 |
-| [Rust 特征内核](docs/RUST-ROUTES.md) | 动作与观测编码的职责及 ABI |
-| [原生迁移笔记](docs/NATIVE-033.md) | 0.3.3 原生运行时实现范围与迁移记录 |
 | [问题反馈](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | 接口问题与可复现报告 |
 
 ## 许可与致谢
 
 代码采用 GPL-3.0-or-later。Stronghold Protocol 提供上游模拟实现，游戏素材与外部数据的来源和使用边界见许可说明。[LICENSE](LICENSE) · [NOTICE](NOTICE.md)
-
-首页编排参考 AutoTavern，横幅为本项目原创示意图。[AutoTavern](https://github.com/MCG-NJU/AutoTavern)
 
 <p align="center"><a href="#top">回到顶部</a></p>

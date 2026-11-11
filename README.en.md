@@ -122,14 +122,14 @@ This entry point uses Node.js 22+ and the 0.3.1 engine / data.
 | Rust slots, 4 environments / 4 threads, including spatial JSON reads | 585.7 |
 
 These full-game A/B measurements include native candidate preparation and indexed execution, covering environment and interface overhead.
-Model inference and training are timed separately. See the benchmark guide for workload definitions, human-record regression, historical measurements, and reproduction commands. [Performance benchmarks](docs/benchmarks/README.md)
+Model inference and training are timed separately. See the benchmark guide for workload definitions, human-record regression, and reproduction examples. [Performance benchmarks](docs/benchmarks/README.md)
 
 ## Repository layout
 
 ```text
 src/          Python environment packages
 crates/       Rust engine, Python bindings, and parallel extension
-docs/         API guides, migration notes, and performance documentation
+docs/         API guides and performance documentation
 benchmarks/   Benchmark scripts and measurement data
 .github/      Cross-platform CI
 ```
@@ -141,14 +141,10 @@ Detailed development notes are currently in Chinese.
 | Guide | Contents |
 | --- | --- |
 | [Performance benchmarks](docs/benchmarks/README.md) | Measurements, timing scope, and commands |
-| [Rust feature kernels](docs/RUST-ROUTES.md) | Action and observation encoding responsibilities and ABI |
-| [Native migration notes](docs/NATIVE-033.md) | Implementation scope and migration history of the 0.3.3 native runtime |
 | [Issue tracker](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | Interface issues and reproducible reports |
 
 ## License and acknowledgments
 
 Code is licensed under GPL-3.0-or-later. Stronghold Protocol provides the upstream simulator. See the license and attribution notes for game assets and external data. [LICENSE](LICENSE) · [NOTICE](NOTICE.md)
-
-The landing-page layout draws on AutoTavern. The banner is an original schematic illustration. [AutoTavern](https://github.com/MCG-NJU/AutoTavern)
 
 <p align="center"><a href="#top">Back to top</a></p>
