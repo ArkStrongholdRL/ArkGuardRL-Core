@@ -46,7 +46,7 @@ PYO3_PYTHON="$(command -v python)" cargo build --release --locked -p arkguard-py
 ```
 
 CI provides Python 3.12 modules for Linux x64, Windows x64, and macOS Intel / Apple Silicon.
-The example uses a macOS library path. On Linux, use `target/release/lib_native.so`. On Windows, use the actual path of the `_native*.pyd` CI artifact. [Cross-platform builds](benchmarks/README.md#跨平台构建)
+The example uses a macOS library path. On Linux, use `target/release/lib_native.so`. On Windows, use the actual path of the `_native*.pyd` CI artifact. [Cross-platform builds](docs/benchmarks/README.md#跨平台构建)
 
 ### Run a game
 
@@ -104,7 +104,7 @@ Observations are dictionaries of NumPy arrays. Action indices refer to the curre
 
 </details>
 
-Use `env.unwrapped.public_spatial_update(key)` for incremental spatial reads. The benchmark guide also covers human-record regression and renderable combat trajectories. [Spatial APIs and replay export](benchmarks/README.md)
+Use `env.unwrapped.public_spatial_update(key)` for incremental spatial reads. The benchmark guide also covers human-record regression and renderable combat trajectories. [Spatial APIs and replay export](docs/benchmarks/README.md)
 
 <details>
 <summary>Node v0 compatibility</summary>
@@ -122,7 +122,17 @@ This entry point uses Node.js 22+ and the 0.3.1 engine / data.
 | Rust slots, 4 environments / 4 threads, including spatial JSON reads | 585.7 |
 
 These full-game A/B measurements include native candidate preparation and indexed execution, covering environment and interface overhead.
-Model inference and training are timed separately. See the benchmark guide for workload definitions, human-record regression, historical measurements, and reproduction commands. [Performance benchmarks](benchmarks/README.md)
+Model inference and training are timed separately. See the benchmark guide for workload definitions, human-record regression, historical measurements, and reproduction commands. [Performance benchmarks](docs/benchmarks/README.md)
+
+## Repository layout
+
+```text
+src/          Python environment packages
+crates/       Rust engine, Python bindings, and parallel extension
+docs/         API guides, migration notes, and performance documentation
+benchmarks/   Benchmark scripts and measurement data
+.github/      Cross-platform CI
+```
 
 ## Documentation
 
@@ -130,7 +140,7 @@ Detailed development notes are currently in Chinese.
 
 | Guide | Contents |
 | --- | --- |
-| [Performance benchmarks](benchmarks/README.md) | Measurements, timing scope, and commands |
+| [Performance benchmarks](docs/benchmarks/README.md) | Measurements, timing scope, and commands |
 | [Rust feature kernels](docs/RUST-ROUTES.md) | Action and observation encoding responsibilities and ABI |
 | [Native migration notes](docs/NATIVE-033.md) | Implementation scope and migration history of the 0.3.3 native runtime |
 | [Issue tracker](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | Interface issues and reproducible reports |

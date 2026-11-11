@@ -46,7 +46,7 @@ PYO3_PYTHON="$(command -v python)" cargo build --release --locked -p arkguard-py
 ```
 
 CI 提供 Python 3.12 的 Linux x64、Windows x64 和 macOS Intel／Apple Silicon 模块。
-下例动态库路径适用于 macOS，Linux 使用 `target/release/lib_native.so`，Windows 使用 CI 产物 `_native*.pyd` 的实际路径。[跨平台构建](benchmarks/README.md#跨平台构建)
+下例动态库路径适用于 macOS，Linux 使用 `target/release/lib_native.so`，Windows 使用 CI 产物 `_native*.pyd` 的实际路径。[跨平台构建](docs/benchmarks/README.md#跨平台构建)
 
 ### 运行一局
 
@@ -104,7 +104,7 @@ with gym.make(
 
 </details>
 
-公开空间增量读取使用 `env.unwrapped.public_spatial_update(key)`。真实记录回归和战斗轨迹导出入口见基准文档。[空间接口与渲染回放](benchmarks/README.md)
+公开空间增量读取使用 `env.unwrapped.public_spatial_update(key)`。真实记录回归和战斗轨迹导出入口见基准文档。[空间接口与渲染回放](docs/benchmarks/README.md)
 
 <details>
 <summary>Node v0 兼容入口</summary>
@@ -122,13 +122,23 @@ with gym.make(
 | Rust slots，4 环境／4 线程，含空间 JSON 读取 | 585.7 |
 
 以上为原生候选准备与索引执行后的完整对局 A/B 记录，计时覆盖环境执行与接口开销。
-模型前向与训练另行计时。负载定义、真实记录回归、历史测量与复现命令见性能文档。[性能基准](benchmarks/README.md)
+模型前向与训练另行计时。负载定义、真实记录回归、历史测量与复现命令见性能文档。[性能基准](docs/benchmarks/README.md)
+
+## 目录结构
+
+```text
+src/          Python 环境包
+crates/       Rust 引擎、Python 绑定与并行扩展
+docs/         接口说明、迁移记录与性能文档
+benchmarks/   基准脚本与测量数据
+.github/      跨平台 CI
+```
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [性能基准](benchmarks/README.md) | 测量结果、计时边界与运行命令 |
+| [性能基准](docs/benchmarks/README.md) | 测量结果、计时边界与运行命令 |
 | [Rust 特征内核](docs/RUST-ROUTES.md) | 动作与观测编码的职责及 ABI |
 | [原生迁移笔记](docs/NATIVE-033.md) | 0.3.3 原生运行时实现范围与迁移记录 |
 | [问题反馈](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | 接口问题与可复现报告 |

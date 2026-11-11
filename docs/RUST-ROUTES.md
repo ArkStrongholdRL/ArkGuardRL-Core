@@ -2,9 +2,9 @@
 
 Rust/PyO3 提供三个内核：
 
-- `native/src/prep.rs`：PREP 棋子和道具动作枚举，保留候选顺序、容量限制与恢复动作。
-- `native/src/observation.rs`：目录级静态射程缓存，以及 4784 维动态观测编码。
-- `native/src/route.rs`：公开棋盘上的路线特征与候选关系编码，供研究仓库复用。
+- `crates/routes/src/prep.rs`：PREP 棋子和道具动作枚举，保留候选顺序、容量限制与恢复动作。
+- `crates/routes/src/observation.rs`：目录级静态射程缓存，以及 4784 维动态观测编码。
+- `crates/routes/src/route.rs`：公开棋盘上的路线特征与候选关系编码，供研究仓库复用。
 
 `env_actions.py` 整理库存与地形，`env_observation.py` 复用目录编码器。
 Python 保留商店/选卡枚举和历史重试过滤；Node 执行游戏状态更新与战斗。

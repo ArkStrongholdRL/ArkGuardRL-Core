@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77", "setuptools-rust>=1.10,<2"]
+requires = ["setuptools>=77", "setuptools-rust>=1.10,<2", "setuptools-scm>=8,<11"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -14,18 +14,20 @@ license-files = ["LICENSE", "NOTICE.md"]
 [project.optional-dependencies]
 gym = ["gymnasium>=1.1,<2", "numpy>=1.26"]
 
+[tool.setuptools_scm]
+
 [tool.setuptools.packages.find]
+where = ["src"]
 include = ["arkguardrl", "arkguardrl.*", "arkguardrl_core", "arkguardrl_core.*"]
 namespaces = false
 
 [tool.setuptools.package-data]
 "arkguardrl.engine" = ["*.mjs"]
 "arkguardrl_core.routes" = ["*.mjs"]
-"arkguardrl_core" = ["native/Cargo.toml", "native/Cargo.lock", "native/build.rs", "native/src/*.rs"]
 
 [[tool.setuptools-rust.ext-modules]]
 target = "arkguardrl_core._rust_routes"
-path = "arkguardrl_core/native/Cargo.toml"
+path = "crates/routes/Cargo.toml"
 binding = "PyO3"
 debug = false
 args = ["--locked"]

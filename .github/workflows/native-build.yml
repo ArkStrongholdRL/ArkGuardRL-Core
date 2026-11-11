@@ -45,8 +45,8 @@ jobs:
           env = dict(os.environ, PYO3_PYTHON=sys.executable)
           for args in (
               ['-p', 'arkguard-python'],
-              ['--manifest-path', 'arkguardrl_core/native/Cargo.toml'],
-              ['--manifest-path', 'benchmarks/native_slots/Cargo.toml'],
+              ['--manifest-path', 'crates/routes/Cargo.toml'],
+              ['--manifest-path', 'crates/slots/Cargo.toml'],
           ):
               subprocess.run(['cargo', 'build', '--release', '--locked', *args], env=env, check=True)
       - name: Collect and import all modules
@@ -64,8 +64,8 @@ jobs:
           suffix = {'win32': '.dll', 'darwin': '.dylib'}.get(sys.platform, '.so')
           for directory, name in (
               ('target/release', '_native'),
-              ('arkguardrl_core/native/target/release', '_rust_routes'),
-              ('benchmarks/native_slots/target/release', '_native_slots'),
+              ('crates/routes/target/release', '_rust_routes'),
+              ('crates/slots/target/release', '_native_slots'),
           ):
               source = pathlib.Path(directory) / f'{prefix}{name}{suffix}'
               shutil.copy2(source, artifacts / f'{name}{sysconfig.get_config_var("EXT_SUFFIX")}')
