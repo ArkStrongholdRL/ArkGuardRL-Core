@@ -1,27 +1,13 @@
 """Decision-oriented native solo environment, without reward or model compatibility claims."""
 from copy import deepcopy
-from dataclasses import dataclass
 import json
 
-from .contracts import action_id, decision_id
+from .contracts import Transition, action_id, decision_id
 from .engine import NativeSession
 from .trajectory import TrajectoryWriter
 from .feedback import PublicProgress
 
 ENV_SCHEMA = "arkguardrl/native-solo-decisions-feedback-intent-v3"
-
-
-@dataclass(frozen=True)
-class Transition:
-    observation: dict
-    terminated: bool
-    truncated: bool
-    reason: str | None
-    accepted: bool | None = None
-    metrics: dict | None = None
-    action_id: str | None = None
-    execution: dict | None = None
-    progress: dict | None = None
 
 
 def management_changes(before, after):

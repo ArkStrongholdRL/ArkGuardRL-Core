@@ -2,7 +2,6 @@
 
 Run with the current Core on PYTHONPATH plus this directory. No model/training.
 """
-import argparse
 from contextlib import closing
 from functools import partial
 import json
@@ -12,7 +11,7 @@ import time
 import gymnasium as gym
 import numpy as np
 from arkguardrl_core.native_gym import ArkGuardNativeEnv
-from native_batch_slots import NativeSlotBatch
+from arkguardrl_core.native_batch import NativeSlotBatch
 
 
 class Policy:
@@ -83,35 +82,25 @@ def gym_async(data_root, core, n, steps, reps, native_library):
         return measure(env.step, reset, n, steps, reps)
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data-root', required=True)
-    parser.add_argument('--reference-library', required=True)
-    parser.add_argument('--slots-library', required=True)
-    parser.add_argument('--steps', type=int, default=192)
-    parser.add_argument('--repeats', type=int, default=3)
-    parser.add_argument('--envs', type=int, nargs='+', default=[4])
-    parser.add_argument('--out')
-    args = parser.parse_args()
+def run(*, data_root, reference_library, slots_library, steps=192, repeats=3,
+        envs=(4,), output=None):
     out = {}
-    for n in args.envs:
+    for n in envs:
         out[f'gym-async-{n}'] = gym_async(
-            args.data_root, 'band_chen', n, args.steps, args.repeats, args.reference_library)
+            data_root, 'band_chen', n, steps, repeats, reference_library)
         for threads in sorted({min(n, threads) for threads in (1, 2, 4)}):
-            with NativeSlotBatch(args.data_root, core='band_chen', num_envs=n, threads=threads,
-                                native_library=args.slots_library) as batch:
+            with NativeSlotBatch(data_root, core='band_chen', num_envs=n, threads=threads,
+                                native_library=slots_library) as batch:
                 reset = lambda mask=None: batch.reset(reset_mask=mask)  # noqa: E731
-                rate = measure(batch.step, reset, n, args.steps, args.repeats)
+                rate = measure(batch.step, reset, n, steps, repeats)
             out[f'slots-{n}-t{threads}'] = rate
             print(json.dumps({f'slots-{n}-t{threads}': round(rate, 1),
                               f'gym-async-{n}': round(out[f"gym-async-{n}"], 1)}), flush=True)
-    if args.out:
-        with open(args.out, 'w') as handle:
+    if output:
+        with open(output, 'w') as handle:
             handle.write(json.dumps(dict(scope='Scripted numeric policy, masked reset, '
-                                         'resets in loop, no model/training', steps=args.steps,
-                                         repeats=args.repeats, results=out), indent=2) + '\n')
+                                         'resets in loop, no model/training', steps=steps,
+                                         repeats=repeats, results=out), indent=2) + '\n')
     print(json.dumps({k: round(v, 1) for k, v in out.items()}, indent=1))
 
-
-if __name__ == '__main__':
-    main()
+    return out

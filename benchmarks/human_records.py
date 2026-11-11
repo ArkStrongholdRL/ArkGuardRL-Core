@@ -4,7 +4,6 @@ Checks phase/round, inventory, economy, deployment, bonds, choices, shop and fin
 victory/round count/hidden progress. Display metadata and combat floating-point
 accounting are outside this comparison. No source revision gate is applied.
 """
-import argparse
 from collections import Counter
 import json
 from pathlib import Path
@@ -143,19 +142,15 @@ def replay(native, catalog, case):
             session.close()
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--records', type=Path, required=True)
-    parser.add_argument('--data-root', required=True)
-    parser.add_argument('--native-library', required=True)
-    parser.add_argument('--out', type=Path, required=True)
-    args = parser.parse_args()
-    native = load_native(args.native_library)
-    catalog = native.NativeCatalog(args.data_root, 64 << 20)
+def run(*, records_dir, data_root, native_library, output):
+    records_dir = Path(records_dir)
+    output = Path(output)
+    native = load_native(native_library)
+    catalog = native.NativeCatalog(data_root, 64 << 20)
     results = []
-    paths = sorted(args.records.glob('*.jsonl'))
+    paths = sorted(records_dir.glob('*.jsonl'))
     if not paths:
-        parser.error('No JSONL records found')
+        raise ValueError('No JSONL records found')
     for index, path in enumerate(paths):
         try:
             case, reason = read_case(path)
@@ -173,11 +168,9 @@ def main():
             print(json.dumps(dict(records=index+1, counts=dict(Counter(r['status'] for r in results)))), flush=True)
     summary = dict(records=len(results), counts=dict(Counter(r['status'] for r in results)),
                    decisions=sum(r.get('decisions', 0) for r in results), results=results)
-    args.out.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')
+    output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({key: value for key, value in summary.items() if key != 'results'}), flush=True)
     if any(r['status'] in ('drift', 'error') for r in results):
-        raise SystemExit(1)
+        raise RuntimeError("Record replay reported drift or execution errors")
 
-
-if __name__ == '__main__':
-    main()
+    return summary

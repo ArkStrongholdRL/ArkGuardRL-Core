@@ -1,5 +1,4 @@
 """Single-env native/Gym throughput on identical, complete Desperation episodes."""
-import argparse
 import json
 from pathlib import Path
 import platform
@@ -124,30 +123,24 @@ def measure(env, session, cases, cycles, backend):
     return result
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--data-root', required=True)
-    parser.add_argument('--native-library', required=True)
-    parser.add_argument('--cycles', type=int, default=5)
-    parser.add_argument('--repeats', type=int, default=3)
-    parser.add_argument('--out', type=Path, required=True)
-    args = parser.parse_args()
-    if min(args.cycles, args.repeats) < 1:
-        parser.error('Positive cycles and repeats required')
-    native = load_native(args.native_library)
-    catalog = native.NativeCatalog(args.data_root, 64 << 20)
+def run(*, data_root, native_library, output, cycles=5, repeats=3):
+    output = Path(output)
+    if min(cycles, repeats) < 1:
+        raise ValueError('Positive cycles and repeats required')
+    native = load_native(native_library)
+    catalog = native.NativeCatalog(data_root, 64 << 20)
     results = []
     startup = time.perf_counter()
     for core in CORES:
         session = native.NativeSolo(catalog, core)
-        with ArkGuardNativeEnv(args.data_root, core=core, native_library=args.native_library,
+        with ArkGuardNativeEnv(data_root, core=core, native_library=native_library,
                                profile=True) as env:
             for roster in (False, True):
                 cases = [(seed, *pilot(env, seed, roster)) for seed in (42, 99)]
                 # Warm both paths; data loading/compilation are outside steady-state metrics.
                 measure(env, session, cases, 1, 'native')
                 for backend in ('native', 'gym'):
-                    runs = [measure(env, session, cases, args.cycles, backend) for _ in range(args.repeats)]
+                    runs = [measure(env, session, cases, cycles, backend) for _ in range(repeats)]
                     result = dict(core=core, workload='buy_deploy' if roster else 'empty', backend=backend,
                                   terminal_rounds=[case[3]['round'] for case in cases], runs=runs,
                                   median_decisions_per_second=statistics.median(r['decisions_per_second'] for r in runs),
@@ -155,16 +148,14 @@ def main():
                     results.append(result)
                     print(json.dumps({k:v for k,v in result.items() if k != 'runs'}), flush=True)
         session.close()
-    output = dict(platform=platform.platform(), python=platform.python_version(),
+    output_data = dict(platform=platform.platform(), python=platform.python_version(),
                   scope='Single env; no model, training or scheduling. Same actions and terminal states across backends.',
                   timing='Includes episode reset and action lookup; excludes initialization/pilot/terminal equality check.',
-                  seeds=[42, 99], cycles=args.cycles, repeats=args.repeats,
+                  seeds=[42, 99], cycles=cycles, repeats=repeats,
                   wall_seconds=time.perf_counter()-startup,
                   peak_rss_bytes=peak_rss_bytes(),
                   results=results)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(output, indent=2)+'\n')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(output_data, indent=2)+'\n')
 
-
-if __name__ == '__main__':
-    main()
+    return output_data

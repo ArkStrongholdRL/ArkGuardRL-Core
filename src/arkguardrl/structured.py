@@ -8,7 +8,7 @@ server/sim/content/garrisons/meta.js and data/garrisons.json; data stays externa
 from collections import Counter
 import math
 
-from .feedback import ERRORS, PROGRESS_SCHEMA, PublicProgress
+from .feedback import ERRORS, PROGRESS_SCHEMA
 from .contracts import fingerprint
 from .semantics import MAX_FACTS, FACT_DIM, SEMANTIC_VOCAB, SEMANTIC_SCHEMA, encode as encode_facts
 
@@ -371,66 +371,3 @@ def encode_observation(state, catalog, history):
     catalog.validate_state(state)
     snapshot = history.snapshot(state) if hasattr(history, "snapshot") else history
     return encode_decision(state, (), catalog, snapshot)[0]
-
-
-def main():
-    """Read-only field/catalog audit; does not start games or import Torch."""
-    import argparse
-    import json
-    from pathlib import Path
-    from .catalog import PublicCatalog
-    parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument("--engine-root", required=True)
-    parser.add_argument("--snapshot", help="Optional single raw public observation JSON")
-    args = parser.parse_args()
-    catalog = PublicCatalog(args.engine_root)
-    from .dynamic import OBS_DIM as WIRE_DIM
-    summary = {"schema": FEATURE_SCHEMA, "catalog": catalog.schema,
-               "data_sha256": catalog.data_sha256, "wire_observation_dim": WIRE_DIM, "internal_encoder_slots": OBS_DIM, "static_definition_sha256": catalog.definitions()[1],
-               "action_dim": ACTION_DIM, "routing_intents": SCHEDULES, "semantic_schema": SEMANTIC_SCHEMA,
-               "semantic_symbols": len(catalog.semantic_symbols), "enemy_stats": ENEMY_STATS, "enemy_immunities": IMMUNITIES, "global_fields": GLOBAL_FIELDS, "control_fields": CONTROL_FIELDS, "control_references": CONTROL_REFERENCES,
-               "entity_numbers": ENTITY_NUMBERS, "base_stats": STATS,
-               "bond_fields": BOND_FIELDS, "mechanism_events": EVENTS,
-               "mechanism_effects": EFFECTS, "mechanism_params": PARAMS,
-               "action_numbers": ACTION_NUMBERS,
-               "field_registry": {
-                   "global": {"fields": GLOBAL_FIELDS, "source": "public own/shop", "encoding": "tanh scaled values; phase one-hot"},
-                   "entities": {"prefix": ["present", "catalog_index", "owner_ref", "equipment1", "equipment2", "mechanism1", "mechanism2", "mechanism3", "mechanism4"],
-                                "numbers": ENTITY_NUMBERS, "static_stats": STATS, "stat_scales": STAT_SCALES,
-                                "stat_units": ["HP", "ATK", "DEF", "RES percent points", "seconds", "ASPD", "block count"],
-                                "missing": "paired stat-known flags; parser coverage is audit metadata only"},
-                   "mechanisms": {"events": EVENTS, "effects": EFFECTS, "methods": METHODS,
-                                  "params": PARAMS, "source": "public garrisons; static structural semantics only"},
-                   "grid": {"fields": ["usable", "ranged", "occupant_ref", "coverage", "air_coverage"],
-                            "shape": [4, 9], "source": "public deployment and default rotated attack ranges"},
-                   "actions": {"references": ["source", "target", "replaced", "offer_or_choice", "destination_cell"],
-                               "numbers": ACTION_NUMBERS, "refs": "1-based with 0 absent; no UIDs in model"}},
-               "limits": {"entities": MAX_ENTITIES, "mechanisms": MAX_MECHANISMS,
-                          "enemies": MAX_ENEMIES, "range_cells_per_entity": MAX_RANGE, "semantic_facts": MAX_FACTS}}
-    definitions = {}
-    for kind, identifier in catalog.entity_ids:
-        if kind == "chess" and not catalog._views[kind][identifier].get("isDiy"):
-            for row in catalog.mechanisms(kind, identifier):
-                definitions[row["id"]] = row
-    summary["garrison_coverage"] = {"referenced_definitions": len(definitions),
-        "structurally_supported": sum(mechanism_supported(row) for row in definitions.values()),
-        "partial_ids": [key for key, row in definitions.items() if not mechanism_supported(row)],
-        "source": "data/garrisons.json; server/sim/content/garrisons/meta.js",
-        "limitation": "Structural garrison coverage only; skills/talents/items and live per-copy counters are incomplete"}
-    if args.snapshot:
-        state = json.loads(Path(args.snapshot).read_text())
-        catalog.validate_state(state)
-        observer = PublicProgress()
-        observer.observe(state)
-        tables = project(state, catalog, {"used": 0, "limit": 64, "blocked_count": 0,
-                                         "progress": observer.snapshot(state)})
-        summary["snapshot"] = {"observation": tables["observation"],
-                               "schema": FEATURE_SCHEMA, "dimension": WIRE_DIM}
-        summary["snapshot"]["entity_bindings"] = [{"index": i + 1, "kind": row.get("kind"),
-            "id": row.get("id"), "area": area} for i, (row, area) in enumerate(tables["raw_entities"])]
-        summary["snapshot"]["history_note"] = "Single-snapshot partial progress and empty attempt history; not training evidence"
-    print(json.dumps(summary, ensure_ascii=False, allow_nan=False, indent=2))
-
-
-if __name__ == "__main__":
-    main()
