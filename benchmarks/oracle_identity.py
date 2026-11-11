@@ -26,8 +26,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
 
 RUNNER_SOURCE = r'''#[path = __IDENTITY_PATH__]
 mod identity;

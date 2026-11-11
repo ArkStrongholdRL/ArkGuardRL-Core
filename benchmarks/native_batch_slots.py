@@ -1,6 +1,6 @@
 """Vectorized Desperation facade for Rust-owned decision slots.
 
-Build the _native_slots extension from benchmarks/native_slots/Cargo.toml.
+Build the _native_slots extension from crates/slots/Cargo.toml.
 """
 import importlib.machinery
 import importlib.util

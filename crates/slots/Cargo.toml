@@ -1,7 +1,6 @@
 [workspace]
 
-# Isolated experiment crate: it must not join the repository workspace, so it
-# keeps its own lock and can be built by CI on the same branch.
+# Standalone extension build with its own locked dependencies.
 [package]
 name = "native_slots"
 version = "0.0.0"
@@ -14,7 +13,7 @@ name = "_native_slots"
 crate-type = ["cdylib"]
 
 [dependencies]
-arkguard-engine = { path = "../../crates/engine" }
+arkguard-engine = { path = "../engine" }
 pyo3 = { version = "=0.27.2", features = ["extension-module"] }
 serde_json = "=1.0.149"
 serde = { version = "=1.0.228", features = ["derive"] }

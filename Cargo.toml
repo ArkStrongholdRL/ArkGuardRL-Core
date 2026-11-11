@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/engine", "crates/python"]
-exclude = ["arkguardrl_core/native"]
+exclude = ["crates/routes", "crates/slots"]
 resolver = "2"
 
 [profile.release]

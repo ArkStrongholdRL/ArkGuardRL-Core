@@ -1,5 +1,5 @@
 //! Complete candidate filtering and encoding share the owned native decision.
-#[path = "../../../arkguardrl_core/native/src/prep_domain.rs"]
+#[path = "../../routes/src/prep_domain.rs"]
 mod domain;
 use arkguard_engine::identity::{action_id, canonical};
 use serde_json::{json, Value};
