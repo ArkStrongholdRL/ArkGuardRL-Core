@@ -21,22 +21,11 @@
 
 ## Overview
 
-ArkGuardRL-Core exposes the purchasing, team-building, and deployment decisions of Stronghold Protocol through Gymnasium.
-Public observations, candidate actions, rewards, and episode boundaries let a policy drive complete games through `reset` and `step`.
-Game rules follow the Stronghold Protocol simulator. [Upstream project](https://github.com/sganggs/Stronghold-Protocol)
-
-| Core runtime | Policy research |
-| --- | --- |
-| Game execution, public observations, candidate enumeration, and numeric encoding | Model representations, policy networks, and learning algorithms |
-| Seeded reproduction, decision budgets, and vector collection | Trajectory collection, training, and policy evaluation |
-| Maintained in this repository | Maintained in [ArkGuardRL](https://github.com/HarcoChen/ArkGuardRL) |
-
-Maintenance targets solo Desperation mode (`mode_single_abyss`), using the **0.3.3 native Rust runtime**.
-Rust executes combat, public bookkeeping, rewards, candidate generation, and numeric encoding. Python provides Gymnasium and collection interfaces.
+A Gymnasium environment for Stronghold Protocol, targeting solo Desperation mode (`mode_single_abyss`). The 0.3.3 Rust runtime handles combat, bookkeeping, rewards, candidates, and numeric encoding, with vector execution and combat replay support. Policy research lives in ArkGuardRL. [Upstream game](https://github.com/sganggs/Stronghold-Protocol) · [Policy research](https://github.com/HarcoChen/ArkGuardRL)
 
 ## Quick start
 
-Use Python 3.12, Git, Rust stable, and system linker tools. Prepare the Stronghold Protocol 0.3.3 data directory separately.
+Prepare Python 3.12, Rust stable, system linker tools, and an external 0.3.3 data directory.
 
 ```sh
 git clone https://github.com/ArkStrongholdRL/ArkGuardRL-Core.git
@@ -44,11 +33,6 @@ cd ArkGuardRL-Core
 python -m pip install -e '.[gym]'
 PYO3_PYTHON="$(command -v python)" cargo build --release --locked -p arkguard-python
 ```
-
-CI provides Python 3.12 modules for Linux x64, Windows x64, and macOS Intel / Apple Silicon.
-The example uses a macOS library path. On Linux, use `target/release/lib_native.so`. On Windows, use the actual path of the `_native*.pyd` CI artifact. [Cross-platform builds](docs/benchmarks/README.md#跨平台构建)
-
-### Run a game
 
 ```python
 import gymnasium as gym
@@ -69,21 +53,12 @@ with gym.make(
             break
 ```
 
-The example samples candidates using the mask. Replace `action` with the candidate row selected by your policy.
+Replace random sampling with your policy's candidate row. Supported cores are `band_amiya`, `band_sarkazb`, `band_chen`, and `band_sciurus`.
+On Linux use `lib_native.so`. On Windows use the `_native*.pyd` CI artifact. [Cross-platform builds](docs/benchmarks/README.md#跨平台构建)
 
 ## Environment API
 
-| Interface | Use |
-| --- | --- |
-| `ArkGuardRL-v1` | A native single-environment Gymnasium decision loop |
-| `SyncVectorEnv` / `AsyncVectorEnv` | Vector collection with an independent session per environment |
-| Rust slots | 1–64 environments, partial resets, and selective stepping |
-| `env.unwrapped.public_spatial()` | Read public maps, current template routes, and enemy preview associations |
-| `env.unwrapped.catalog.definitions()` | Read public static definitions |
-| `info` | Inspect action acceptance, reward components, engine seeds, and episode reasons |
-
-Supported cores are Amiya (`band_amiya`), Sarkaz (`band_sarkazb`), Chen (`band_chen`), and Sciurus (`band_sciurus`).
-Observations are dictionaries of NumPy arrays. Action indices refer to the current state's candidate rows. The default capacity is 16,384.
+Observations are NumPy dictionaries. Actions reference current candidate rows, with a default capacity of 16,384.
 
 | Field | Shape and type |
 | --- | --- |
@@ -92,59 +67,30 @@ Observations are dictionaries of NumPy arrays. Action indices refer to the curre
 | `schedules` / `experts` | `(max_candidates,) int64` |
 | `action_mask` | `(max_candidates,) int8` |
 
-<details>
-<summary>Actions, seeds, and rollout semantics</summary>
-
-- Candidates are constructed from public information. Check `info["accepted"]` for execution results. Padding or out-of-range indices raise `InvalidAction`. Candidate overflow raises an error.
-- The same Gym seed reproduces the environment. `info["engine_seed"]` exposes the derived seed. `reset(seed=None)` continues the RNG stream. Action sampling uses a separate RNG.
-- `NativeProgressCore` computes rewards. Components appear in `info["reward_components"]`.
-- Natural endings return `terminated`. Exhausting `max_decisions`, `max_advances`, or `wall_seconds` returns `truncated`, the actual successor observation, and `info["reason"]`. Engine or transport failures raise exceptions.
-- Set difficulty and budgets at construction. Single-environment `reset(options=...)` accepts an empty configuration.
-- Async collection with `spawn` requires an `if __name__ == "__main__"` entry point. Each environment owns an independent native session.
-
-</details>
-
-Use `env.unwrapped.public_spatial_update(key)` for incremental spatial reads. The benchmark guide also covers human-record regression and renderable combat trajectories. [Spatial APIs and replay export](docs/benchmarks/README.md)
-
-<details>
-<summary>Node v0 compatibility</summary>
-
-Existing callers can register `ArkGuardRL-v0` through `import arkguardrl_core.gym_env` and pass `engine_root` at construction.
-This entry point uses Node.js 22+ and the 0.3.1 engine / data.
-
-</details>
+- Inspect `info["accepted"]` and `info["reward_components"]` for action and reward results. Padding, invalid indices, and candidate overflow raise errors.
+- Natural endings return `terminated`. Exhausted budgets return `truncated` and `info["reason"]`. Seeds reproduce runs, and `reset(seed=None)` continues the RNG stream.
+- Gym supports Sync / Async. Rust slots support 1–64 environments and partial resets. Async `spawn` requires an `if __name__ == "__main__"` entry point.
 
 ## Performance
 
-| Configuration and timing scope | Decisions per second |
-| --- | ---: |
-| Native Gym, 1 environment, purchase-and-deploy policy | 437.2 |
-| Rust slots, 4 environments / 4 threads, including spatial JSON reads | 585.7 |
+![Rust spatial encoding cache, 171.3 to 341.9 decisions per second for one environment and 188.3 to 517.3 for four](docs/assets/benchmark-throughput.svg)
 
-These full-game A/B measurements include native candidate preparation and indexed execution, covering environment and interface overhead.
-Model inference and training are timed separately. See the benchmark guide for workload definitions, human-record regression, and reproduction examples. [Performance benchmarks](docs/benchmarks/README.md)
-
-## Repository layout
-
-```text
-src/          Python environment packages
-crates/       Rust engine, Python bindings, and parallel extension
-docs/         API guides and performance documentation
-benchmarks/   Benchmark scripts and measurement data
-.github/      Cross-platform CI
-```
+Spatial-encoding cache A/B in the Rust runtime, recorded November 10, 2026. Complete Chen-core purchase-and-deploy games, including spatial tensor construction, median of five runs. [Timing scope and benchmark entrypoints](docs/benchmarks/README.md#测速与回归)
 
 ## Documentation
 
-Detailed development notes are currently in Chinese.
+[Builds, spatial APIs, replays, and benchmarks](docs/benchmarks/README.md) · [Issue tracker](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues)
 
-| Guide | Contents |
-| --- | --- |
-| [Performance benchmarks](docs/benchmarks/README.md) | Measurements, timing scope, and commands |
-| [Issue tracker](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | Interface issues and reproducible reports |
+```text
+src/          Python packages
+crates/       Rust engine and extensions
+docs/         Usage guide and figures
+benchmarks/   Benchmark tools and measurements
+.github/      CI
+```
 
 ## License and acknowledgments
 
-Code is licensed under GPL-3.0-or-later. Stronghold Protocol provides the upstream simulator. See the license and attribution notes for game assets and external data. [LICENSE](LICENSE) · [NOTICE](NOTICE.md)
+GPL-3.0-or-later. Stronghold Protocol provides the upstream simulator. See the licensing notes for game assets and external data. [LICENSE](LICENSE) · [NOTICE](NOTICE.md)
 
 <p align="center"><a href="#top">Back to top</a></p>
