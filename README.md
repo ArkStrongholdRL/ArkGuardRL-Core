@@ -73,9 +73,9 @@ Linux 动态库为 `lib_native.so`，Windows 使用 CI 的 `_native*.pyd`。[跨
 
 ## 性能
 
-![Rust 空间编码缓存优化，单环境 171.3 → 341.9，四环境 188.3 → 517.3 决策每秒](docs/assets/benchmark-throughput.svg)
+![同种子同动作购买部署对局，Rust 相对 Node 在三个核心上为 1.32–1.36 倍](docs/assets/benchmark-throughput.svg)
 
-Rust 环境的空间编码缓存 A/B，2026-11-10，陈核心完整购买部署对局，包含空间张量化，五轮中位数。[测量范围与复现入口](docs/benchmarks/README.md#测速与回归)
+Rust／Node 会话接口对照，2026-11-09，同种子、同动作的完整购买部署对局，三轮中位数，计入 reset 与公开观测。[测量范围与复现入口](docs/benchmarks/README.md#测速与回归)
 
 ## 文档
 

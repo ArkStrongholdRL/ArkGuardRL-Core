@@ -73,9 +73,9 @@ Observations are NumPy dictionaries. Actions reference current candidate rows, w
 
 ## Performance
 
-![Rust spatial encoding cache, 171.3 to 341.9 decisions per second for one environment and 188.3 to 517.3 for four](docs/assets/benchmark-throughput.svg)
+![Paired Rust versus Node purchase-and-deploy games, 1.32 to 1.36 times the throughput across three cores](docs/assets/benchmark-throughput.svg)
 
-Spatial-encoding cache A/B in the Rust runtime, recorded November 10, 2026. Complete Chen-core purchase-and-deploy games, including spatial tensor construction, median of five runs. [Timing scope and benchmark entrypoints](docs/benchmarks/README.md#测速与回归)
+Rust / Node session APIs, recorded November 9, 2026. Complete purchase-and-deploy games with the same engine seeds and actions, median of three runs, including reset and public observations. [Timing scope and benchmark entrypoints](docs/benchmarks/README.md#测速与回归)
 
 ## Documentation
 
