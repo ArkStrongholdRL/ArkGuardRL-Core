@@ -1,25 +1,54 @@
-# ArkGuardRL-Core
+<a name="top"></a>
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![Rust](https://img.shields.io/badge/rust-PyO3%200.27-dea584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Gymnasium](https://img.shields.io/badge/gymnasium-%E2%89%A51.1-4B8BBE?style=flat-square)](https://gymnasium.farama.org/)
-[![Engine](https://img.shields.io/badge/engine-app%200.3.3-lightgrey?style=flat-square)](https://github.com/sganggs/Stronghold-Protocol)
-[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square)](LICENSE)
-[![Status](https://img.shields.io/badge/status-pre--release-orange?style=flat-square)](docs/NATIVE-033.md)
+<p align="center">
+  <img src="docs/assets/hero.svg" alt="ArkGuardRL-Core — Stronghold Protocol research environment" width="100%">
+</p>
 
-[Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) 的 Gymnasium 环境。
+<h3 align="center">卫戍协议 · 强化学习环境</h3>
 
-当前维护与原生迁移范围仅限绝境（`mode_single_abyss`），进度见 [迁移文档](docs/NATIVE-033.md)。
+<p align="center"><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
 
-## 安装与使用
+<p align="center">复现完整单人对局，接入学习策略，检查每一步的决策结果。</p>
 
-Python 3.10+、Rust stable，以及另行准备的 Stronghold Protocol 0.3.3 数据目录。
-本仓库不含游戏素材、数据、权重或轨迹。
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-476582?style=flat-square" alt="GPL-3.0-or-later"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-PyO3-dea584?style=flat-square&amp;logo=rust&amp;logoColor=white" alt="Rust and PyO3"></a>
+  <a href="https://gymnasium.farama.org/"><img src="https://img.shields.io/badge/Gymnasium-1.1%2B-00897B?style=flat-square" alt="Gymnasium 1.1+"></a>
+</p>
+
+<p align="center"><a href="#快速开始">快速开始</a> · <a href="#环境接口">环境接口</a> · <a href="#性能">性能</a> · <a href="#文档">文档</a> · <a href="#许可与致谢">许可与致谢</a></p>
+
+## 概览
+
+ArkGuardRL-Core 将《卫戍协议：盟约》的购买、构筑和部署决策接入 Gymnasium。
+环境提供公开状态、候选动作、奖励与结束标志，策略代码可以通过标准 `reset`／`step` 循环驱动完整对局。
+游戏规则基于 Stronghold Protocol 的模拟实现。[上游项目](https://github.com/sganggs/Stronghold-Protocol)
+
+| Core 环境运行时 | 策略研究 |
+| --- | --- |
+| 游戏推进、公开观测、候选枚举与数值编码 | 模型表示、策略网络与学习算法 |
+| 种子复现、预算控制与多环境采样 | 轨迹采集、训练与策略评估 |
+| 在本仓库维护 | 在 [ArkGuardRL](https://github.com/HarcoChen/ArkGuardRL) 维护 |
+
+维护范围为单人绝境模式（`mode_single_abyss`），当前使用 **0.3.3 Rust 原生运行时**。
+战斗、公开账本、奖励、候选生成和数值编码在 Rust 中执行，Python 提供 Gymnasium 接口和采样入口。
+
+## 快速开始
+
+使用 Python 3.12、Git、Rust stable 和系统链接工具，另行准备 Stronghold Protocol 0.3.3 数据目录。
 
 ```sh
+git clone https://github.com/ArkStrongholdRL/ArkGuardRL-Core.git
+cd ArkGuardRL-Core
 python -m pip install -e '.[gym]'
 PYO3_PYTHON="$(command -v python)" cargo build --release --locked -p arkguard-python
 ```
+
+CI 提供 Python 3.12 的 Linux x64、Windows x64 和 macOS Intel／Apple Silicon 模块。
+下例动态库路径适用于 macOS，Linux 使用 `target/release/lib_native.so`，Windows 使用 CI 产物 `_native*.pyd` 的实际路径。[跨平台构建](benchmarks/README.md#跨平台构建)
+
+### 运行一局
 
 ```python
 import gymnasium as gym
@@ -28,56 +57,86 @@ import arkguardrl_core.native_gym
 with gym.make(
     "ArkGuardRL-v1",
     data_root="/path/to/0.3.3/data",
-    core="band_sarkazb",  # band_amiya / band_sarkazb / band_chen / band_sciurus
+    core="band_sarkazb",
     native_library="target/release/lib_native.dylib",
 ) as env:
+    env.action_space.seed(42)
     obs, info = env.reset(seed=42)
-    done = False
-    while not done:
+    while True:
         action = env.action_space.sample(mask=obs["action_mask"])
         obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
+        if terminated or truncated:
+            break
 ```
 
-Linux 动态库后缀为 `.so`，CI 提供 Linux x64、Windows x64、macOS Intel／Apple Silicon 的 CPython 3.12 原生模块，详见[构建说明](benchmarks/README.md#跨平台构建)。原生运行时读取数据目录，核心由构造参数指定。`banned` 接受禁用干员 ID，`tick_budget` 控制每次战斗续跑的帧数。
+示例按掩码随机选择候选。将 `action` 替换为策略选出的候选行索引，即可接入自己的决策器。
 
-观测是 NumPy `Dict`，动作是**当前候选行索引**：
+## 环境接口
 
-| 字段 | 形状 / 类型 | 含义 |
-| --- | --- | --- |
-| `observation` | `(4784,) float32` | 动态观测 |
-| `candidates` | `(max_candidates, 41) float32` | 候选特征，padding 为 0 |
-| `schedules` / `experts` | `(max_candidates,) int64` | 候选分组 |
-| `action_mask` | `(max_candidates,) int8` | 有效候选行 |
+| 接口 | 用途 |
+| --- | --- |
+| `ArkGuardRL-v1` | 原生单环境 Gymnasium 决策循环 |
+| `SyncVectorEnv`／`AsyncVectorEnv` | 多环境采样，每个环境持有独立会话 |
+| Rust slots | 1–64 个环境，支持局部重置和部分槽位推进 |
+| `env.unwrapped.public_spatial()` | 读取公开地图、当前模板路线及敌人预览关联 |
+| `env.unwrapped.catalog.definitions()` | 读取公开静态定义 |
+| `info` | 检查动作接受结果、奖励分项、引擎种子及结束原因 |
 
-- 候选由公开参数域构造，游戏规则可能拒绝提交的动作，结果见 `info["accepted"]`。
-- padding 或越界索引抛 `InvalidAction`，不替换动作、不推进游戏。
-- 候选容量默认 16384，超限报错，不裁剪动作域。
-- 自然结束为 `terminated`；`max_decisions` / `max_advances` / `wall_seconds` 耗尽为
-  `truncated`（`info["reason"]`）且返回真实后继观测；引擎/传输错误抛异常。
-- 奖励由 `NativeProgressCore` 计算，分项在 `info["reward_components"]`。
-- 相同 Gym 种子可复现，实际引擎种子见 `info["engine_seed"]`；`reset(seed=None)` 延续 RNG 流。
-- 静态定义通过 `env.unwrapped.catalog.definitions()` 读取。候选依赖游戏状态，
-  通用 `check_env()` 的无掩码随机动作会选中 padding，请按掩码采样。
-- 难度与预算只能在构造时配置，`reset(options=...)` 不接受其他选项。
+核心支持阿米娅（`band_amiya`）、萨卡兹（`band_sarkazb`）、陈（`band_chen`）和休露丝（`band_sciurus`）。
+观测为 NumPy 字典。动作索引引用当前状态的候选行，候选容量默认 16,384。
 
-## 并行与回放
+| 字段 | 形状与类型 |
+| --- | --- |
+| `observation` | `(4784,) float32` |
+| `candidates` | `(max_candidates, 41) float32` |
+| `schedules`／`experts` | `(max_candidates,) int64` |
+| `action_mask` | `(max_candidates,) int8` |
 
-Gym 支持 `SyncVectorEnv`／`AsyncVectorEnv`，每个环境拥有独立原生会话；Async 使用 `spawn` 时需要 `if __name__ == "__main__"` 入口。Rust slots 支持 1–64 个环境、显式局部 reset 和部分槽位推进。
+<details>
+<summary>动作、种子与轨迹语义</summary>
 
-公开地图与当前模板路线通过 `env.unwrapped.public_spatial()` 读取，增量入口为 `public_spatial_update(key)`。真实记录回归、渲染回放和吞吐命令见[性能与验收说明](benchmarks/README.md)。
+- 候选根据公开信息构造，动作接受结果见 `info["accepted"]`。padding 或越界索引抛出 `InvalidAction`，候选超限报错。
+- 相同 Gym 种子可复现环境，`info["engine_seed"]` 给出派生种子。`reset(seed=None)` 延续 RNG 流，动作采样使用独立 RNG。
+- 奖励由 `NativeProgressCore` 计算，分项见 `info["reward_components"]`。
+- 自然结束返回 `terminated`。`max_decisions`、`max_advances` 或 `wall_seconds` 耗尽时返回 `truncated`、真实后继观测和 `info["reason"]`。引擎或传输错误抛异常。
+- 难度与预算在构造时设置。单环境 `reset(options=...)` 接受空配置。
+- Async 使用 `spawn` 时，入口需要 `if __name__ == "__main__"`。每个环境持有独立原生会话。
 
-## Node 兼容入口
+</details>
 
-旧研究调用可通过 `import arkguardrl_core.gym_env` 注册 `ArkGuardRL-v0`，构造时传入 `engine_root`。该路径使用 Node 22+ 及对应的 0.3.1 引擎／数据；观测与候选布局见上表。
+公开空间增量读取使用 `env.unwrapped.public_spatial_update(key)`。真实记录回归和战斗轨迹导出入口见基准文档。[空间接口与渲染回放](benchmarks/README.md)
+
+<details>
+<summary>Node v0 兼容入口</summary>
+
+旧调用通过 `import arkguardrl_core.gym_env` 注册 `ArkGuardRL-v0`，构造时传入 `engine_root`。
+该入口使用 Node.js 22+ 和 0.3.1 引擎／数据。
+
+</details>
+
+## 性能
+
+| 配置与计时范围 | 决策／秒 |
+| --- | ---: |
+| 原生 Gym 单环境，购买部署 | 437.2 |
+| Rust slots，4 环境／4 线程，含空间 JSON 读取 | 585.7 |
+
+以上为原生候选准备与索引执行后的完整对局 A/B 记录，计时覆盖环境执行与接口开销。
+模型前向与训练另行计时。负载定义、真实记录回归、历史测量与复现命令见性能文档。[性能基准](benchmarks/README.md)
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [性能测量](benchmarks/README.md) | 负载定义、测量边界与基线数据 |
-| [Rust 内核](docs/RUST-ROUTES.md) | 动作/观测/路线内核的职责与 ABI |
-| [原生迁移状态](docs/NATIVE-033.md) | 0.3.3 Rust 引擎实现范围与开发命令 |
+| [性能基准](benchmarks/README.md) | 测量结果、计时边界与运行命令 |
+| [Rust 特征内核](docs/RUST-ROUTES.md) | 动作与观测编码的职责及 ABI |
+| [原生迁移笔记](docs/NATIVE-033.md) | 0.3.3 原生运行时实现范围与迁移记录 |
+| [问题反馈](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | 接口问题与可复现报告 |
 
+## 许可与致谢
 
-GPL-3.0-or-later；来源与外部资源边界见 [NOTICE](NOTICE.md) 与 [LICENSE](LICENSE)。
+代码采用 GPL-3.0-or-later。Stronghold Protocol 提供上游模拟实现，游戏素材与外部数据的来源和使用边界见许可说明。[LICENSE](LICENSE) · [NOTICE](NOTICE.md)
+
+首页编排参考 AutoTavern，横幅为本项目原创示意图。[AutoTavern](https://github.com/MCG-NJU/AutoTavern)
+
+<p align="center"><a href="#top">回到顶部</a></p>

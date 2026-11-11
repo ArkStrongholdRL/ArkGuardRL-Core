@@ -150,3 +150,12 @@ cargo build --release --locked -p arkguard-python
 cargo build --release --locked --manifest-path arkguardrl_core/native/Cargo.toml
 cargo build --release --locked --manifest-path benchmarks/native_slots/Cargo.toml
 ```
+
+## Node v0 历史测量
+
+2026-11-02 的 Node 0.3.1 + Rust 特征内核测量记录如下。Apple M5／16 GiB，每环境预热 64 步、测量 1,024 步，各版本六次测量。
+单环境优化后中位数为 494.75 决策／秒，四环境 Async 为 937.19 决策／秒。动作按掩码随机采样，计时包含观测、奖励、Gym 通信与循环内 reset。
+
+![Node v0 单环境与四环境的六次测量及中位数](../docs/assets/benchmark-throughput.svg)
+
+图表从已提交的 JSON 生成，可安装 Matplotlib 后执行 `python benchmarks/plot_throughput.py` 重建。[原始记录](env-hotspots-20261102.json) · [测量说明](HOTSPOTS-20261102.md)
