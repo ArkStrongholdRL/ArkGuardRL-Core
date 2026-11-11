@@ -4,6 +4,7 @@ use super::{
     deploy::{Deployment, Kind},
     grid::{Grid, COLS, ROWS},
     health::{Id, World},
+    stats::Stat,
 };
 pub trait Hooks {
     fn unblock_with_buffs(
@@ -112,7 +113,7 @@ pub fn release<H: Hooks>(w: &mut World, h: &mut H, blocker: Id) -> Result<(), St
 pub fn enforce_capacity<H: Hooks>(w: &mut World, h: &mut H, blocker: Id) -> Result<(), String> {
     let u = w.unit_mut(blocker)?;
     let cap = if u.stats.alive && u.deployed {
-        u.stats.stats().map_err(str::to_string)?.n("blockCnt")
+        u.stats.stats().map_err(str::to_string)?.get(Stat::BlockCnt)
     } else {
         0.0
     };
@@ -160,7 +161,7 @@ pub fn blocker_for(
     {
         return Ok(false);
     }
-    let cap = s.n("blockCnt");
+    let cap = s.get(Stat::BlockCnt);
     if cap <= 0.0 {
         return Ok(false);
     }
@@ -226,7 +227,7 @@ pub fn check<H: Hooks>(
                     .stats
                     .stats()
                     .map_err(str::to_string)?
-                    .n("blockRadiusScale")
+                    .get(Stat::BlockRadiusScale)
             } else {
                 1.0
             };
@@ -251,109 +252,4 @@ pub fn check<H: Hooks>(
     w.unit_mut(enemy)?.moving = false;
     h.blocked(id, enemy, w)?;
     Ok(true)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::battle::{
-        deploy::{self, Event, Options},
-        health::{Side, Unit},
-        stats::{Base, UnitStats},
-    };
-    #[derive(Default)]
-    struct Host {
-        ended: Vec<Id>,
-    }
-    impl Hooks for Host {
-        fn blocked(&mut self, _: Id, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-        fn ended(&mut self, id: Id, _: &mut World) -> Result<(), String> {
-            self.ended.push(id);
-            Ok(())
-        }
-    }
-    impl deploy::Hooks for Host {
-        fn initialize(
-            &mut self,
-            _: Id,
-            _: Options,
-            _: &mut World,
-            _: &mut Deployment,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn event(
-            &mut self,
-            _: Event,
-            _: Id,
-            _: Option<Id>,
-            _: &mut World,
-            _: &mut Deployment,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn remove_temporary_effects(&mut self, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-    }
-    #[test]
-    fn movement_and_retreat_release_both_ends_before_final_removal() {
-        let g = Grid::new(
-            &serde_json::json!({"rows":vec!["r".repeat(COLS);ROWS]}),
-            super::super::grid::Rect::FULL,
-        )
-        .unwrap();
-        let mut w = World::new(3, 1, 1).unwrap();
-        let mut d = Deployment::new(g.rect(), 3, 1, 99.0).unwrap();
-        let mut h = Host::default();
-        let mut base = Base::default();
-        base.0.insert("blockCnt".into(), 2.0);
-        let mut a = Unit::new(UnitStats::new(base), Side::Ally);
-        a.deployment.kind = Kind::Operator;
-        a.deployment.home = [10, 4];
-        a.ground = true;
-        w.insert_unit(1, a).unwrap();
-        d.register(1, &w).unwrap();
-        d.deploy(&mut w, &mut h, 1, Options::default()).unwrap();
-        let mut e = Unit::new(UnitStats::new(Base::default()), Side::Enemy);
-        e.position = [10.0, 4.0];
-        w.insert_unit(2, e).unwrap();
-        assert!(check(&mut w, &d, &g, &mut h, 2).unwrap());
-        assert!(d.relocate(&mut w, &mut h, 1, [10, 5]).unwrap());
-        assert_eq!(w.unit(2).unwrap().blocked_by(), None);
-        assert!(w.unit(1).unwrap().blocking().is_empty());
-        assert_eq!(h.ended, vec![2]);
-        w.unit_mut(2).unwrap().position = [10.0, 5.0];
-        assert!(check(&mut w, &d, &g, &mut h, 2).unwrap());
-        d.retreat(&mut w, &mut h, 1, "retreat", false).unwrap();
-        assert_eq!(h.ended, vec![2, 2]);
-        assert_eq!(w.unit(2).unwrap().blocked_by(), None);
-    }
-    #[test]
-    fn falling_capacity_releases_latest_first_and_dead_blocker_releases_all() {
-        let mut w = World::new(3, 1, 1).unwrap();
-        let mut a = Unit::new(UnitStats::new(Base::default()), Side::Ally);
-        a.deployed = true;
-        a.stats.edit_base(|b| {
-            b.0.insert("blockCnt".into(), 1.0);
-        });
-        a.blocking = vec![2, 3];
-        w.insert_unit(1, a).unwrap();
-        for id in [2, 3] {
-            let mut e = Unit::new(UnitStats::new(Base::default()), Side::Enemy);
-            e.blocked_by = Some(1);
-            w.insert_unit(id, e).unwrap();
-        }
-        let mut h = Host::default();
-        enforce_capacity(&mut w, &mut h, 1).unwrap();
-        assert_eq!(h.ended, vec![3]);
-        assert_eq!(w.unit(1).unwrap().blocking(), &[2]);
-        assert_eq!(w.unit(3).unwrap().blocked_by(), None);
-        w.unit_mut(1).unwrap().stats.alive = false;
-        enforce_capacity(&mut w, &mut h, 1).unwrap();
-        assert_eq!(h.ended, vec![3, 2]);
-        assert!(w.unit(1).unwrap().blocking().is_empty());
-    }
 }

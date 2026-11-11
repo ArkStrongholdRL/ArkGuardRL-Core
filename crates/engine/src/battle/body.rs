@@ -60,23 +60,29 @@ pub fn position_key(u: &Unit) -> Option<usize> {
     }
 }
 pub fn keys(u: &Unit) -> Vec<usize> {
+    let mut out = Vec::new();
+    keys_into(u, &mut out);
+    out
+}
+/// Reuse query storage while preserving the exact tile enumeration order.
+pub(crate) fn keys_into(u: &Unit, out: &mut Vec<usize>) {
+    out.clear();
     let Some(rect) = rectangle(u) else {
-        return position_key(u).into_iter().collect();
+        out.extend(position_key(u));
+        return;
     };
     if !u.position.iter().all(|x| x.is_finite()) {
-        return vec![];
+        return;
     }
     let r0 = (rect.y0 + 0.5 + 1e-9).floor().max(0.0) as i32;
     let r1 = (rect.y1 - 0.5 - 1e-9).ceil().min(ROWS as f64 - 1.0) as i32;
     let c0 = (rect.x0 + 0.5 + 1e-9).floor().max(0.0) as i32;
     let c1 = (rect.x1 - 0.5 - 1e-9).ceil().min(COLS as f64 - 1.0) as i32;
-    let mut out = Vec::new();
     for r in r0..=r1 {
         for c in c0..=c1 {
             out.push(r as usize * COLS + c as usize);
         }
     }
-    out
 }
 pub fn on_tile(u: &Unit, r: i32, c: i32) -> bool {
     if let Some(rect) = rectangle(u) {
@@ -89,19 +95,28 @@ pub fn on_tile(u: &Unit, r: i32, c: i32) -> bool {
     }
 }
 pub fn collider_keys(u: &Unit) -> Vec<usize> {
+    let mut out = Vec::new();
+    collider_keys_into(u, &mut out);
+    out
+}
+pub(crate) fn collider_keys_into(u: &Unit, out: &mut Vec<usize>) {
+    out.clear();
     if u.hit_area.is_some() || u.side == Side::Ally {
-        return keys(u);
+        keys_into(u, out);
+        return;
     }
-    let [y, x] = u.position;
+    enemy_collider_keys(u.position, |key| out.push(key));
+}
+/// Ordinary enemy colliders touch at most four tiles; callers may avoid a Vec.
+pub(crate) fn enemy_collider_keys([y, x]: [f64; 2], mut visit: impl FnMut(usize)) {
     if !y.is_finite() || !x.is_finite() {
-        return vec![];
+        return;
     }
     let rho = 0.1;
     let r0 = (y - rho + 0.5 + 1e-9).floor().max(0.0) as i32;
     let r1 = (y + rho - 0.5 - 1e-9).ceil().min(ROWS as f64 - 1.0) as i32;
     let c0 = (x - rho + 0.5 + 1e-9).floor().max(0.0) as i32;
     let c1 = (x + rho - 0.5 - 1e-9).ceil().min(COLS as f64 - 1.0) as i32;
-    let mut out = Vec::new();
     for r in r0..=r1 {
         let dy = if y < r as f64 - 0.5 {
             r as f64 - 0.5 - y
@@ -121,10 +136,9 @@ pub fn collider_keys(u: &Unit) -> Vec<usize> {
             if dx > 0.0 && dy > 0.0 && dx * dx + dy * dy >= rho * rho {
                 continue;
             }
-            out.push(r as usize * COLS + c as usize);
+            visit(r as usize * COLS + c as usize);
         }
     }
-    out
 }
 pub fn in_keys(u: &Unit, tiles: &[usize]) -> bool {
     keys(u).iter().any(|k| tiles.contains(k))

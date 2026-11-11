@@ -1,6 +1,6 @@
 //! External JSON data only: no game source checkout, Git or Node dependency.
 use serde_json::Value;
-use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
+use std::{collections::BTreeMap, fs::File, io::Read, path::Path, sync::Arc};
 
 const TABLES: &[&str] = &[
     "config",
@@ -20,17 +20,18 @@ const TABLES: &[&str] = &[
     "backups",
 ];
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Definition {
     pub index: u32,
     pub table: String,
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Catalog {
-    tables: BTreeMap<String, Value>,
+    tables: BTreeMap<String, Arc<Value>>,
     definitions: Vec<Definition>,
+    base_chess: Arc<Value>,
 }
 
 impl Catalog {
@@ -58,7 +59,7 @@ impl Catalog {
             if !value.is_object() {
                 return Err(format!("{name}: expected an object"));
             }
-            tables.insert(name.to_string(), value);
+            tables.insert(name.to_string(), Arc::new(value));
         }
         let mut definitions = Vec::new();
         // Stable numeric IDs are independent of file and JSON object insertion order.
@@ -76,15 +77,19 @@ impl Catalog {
                 });
             }
         }
+        let base_chess = Arc::clone(&tables["chess"]);
         Ok(Self {
+            base_chess,
             tables,
             definitions,
         })
     }
     pub fn table(&self, name: &str) -> Option<&Value> {
-        self.tables.get(name)
+        self.tables.get(name).map(Arc::as_ref)
     }
     pub fn definitions(&self) -> &[Definition] {
         &self.definitions
     }
 }
+
+mod diy;

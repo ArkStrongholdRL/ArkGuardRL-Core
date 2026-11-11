@@ -51,11 +51,22 @@ class PublicCatalog:
             raise ValueError("Public catalog/session data identity mismatch")
         if set(loaded) != {"bands", "chess", "items", "tokens", "config", "bonds", "garrisons", "enemies", "choices", "effects"}:
             raise ValueError("Missing explicit public catalog files")
+        self._initialize(loaded)
+
+    @classmethod
+    def from_native(cls, native_catalog):
+        """Use the engine-owned external definitions, without a source-checkout gate."""
+        obj = cls.__new__(cls)
+        obj.data_sha256 = None
+        obj._initialize(json.loads(native_catalog.public_tables()))
+        return obj
+
+    def _initialize(self, loaded):
         self._data = loaded
         # The learning API exposes small public projections, not every artwork,
         # description, skill implementation or future-wave table in the dataset.
         fields = ("id", "chessId", "tokenId", "bandId", "baseId", "goldenId", "tier", "isGolden",
-                  "position", "placeOnRanged", "isDiy", "itemType", "kind", "rangedTilesOnly",
+                  "position", "placeOnRanged", "isDiy", "diyFor", "itemType", "kind", "rangedTilesOnly",
                   "ownerRange", "ownerRangeOutside", "rangeGrid", "upgradeNum", "bonds")
         self._views = {}
         for kind, table in (("chess", "chess"), ("item", "items"), ("token", "tokens"), ("band", "bands")):
@@ -135,8 +146,8 @@ class PublicCatalog:
         row = self._views.get(kind, {}).get(identifier)
         if not isinstance(row, dict):
             raise UnsupportedPublicState(f"Unknown public {kind} identity: {identifier!r}")
-        if kind == "chess" and row.get("isDiy"):
-            raise UnsupportedPublicState("Custom DIY records require a separate catalog contract")
+        if kind == "chess" and row.get("isDiy") and row.get("diyFor") not in self._data.get("diy", {}):
+            raise UnsupportedPublicState("DIY identity has no resolved operator configuration")
         return row
 
     def validate_identity(self, kind, identifier):
@@ -246,7 +257,9 @@ class PublicCatalog:
                 or public.get("modeId") not in self._data["config"]["modes"]
                 or public.get("modeId") != "mode_single_" + public["difficulty"].lower()):
             raise UnsupportedPublicState("Plugins/custom modes are outside this vanilla catalog")
-        for name in ("diy", "loadout", "ops"):
+        if own.get("diy") != self._data.get("diy", {}):
+            raise UnsupportedPublicState("DIY configuration differs from the resolved public catalog")
+        for name in ("loadout", "ops"):
             if own.get(name) != {}:
                 raise UnsupportedPublicState(f"Nondefault or unknown {name} is unsupported")
         if own.get("standIns") != []:

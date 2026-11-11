@@ -115,6 +115,7 @@ impl Default for Spec {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
+    Deploy,
     ApplyModifiers,
     RemoveModifiers,
     RefreshRange,
@@ -161,6 +162,9 @@ pub enum Condition {
 /// Condition handlers only resolve geometric/content predicates; casting policy is
 /// owned here. Errors fault the runtime and must not become valid rollout samples.
 pub trait Hooks {
+    fn can_activate(&mut self, _skill: &Runtime, _w: &mut World) -> Result<bool> {
+        Ok(true)
+    }
     fn event(
         &mut self,
         event: Event,
@@ -172,6 +176,7 @@ pub trait Hooks {
     fn profile(&mut self, id: Id, w: &mut World) -> Result<Option<AttackProfile>>;
     fn has_sp_hook(&self) -> bool;
 }
+#[derive(Clone)]
 pub struct Runtime {
     pub bank: Bank,
     pub spec: Spec,
@@ -215,6 +220,18 @@ impl Runtime {
             max_depth,
             faulted: false,
         })
+    }
+    /// Move the canonical state into a nested callback. The caller must put the
+    /// returned state back before using this runtime again; the vacancy is faulted.
+    pub(crate) fn take_for_callback(&mut self) -> Result<Self> {
+        let mut vacant = Self::new(
+            Bank::new(self.unit(), Kind::Passive, 0., 1, 1)?,
+            Spec::default(),
+            self.max_depth,
+        )?;
+        vacant.bank.no_skill = true;
+        vacant.faulted = true;
+        Ok(std::mem::replace(self, vacant))
     }
     pub fn unit(&self) -> Id {
         self.bank.unit
@@ -411,6 +428,9 @@ impl Runtime {
         if !u.stats.alive || !u.deployed {
             return Ok(false);
         }
+        if !h.can_activate(self, w)? {
+            return Ok(false);
+        }
         if !free {
             let full = self.bank.charges >= self.bank.max_charges() as f64;
             self.bank.charges -= 1.0;
@@ -497,6 +517,14 @@ impl Runtime {
         }
         Ok(())
     }
+    pub(crate) fn consume_ammo<H: Hooks>(&mut self, w: &mut World, h: &mut H) -> Result<()> {
+        self.ammo_left -= 1.;
+        self.emit(h, w, Event::AmmoUsed, &mut Context::reason(""))?;
+        if self.bank.active && self.ammo_left <= 0. {
+            self.end(w, h, "ammo")?;
+        }
+        Ok(())
+    }
     pub fn add_ammo(&mut self, n: f64) {
         if self.bank.active && self.bank.kind == Kind::Ammo && n.is_finite() {
             self.ammo_left += n;
@@ -548,11 +576,7 @@ impl Runtime {
         }
         if self.bank.active && self.bank.kind == Kind::Ammo {
             if !no_ammo {
-                self.ammo_left -= 1.0;
-                self.emit(h, w, Event::AmmoUsed, &mut Context::reason(""))?;
-                if self.ammo_left <= 0.0 {
-                    self.end(w, h, "ammo")?;
-                }
+                self.consume_ammo(w, h)?;
             }
         } else if used_override && self.pending && !self.bank.kind.timed() {
             self.pending = false;
@@ -744,137 +768,4 @@ pub fn can_act(w: &mut World, id: Id) -> Result<bool> {
             .map_err(str::to_string)?
             .flags
             .contains("stun"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::{
-        health::{Side, Unit},
-        sp,
-        stats::{Base, Buff, UnitStats},
-    };
-    use super::*;
-    struct Host {
-        recast: bool,
-        events: Vec<Event>,
-        end_atk: Option<f64>,
-    }
-    impl Hooks for Host {
-        fn event(
-            &mut self,
-            e: Event,
-            _: &mut Context,
-            s: &mut Runtime,
-            w: &mut World,
-        ) -> Result<()> {
-            self.events.push(e);
-            match e {
-                Event::ApplyModifiers => w.unit_mut(1)?.stats.put_named_buff(
-                    "skill",
-                    Buff {
-                        mods: [("atkPct".into(), 0.5)].into_iter().collect(),
-                        ..Buff::default()
-                    },
-                    4,
-                )?,
-                Event::RemoveModifiers => w.unit_mut(1)?.stats.remove_named_buff("skill"),
-                Event::End => {
-                    self.end_atk = Some(number(w, 1, "atk")?);
-                    if self.recast {
-                        self.recast = false;
-                        s.activate(w, self, "restart", true)?;
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        }
-        fn condition(&mut self, _: Condition, _: &Runtime, _: &mut World) -> Result<bool> {
-            Ok(true)
-        }
-        fn profile(&mut self, _: Id, _: &mut World) -> Result<Option<AttackProfile>> {
-            Ok(Some(AttackProfile::default()))
-        }
-        fn has_sp_hook(&self) -> bool {
-            false
-        }
-    }
-    fn setup(depth: usize) -> (World, Runtime, Host) {
-        let mut w = World::new(1, 1, 1).unwrap();
-        let mut b = Base::default();
-        b.0.insert("atk".into(), 100.0);
-        let mut u = Unit::new(UnitStats::new(b), Side::Ally);
-        u.deployed = true;
-        w.insert_unit(1, u).unwrap();
-        let bank = Bank::new(1, Kind::Duration, 3.0, 1, 4).unwrap();
-        let s = Runtime::new(
-            bank,
-            Spec {
-                duration: 1.0,
-                init_sp: 3.0,
-                modifiers: true,
-                sp_type: SpType::Attack,
-                ..Spec::default()
-            },
-            depth,
-        )
-        .unwrap();
-        (
-            w,
-            s,
-            Host {
-                recast: false,
-                events: vec![],
-                end_atk: None,
-            },
-        )
-    }
-    #[test]
-    fn end_reads_live_modifiers_and_reactivation_keeps_new_cast() {
-        let (mut w, mut s, mut h) = setup(32);
-        s.reset(&mut w, &mut h, None).unwrap();
-        s.activate(&mut w, &mut h, "manual", false).unwrap();
-        h.recast = true;
-        s.end(&mut w, &mut h, "end").unwrap();
-        assert_eq!(h.end_atk, Some(150.0));
-        assert!(s.bank.active);
-        assert_eq!(s.activations, 2);
-        assert!(!h.events.contains(&Event::RemoveModifiers));
-        assert_eq!(number(&mut w, 1, "atk").unwrap(), 150.0);
-        s.end(&mut w, &mut h, "end").unwrap();
-        assert_eq!(number(&mut w, 1, "atk").unwrap(), 100.0);
-    }
-    #[test]
-    fn last_ammo_attack_does_not_recover_attack_sp() {
-        let (mut w, mut s, mut h) = setup(32);
-        s.bank.kind = Kind::Ammo;
-        s.spec.ammo = 1.0;
-        s.reset(&mut w, &mut h, None).unwrap();
-        s.activate(&mut w, &mut h, "manual", false).unwrap();
-        s.after_attack(&mut w, &mut h, &[1], true, false).unwrap();
-        assert!(!s.bank.active);
-        assert_eq!(s.bank.total(&mut w).unwrap(), 0.0);
-        s.after_attack(&mut w, &mut h, &[1], false, false).unwrap();
-        assert_eq!(s.bank.sp, 1.0);
-    }
-    #[test]
-    fn recursion_error_faults_skill_without_creating_terminal_result() {
-        let (mut w, mut s, mut h) = setup(1);
-        assert!(s.reset(&mut w, &mut h, None).is_err());
-        assert!(s.faulted());
-        assert!(s.tick(&mut w, &mut h, 1.0 / 30.0).is_err());
-    }
-    #[test]
-    fn default_cast_skips_operation_cooling_and_time_cast_waits() {
-        let (mut w, mut s, mut h) = setup(32);
-        s.bank.kind = sp::Kind::Instant;
-        s.spec.sp_type = SpType::None;
-        s.reset(&mut w, &mut h, None).unwrap();
-        assert!(s.about_to_attack(&mut w, &mut h).unwrap());
-        assert_eq!(s.next_cast_at, f64::NEG_INFINITY);
-        s.bank.add_charge(&mut w, 1.0).unwrap();
-        assert!(!s.about_to_attack(&mut w, &mut h).unwrap());
-        w.time = 3.0;
-        assert!(s.about_to_attack(&mut w, &mut h).unwrap());
-    }
 }

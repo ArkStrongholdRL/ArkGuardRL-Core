@@ -6,6 +6,7 @@ use super::{
     health::{Id, World},
     search::{self, AttackProfile, Commitments, Selection},
     skills::{self, Runtime},
+    stats::Stat,
 };
 pub trait Host: search::Host + skills::Hooks + blocking::Hooks {
     fn effective_profile(
@@ -33,7 +34,7 @@ fn interval(w: &mut World, id: Id) -> Result<f64, String> {
     w.unit_mut(id)?
         .stats
         .stats()
-        .map(|s| s.n("interval"))
+        .map(|s| s.get(Stat::Interval))
         .map_err(str::to_string)
 }
 fn store<H: Host>(w: &mut World, h: &mut H, id: Id, p: AttackProfile) -> Result<(), String> {

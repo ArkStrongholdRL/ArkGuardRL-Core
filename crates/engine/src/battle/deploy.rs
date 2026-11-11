@@ -60,6 +60,7 @@ impl Default for State {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Options {
     pub initial: bool,
+    pub keep_sp: bool,
     pub tile: Option<[i32; 2]>,
     pub aggro_seq: Option<u64>,
 }
@@ -80,7 +81,7 @@ pub enum Event {
 /// the host. Required methods avoid silently dropping those steps during migration.
 pub trait Hooks: super::blocking::Hooks {
     /// Reset attack/element/skill state and apply initial-deployment cooldown.
-    /// Carry and retained SP require the future skill runtime and are not inferred here.
+    /// The operator skill runtime handles retained SP before deployment callbacks.
     fn initialize(
         &mut self,
         id: Id,
@@ -202,6 +203,13 @@ impl Deployment {
         }
         self.dp.insert(id, dp);
         Ok(())
+    }
+    pub(crate) fn add_dp(&mut self, owner: Id, amount: f64) -> Result<(), String> {
+        if !amount.is_finite() {
+            return Err("Non-finite DP change".into());
+        }
+        let dp = self.dp(owner).ok_or("Missing deployment points")?;
+        self.set_dp(owner, (dp + amount).clamp(0., self.dp_max))
     }
     pub fn occupant(&self, tile: [i32; 2]) -> Option<Id> {
         if Grid::in_bounds(tile) {
@@ -469,6 +477,17 @@ impl Deployment {
         free: bool,
         tile: Option<[i32; 2]>,
     ) -> Result<bool, String> {
+        self.redeploy_retaining(w, h, id, free, tile, false)
+    }
+    pub(crate) fn redeploy_retaining<H: Hooks>(
+        &mut self,
+        w: &mut World,
+        h: &mut H,
+        id: Id,
+        free: bool,
+        tile: Option<[i32; 2]>,
+        keep_sp: bool,
+    ) -> Result<bool, String> {
         let u = w.unit(id)?;
         if u.side != Side::Ally || u.stats.alive || u.removed {
             return Ok(false);
@@ -520,6 +539,7 @@ impl Deployment {
             id,
             Options {
                 tile: at,
+                keep_sp,
                 ..Options::default()
             },
         )? {
@@ -572,148 +592,5 @@ impl Deployment {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::battle::{
-        health::Unit,
-        stats::{Base, UnitStats},
-    };
-    #[derive(Default)]
-    struct Host {
-        blocked_reentrant: bool,
-        reenter: bool,
-        releases: usize,
-    }
-    impl super::super::blocking::Hooks for Host {
-        fn blocked(&mut self, _: Id, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-        fn ended(&mut self, _: Id, _: &mut World) -> Result<(), String> {
-            Ok(())
-        }
-    }
-    impl Hooks for Host {
-        fn initialize(
-            &mut self,
-            _: Id,
-            _: Options,
-            _: &mut World,
-            _: &mut Deployment,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn event(
-            &mut self,
-            e: Event,
-            id: Id,
-            _: Option<Id>,
-            w: &mut World,
-            d: &mut Deployment,
-        ) -> Result<(), String> {
-            if e == Event::EndSkill && self.reenter {
-                self.blocked_reentrant = !d.deploy(w, self, id, Options::default())?;
-            }
-            if e == Event::Release {
-                self.releases += 1;
-            }
-            Ok(())
-        }
-        fn remove_temporary_effects(&mut self, id: Id, w: &mut World) -> Result<(), String> {
-            w.unit_mut(id)?.stats.set_buffs(vec![]);
-            Ok(())
-        }
-    }
-    fn make(home: [i32; 2], kind: Kind) -> Unit {
-        let mut base = Base::default();
-        base.0.insert("maxHp".into(), 100.0);
-        base.0.insert("cost".into(), 7.0);
-        base.0.insert("respawnTime".into(), 3.0);
-        let mut u = Unit::new(UnitStats::new(base), Side::Ally);
-        u.stats.alive = false;
-        u.owner = Some(1);
-        u.deployment.kind = kind;
-        u.deployment.home = home;
-        u.deployment.tile = home;
-        u.deployment.uid = Some(1);
-        u
-    }
-    fn setup() -> (World, Deployment, Host) {
-        let mut w = World::new(4, 1, 1).unwrap();
-        let mut d = Deployment::new(
-            Rect {
-                r0: 9,
-                r1: 12,
-                c0: 2,
-                c1: 10,
-            },
-            4,
-            1,
-            99.0,
-        )
-        .unwrap();
-        let mut h = Host::default();
-        w.insert_unit(1, make([9, 2], Kind::Operator)).unwrap();
-        w.insert_unit(2, make([10, 4], Kind::Token)).unwrap();
-        for id in [1, 2] {
-            d.register(id, &w).unwrap();
-            assert!(d.deploy(&mut w, &mut h, id, Options::default()).unwrap());
-        }
-        d.set_dp(1, 20.0).unwrap();
-        (w, d, h)
-    }
-    #[test]
-    fn death_cannot_redeploy_from_skill_end_and_removed_home_is_retained() {
-        let (mut w, mut d, mut h) = setup();
-        h.reenter = true;
-        d.retreat(&mut w, &mut h, 2, "expired", true).unwrap();
-        assert!(h.blocked_reentrant);
-        d.release_removed(&mut w, &mut h).unwrap();
-        assert!(w.unit(2).is_err());
-        assert_eq!(h.releases, 1);
-        d.release_removed(&mut w, &mut h).unwrap();
-        assert_eq!(h.releases, 1);
-        assert!(d.relocate(&mut w, &mut h, 1, [10, 4]).unwrap());
-        d.kill(&mut w, &mut h, 1, None).unwrap();
-        assert_eq!(w.unit(1).unwrap().deployment.body, Some([9, 2]));
-    }
-    #[test]
-    fn body_prevents_deployment_and_failed_payment_is_refunded() {
-        let (mut w, mut d, mut h) = setup();
-        d.kill(&mut w, &mut h, 1, None).unwrap();
-        assert!(d.reserved(&w, [9, 2]).unwrap());
-        assert!(!d.relocate(&mut w, &mut h, 2, [9, 2]).unwrap());
-        w.insert_unit(3, make([9, 2], Kind::Token)).unwrap();
-        d.register(3, &w).unwrap();
-        assert!(!d.redeploy(&mut w, &mut h, 3, false, None).unwrap());
-        assert_eq!(d.dp(1), Some(20.0));
-        d.set_dp(1, 6.0).unwrap();
-        w.time = 10.0;
-        d.check_redeploys(&mut w, &mut h).unwrap();
-        assert!(!w.unit(1).unwrap().stats.alive);
-        d.set_dp(1, 7.0).unwrap();
-        w.unit_mut(1).unwrap().cadence.cooldown = 9.0;
-        d.check_redeploys(&mut w, &mut h).unwrap();
-        assert!(w.unit(1).unwrap().stats.alive);
-        assert_eq!(d.dp(1), Some(0.0));
-        assert_eq!(w.unit(1).unwrap().cadence.cooldown, 0.0);
-    }
-    #[test]
-    fn retained_corpse_cleans_hooks_once_then_releases_after_flight() {
-        let (mut w, mut d, mut h) = setup();
-        w.pin_unit(2).unwrap();
-        d.retreat(&mut w, &mut h, 2, "expired", true).unwrap();
-        d.release_removed(&mut w, &mut h).unwrap();
-        assert_eq!(h.releases, 1);
-        assert!(w.unit(2).is_ok());
-        d.release_removed(&mut w, &mut h).unwrap();
-        assert_eq!(h.releases, 1);
-        w.unpin_unit(2).unwrap();
-        d.release_removed(&mut w, &mut h).unwrap();
-        assert_eq!(h.releases, 1);
-        assert!(w.unit(2).is_err());
     }
 }

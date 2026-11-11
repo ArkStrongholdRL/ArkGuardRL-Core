@@ -31,32 +31,35 @@ Game rules follow the Stronghold Protocol simulator. [Upstream project](https://
 | Seeded reproduction, decision budgets, and vector collection | Trajectory collection, training, and policy evaluation |
 | Maintained in this repository | Maintained in [ArkGuardRL](https://github.com/HarcoChen/ArkGuardRL) |
 
-Maintenance targets solo Desperation mode (`mode_single_abyss`). This branch's quick start uses **the 0.3.1 Node engine and Rust feature kernels**.
-The 0.3.3 native runtime, Rust slots, and public spatial APIs are developed in PR #4. [Native runtime PR](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/pull/4)
+Maintenance targets solo Desperation mode (`mode_single_abyss`), using the **0.3.3 native Rust runtime**.
+Rust executes combat, public bookkeeping, rewards, candidate generation, and numeric encoding. Python provides Gymnasium and collection interfaces.
 
 ## Quick start
 
-Use Python 3.12, Node.js 22+, Git, and Rust/Cargo. Installation compiles a PyO3 extension and requires system linker tools.
+Use Python 3.12, Git, Rust stable, and system linker tools. Prepare the Stronghold Protocol 0.3.3 data directory separately.
 
 ```sh
 git clone https://github.com/ArkStrongholdRL/ArkGuardRL-Core.git
 cd ArkGuardRL-Core
 python -m pip install -e '.[gym]'
-
-git clone https://github.com/sganggs/Stronghold-Protocol.git ../Stronghold-Protocol
-git -C ../Stronghold-Protocol checkout c9d804f470b8d7422ae04eb66faf671cef21ad52
+PYO3_PYTHON="$(command -v python)" cargo build --release --locked -p arkguard-python
 ```
 
-Keep the external engine checkout clean with all `data/*.json` files present. Set `engine_root` to its repository root.
-This revision includes the required JSON files. The environment starts the engine in the background.
+CI provides Python 3.12 modules for Linux x64, Windows x64, and macOS Intel / Apple Silicon.
+The example uses a macOS library path. On Linux, use `target/release/lib_native.so`. On Windows, use the actual path of the `_native*.pyd` CI artifact. [Cross-platform builds](benchmarks/README.md#跨平台构建)
 
 ### Run a game
 
 ```python
 import gymnasium as gym
-import arkguardrl_core.gym_env
+import arkguardrl_core.native_gym
 
-with gym.make("ArkGuardRL-v0", engine_root="../Stronghold-Protocol") as env:
+with gym.make(
+    "ArkGuardRL-v1",
+    data_root="/path/to/0.3.3/data",
+    core="band_sarkazb",
+    native_library="target/release/lib_native.dylib",
+) as env:
     env.action_space.seed(42)
     obs, info = env.reset(seed=42)
     while True:
@@ -72,11 +75,14 @@ The example samples candidates using the mask. Replace `action` with the candida
 
 | Interface | Use |
 | --- | --- |
-| `ArkGuardRL-v0` | A single-environment Gymnasium decision loop |
+| `ArkGuardRL-v1` | A native single-environment Gymnasium decision loop |
 | `SyncVectorEnv` / `AsyncVectorEnv` | Vector collection with an independent session per environment |
+| Rust slots | 1–64 environments, partial resets, and selective stepping |
+| `env.unwrapped.public_spatial()` | Read public maps, current template routes, and enemy preview associations |
 | `env.unwrapped.catalog.definitions()` | Read public static definitions |
 | `info` | Inspect action acceptance, reward components, engine seeds, and episode reasons |
 
+Supported cores are Amiya (`band_amiya`), Sarkaz (`band_sarkazb`), Chen (`band_chen`), and Sciurus (`band_sciurus`).
 Observations are dictionaries of NumPy arrays. Action indices refer to the current state's candidate rows. The default capacity is 16,384.
 
 | Field | Shape and type |
@@ -94,21 +100,29 @@ Observations are dictionaries of NumPy arrays. Action indices refer to the curre
 - `NativeProgressCore` computes rewards. Components appear in `info["reward_components"]`.
 - Natural endings return `terminated`. Exhausting `max_decisions`, `max_advances`, or `wall_seconds` returns `truncated`, the actual successor observation, and `info["reason"]`. Engine or transport failures raise exceptions.
 - Set difficulty and budgets at construction. Single-environment `reset(options=...)` accepts an empty configuration.
-- Async collection with `spawn` requires an `if __name__ == "__main__"` entry point. Each v0 environment owns an independent Node process.
+- Async collection with `spawn` requires an `if __name__ == "__main__"` entry point. Each environment owns an independent native session.
+
+</details>
+
+Use `env.unwrapped.public_spatial_update(key)` for incremental spatial reads. The benchmark guide also covers human-record regression and renderable combat trajectories. [Spatial APIs and replay export](benchmarks/README.md)
+
+<details>
+<summary>Node v0 compatibility</summary>
+
+Existing callers can register `ArkGuardRL-v0` through `import arkguardrl_core.gym_env` and pass `engine_root` at construction.
+This entry point uses Node.js 22+ and the 0.3.1 engine / data.
 
 </details>
 
 ## Performance
 
-| Configuration | Decisions per second |
+| Configuration and timing scope | Decisions per second |
 | --- | ---: |
-| Gym Sync, 1 environment | 494.75 |
-| Gym Async, shared memory, 4 environments | 937.19 |
+| Native Gym, 1 environment, purchase-and-deploy policy | 437.2 |
+| Rust slots, 4 environments / 4 threads, including spatial JSON reads | 585.7 |
 
-Recorded on November 2, 2026, with an Apple M5 / 16 GiB and the Node 0.3.1 engine plus Rust feature kernels.
-Each environment runs 64 warm-up steps and 1,024 measured steps. Values are medians of six measurements.
-Timing includes observations, rewards, Gym communication, and in-loop resets, with masked random actions.
-Raw records, measurement plots, and reproduction commands are available in the benchmark guide. [Performance benchmarks](benchmarks/README.md)
+These full-game A/B measurements include native candidate preparation and indexed execution, covering environment and interface overhead.
+Model inference and training are timed separately. See the benchmark guide for workload definitions, human-record regression, historical measurements, and reproduction commands. [Performance benchmarks](benchmarks/README.md)
 
 ## Documentation
 
@@ -118,7 +132,7 @@ Detailed development notes are currently in Chinese.
 | --- | --- |
 | [Performance benchmarks](benchmarks/README.md) | Measurements, timing scope, and commands |
 | [Rust feature kernels](docs/RUST-ROUTES.md) | Action and observation encoding responsibilities and ABI |
-| [Native migration notes](docs/NATIVE-033.md) | Development history for the 0.3.3 engine |
+| [Native migration notes](docs/NATIVE-033.md) | Implementation scope and migration history of the 0.3.3 native runtime |
 | [Issue tracker](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | Interface issues and reproducible reports |
 
 ## License and acknowledgments

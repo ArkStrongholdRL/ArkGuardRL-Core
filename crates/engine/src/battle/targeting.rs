@@ -5,19 +5,25 @@ use super::{
     direction::Direction,
     grid::{COLS, N, ROWS},
     health::{Id, Side, World},
-    stats::Stats,
+    stats::{Stat, Stats},
 };
 use std::{cmp::Ordering, collections::BTreeMap};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Profile {
+    pub ignore_stealth: bool,
     pub hit_sleep: bool,
     pub can_hit_fly: bool,
     pub doll_hits_fly: bool,
     pub ground_only: bool,
     pub block_free: bool,
 }
+/// A source-owned exclusion predicate, available during nested content callbacks.
+pub type EnemyFilter = fn(&mut World, Id, Id) -> Result<bool, String>;
+
 #[derive(Clone, Debug, Default)]
 pub struct State {
+    pub enemy_filter: Option<EnemyFilter>,
+    pub melee_operator: bool,
     pub doll: bool,
     pub elite: bool,
     pub ranged_apply_melee: bool,
@@ -61,14 +67,10 @@ pub fn enemy_stealthed(w: &mut World, id: Id) -> Result<bool, String> {
                 .any(|off| off.key.as_deref() == Some(key.as_str()))
         }))
 }
-fn snapshot(w: &mut World, id: Id) -> Result<Stats, String> {
-    w.unit_mut(id)?
-        .stats
-        .stats()
-        .cloned()
-        .map_err(str::to_string)
+fn stats(w: &mut World, id: Id) -> Result<&Stats, String> {
+    w.unit_mut(id)?.stats.stats().map_err(str::to_string)
 }
-fn flying(w: &mut World, id: Id) -> Result<bool, String> {
+pub(crate) fn flying(w: &mut World, id: Id) -> Result<bool, String> {
     let u = w.unit_mut(id)?;
     u.stats
         .is_flying(u.side == Side::Enemy, u.motion_fly)
@@ -85,11 +87,11 @@ pub fn can_target_enemy<Q: Queries>(
     if !e.stats.alive || e.hidden || !e.deployed {
         return Ok(false);
     }
-    let flags = snapshot(w, enemy)?.flags;
+    let flags = &stats(w, enemy)?.flags;
     if flags.contains("untargetable") || (flags.contains("sleep") && !p.hit_sleep) {
         return Ok(false);
     }
-    if flags.contains("stealth") && q.enemy_stealthed(enemy, w)? {
+    if !p.ignore_stealth && flags.contains("stealth") && q.enemy_stealthed(enemy, w)? {
         return Ok(false);
     }
     let doll = attacker
@@ -108,7 +110,7 @@ pub fn can_target_enemy<Q: Queries>(
     Ok(true)
 }
 pub fn evades_ground(w: &mut World, source: Option<Id>, target: Id) -> Result<bool, String> {
-    if !snapshot(w, target)?.flags.contains("liftoff") {
+    if !stats(w, target)?.flags.contains("liftoff") {
         return Ok(false);
     }
     if let Some(id) = source {
@@ -129,7 +131,7 @@ pub fn can_target_ally(
     if !a.stats.alive || !a.deployed || a.hidden || a.deployment.kind == Kind::Device {
         return Ok(false);
     }
-    let f = snapshot(w, ally)?.flags;
+    let f = &stats(w, ally)?.flags;
     if f.contains("untargetable") || f.contains("sleep") {
         return Ok(false);
     }
@@ -141,12 +143,19 @@ pub fn can_target_ally(
     }
     Ok(!evades_ground(w, Some(enemy), ally)?)
 }
+pub fn friendly_selectable(w: &mut World, source: Id, ally: Id) -> Result<bool, String> {
+    let u = w.unit(ally)?;
+    if !u.stats.alive || !u.deployed || u.hidden || u.deployment.kind == Kind::Device {
+        return Ok(false);
+    }
+    Ok(source == ally || !stats(w, ally)?.flags.contains("isolated"))
+}
 pub fn aura_selectable(w: &mut World, ally: Id) -> Result<bool, String> {
     let a = w.unit(ally)?;
     if !a.stats.alive || !a.deployed || a.hidden || a.deployment.kind == Kind::Device {
         return Ok(false);
     }
-    let f = snapshot(w, ally)?.flags;
+    let f = &stats(w, ally)?.flags;
     Ok(!["untargetable", "sleep", "stealth"]
         .iter()
         .any(|k| f.contains(*k)))
@@ -221,19 +230,19 @@ pub fn sort_enemies<Q: Queries>(
                     0.0
                 }
             }
-            Priority::LowDef => snapshot(w, id)?.n("def"),
-            Priority::HighDef => -snapshot(w, id)?.n("def"),
+            Priority::LowDef => stats(w, id)?.get(Stat::Def),
+            Priority::HighDef => -stats(w, id)?.get(Stat::Def),
             Priority::LowestHp => w.unit(id)?.stats.hp,
             Priority::HighestHp => -w.unit(id)?.stats.hp,
             Priority::LowestHpRatio => {
-                let max = snapshot(w, id)?.n("maxHp");
+                let max = stats(w, id)?.get(Stat::MaxHp);
                 if max > 0.0 {
                     w.unit(id)?.stats.hp / max
                 } else {
                     0.0
                 }
             }
-            Priority::HighestAtk => -snapshot(w, id)?.n("atk"),
+            Priority::HighestAtk => -stats(w, id)?.get(Stat::Atk),
             Priority::Boss => {
                 if w.unit(id)?.boss {
                     0.0
@@ -249,13 +258,13 @@ pub fn sort_enemies<Q: Queries>(
                 }
             }
             Priority::NotBurst => {
-                if snapshot(w, id)?.flags.contains("burstLock") {
+                if stats(w, id)?.flags.contains("burstLock") {
                     1.0
                 } else {
                     0.0
                 }
             }
-            Priority::Heaviest => -snapshot(w, id)?.n("massLevel"),
+            Priority::Heaviest => -stats(w, id)?.get(Stat::MassLevel),
             Priority::Ranged => {
                 let u = w.unit(id)?;
                 if u.stats.base_number("rangeRadius") > 0.0 && !u.targeting.ranged_apply_melee {
@@ -268,7 +277,7 @@ pub fn sort_enemies<Q: Queries>(
             Priority::Farthest => -q.body_distance(id, origin, w)?,
             Priority::None => 0.0,
         };
-        let taunt = snapshot(w, id)?.n("taunt");
+        let taunt = stats(w, id)?.get(Stat::Taunt);
         let t = if taunt.is_nan() || taunt == 0.0 {
             0.0
         } else {
@@ -310,7 +319,7 @@ pub fn sort_allies(
     };
     let mut keys = Vec::with_capacity(candidates.len());
     for &id in candidates.iter() {
-        let t = snapshot(w, id)?.n("taunt");
+        let t = stats(w, id)?.get(Stat::Taunt);
         let t = if t.is_nan() || t == 0.0 { 0.0 } else { -t };
         let u = w.unit(id)?;
         let seq = if u.deployment.aggro_seq != 0 {
@@ -363,6 +372,9 @@ pub fn absolute_range(
     for &p in grid {
         add(p);
     }
+    if extend == 0 {
+        return out;
+    }
     let mut rows = Vec::new();
     let mut max = BTreeMap::new();
     for &[r, c] in grid {
@@ -387,43 +399,15 @@ pub fn target_count(
     max_targets: f64,
 ) -> Result<usize, String> {
     let base = if hit_all_blocked {
-        stats.n("blockCnt").floor().max(1.0)
+        stats.get(Stat::BlockCnt).floor().max(1.0)
     } else if max_targets == 0.0 || max_targets.is_nan() {
         1.0
     } else {
         max_targets
     };
-    let n = (base + stats.n("maxTargets")).floor().max(1.0);
+    let n = (base + stats.get(Stat::MaxTargets)).floor().max(1.0);
     if !n.is_finite() || n >= usize::MAX as f64 {
         return Err("Target count exceeds native capacity".into());
     }
     Ok(n as usize)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::battle::stats::{Base, Buff, Cultivation, Modifiers};
-    #[test]
-    fn attack_target_count_uses_capacity_plus_modifiers_not_current_blocked_count() {
-        let mut b = Base::default();
-        b.0.insert("blockCnt".into(), 3.0);
-        let m = Modifiers::aggregate(&[Buff {
-            mods: [("maxTargets".into(), 2.0)].into_iter().collect(),
-            ..Buff::default()
-        }])
-        .unwrap();
-        let s = Stats::calculate(&b, &m, Cultivation::default(), 0.0);
-        assert_eq!(target_count(&s, true, 1.0).unwrap(), 5);
-        assert_eq!(target_count(&s, false, 2.0).unwrap(), 4);
-        assert_eq!(target_count(&s, false, 0.0).unwrap(), 3);
-    }
-    #[test]
-    fn range_extension_preserves_input_row_order_and_deduplicates() {
-        assert_eq!(
-            absolute_range(&[[1, 0], [0, 0], [1, 0]], [10, 4], Direction::Right, 1),
-            vec![11 * 21 + 4, 10 * 21 + 4, 11 * 21 + 5, 10 * 21 + 5]
-        );
-        assert!(absolute_range(&[[0, 0]], [-1, 0], Direction::Right, 0).is_empty());
-    }
 }

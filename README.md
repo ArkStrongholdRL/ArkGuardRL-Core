@@ -31,32 +31,35 @@ ArkGuardRL-Core 将《卫戍协议：盟约》的购买、构筑和部署决策�
 | 种子复现、预算控制与多环境采样 | 轨迹采集、训练与策略评估 |
 | 在本仓库维护 | 在 [ArkGuardRL](https://github.com/HarcoChen/ArkGuardRL) 维护 |
 
-维护范围为单人绝境模式（`mode_single_abyss`）。本分支的快速开始对应 **0.3.1 Node 引擎 + Rust 特征内核**。
-0.3.3 原生运行时、Rust slots 和公开空间接口集中在 PR #4。[原生运行时 PR](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/pull/4)
+维护范围为单人绝境模式（`mode_single_abyss`），当前使用 **0.3.3 Rust 原生运行时**。
+战斗、公开账本、奖励、候选生成和数值编码在 Rust 中执行，Python 提供 Gymnasium 接口和采样入口。
 
 ## 快速开始
 
-使用 Python 3.12、Node.js 22+、Git 和 Rust/Cargo。安装时编译 PyO3 扩展，需要系统链接工具。
+使用 Python 3.12、Git、Rust stable 和系统链接工具，另行准备 Stronghold Protocol 0.3.3 数据目录。
 
 ```sh
 git clone https://github.com/ArkStrongholdRL/ArkGuardRL-Core.git
 cd ArkGuardRL-Core
 python -m pip install -e '.[gym]'
-
-git clone https://github.com/sganggs/Stronghold-Protocol.git ../Stronghold-Protocol
-git -C ../Stronghold-Protocol checkout c9d804f470b8d7422ae04eb66faf671cef21ad52
+PYO3_PYTHON="$(command -v python)" cargo build --release --locked -p arkguard-python
 ```
 
-保持外部引擎 checkout 干净，并保留完整的 `data/*.json`。`engine_root` 指向其仓库根目录。
-该版本包含所需 JSON，环境会在后台启动引擎。
+CI 提供 Python 3.12 的 Linux x64、Windows x64 和 macOS Intel／Apple Silicon 模块。
+下例动态库路径适用于 macOS，Linux 使用 `target/release/lib_native.so`，Windows 使用 CI 产物 `_native*.pyd` 的实际路径。[跨平台构建](benchmarks/README.md#跨平台构建)
 
 ### 运行一局
 
 ```python
 import gymnasium as gym
-import arkguardrl_core.gym_env
+import arkguardrl_core.native_gym
 
-with gym.make("ArkGuardRL-v0", engine_root="../Stronghold-Protocol") as env:
+with gym.make(
+    "ArkGuardRL-v1",
+    data_root="/path/to/0.3.3/data",
+    core="band_sarkazb",
+    native_library="target/release/lib_native.dylib",
+) as env:
     env.action_space.seed(42)
     obs, info = env.reset(seed=42)
     while True:
@@ -72,11 +75,14 @@ with gym.make("ArkGuardRL-v0", engine_root="../Stronghold-Protocol") as env:
 
 | 接口 | 用途 |
 | --- | --- |
-| `ArkGuardRL-v0` | 单环境 Gymnasium 决策循环 |
+| `ArkGuardRL-v1` | 原生单环境 Gymnasium 决策循环 |
 | `SyncVectorEnv`／`AsyncVectorEnv` | 多环境采样，每个环境持有独立会话 |
+| Rust slots | 1–64 个环境，支持局部重置和部分槽位推进 |
+| `env.unwrapped.public_spatial()` | 读取公开地图、当前模板路线及敌人预览关联 |
 | `env.unwrapped.catalog.definitions()` | 读取公开静态定义 |
 | `info` | 检查动作接受结果、奖励分项、引擎种子及结束原因 |
 
+核心支持阿米娅（`band_amiya`）、萨卡兹（`band_sarkazb`）、陈（`band_chen`）和休露丝（`band_sciurus`）。
 观测为 NumPy 字典。动作索引引用当前状态的候选行，候选容量默认 16,384。
 
 | 字段 | 形状与类型 |
@@ -94,19 +100,29 @@ with gym.make("ArkGuardRL-v0", engine_root="../Stronghold-Protocol") as env:
 - 奖励由 `NativeProgressCore` 计算，分项见 `info["reward_components"]`。
 - 自然结束返回 `terminated`。`max_decisions`、`max_advances` 或 `wall_seconds` 耗尽时返回 `truncated`、真实后继观测和 `info["reason"]`。引擎或传输错误抛异常。
 - 难度与预算在构造时设置。单环境 `reset(options=...)` 接受空配置。
-- Async 使用 `spawn` 时，入口需要 `if __name__ == "__main__"`。当前 v0 每环境持有独立 Node 进程。
+- Async 使用 `spawn` 时，入口需要 `if __name__ == "__main__"`。每个环境持有独立原生会话。
+
+</details>
+
+公开空间增量读取使用 `env.unwrapped.public_spatial_update(key)`。真实记录回归和战斗轨迹导出入口见基准文档。[空间接口与渲染回放](benchmarks/README.md)
+
+<details>
+<summary>Node v0 兼容入口</summary>
+
+旧调用通过 `import arkguardrl_core.gym_env` 注册 `ArkGuardRL-v0`，构造时传入 `engine_root`。
+该入口使用 Node.js 22+ 和 0.3.1 引擎／数据。
 
 </details>
 
 ## 性能
 
-| 配置 | 决策／秒 |
+| 配置与计时范围 | 决策／秒 |
 | --- | ---: |
-| Gym Sync，1 环境 | 494.75 |
-| Gym Async，共享内存，4 环境 | 937.19 |
+| 原生 Gym 单环境，购买部署 | 437.2 |
+| Rust slots，4 环境／4 线程，含空间 JSON 读取 | 585.7 |
 
-2026-11-02，Apple M5／16 GiB，Node 0.3.1 + Rust 特征内核。每环境预热 64 步、测量 1,024 步，表中为六次测量中位数。
-计时包含观测、奖励、Gym 通信与循环内 reset，动作按掩码随机采样。完整原始记录、分布图和复现命令见性能文档。[性能基准](benchmarks/README.md)
+以上为原生候选准备与索引执行后的完整对局 A/B 记录，计时覆盖环境执行与接口开销。
+模型前向与训练另行计时。负载定义、真实记录回归、历史测量与复现命令见性能文档。[性能基准](benchmarks/README.md)
 
 ## 文档
 
@@ -114,7 +130,7 @@ with gym.make("ArkGuardRL-v0", engine_root="../Stronghold-Protocol") as env:
 | --- | --- |
 | [性能基准](benchmarks/README.md) | 测量结果、计时边界与运行命令 |
 | [Rust 特征内核](docs/RUST-ROUTES.md) | 动作与观测编码的职责及 ABI |
-| [原生迁移笔记](docs/NATIVE-033.md) | 0.3.3 引擎的开发记录 |
+| [原生迁移笔记](docs/NATIVE-033.md) | 0.3.3 原生运行时实现范围与迁移记录 |
 | [问题反馈](https://github.com/ArkStrongholdRL/ArkGuardRL-Core/issues) | 接口问题与可复现报告 |
 
 ## 许可与致谢

@@ -18,6 +18,8 @@ pub struct Enemy {
     pub profile: Profile,
     pub fly: bool,
     pub leader: bool,
+    pub elite: bool,
+    pub machine: bool,
     pub lpr: f64,
     pub block_weight: f64,
     pub immune: BTreeSet<String>,
@@ -187,10 +189,17 @@ impl Enemy {
                 .or_else(|| raw["motion"].as_str())
                 .unwrap_or("WALK")
                 .eq_ignore_ascii_case("FLY"),
+            machine: raw["tags"]
+                .as_array()
+                .is_some_and(|tags| tags.iter().any(|v| v == "machine")),
             leader: raw["rank"]
                 .as_str()
                 .unwrap_or("NORMAL")
                 .eq_ignore_ascii_case("BOSS"),
+            elite: !raw["rank"]
+                .as_str()
+                .unwrap_or("NORMAL")
+                .eq_ignore_ascii_case("NORMAL"),
             lpr: number(
                 first(st, &["lpr"]),
                 number(first(raw, &["lpr", "lifePointReduce"]), 1.),
@@ -273,6 +282,7 @@ impl Enemy {
         u.ep_resistance = self.ep_resistance;
         u.elemental_resistance = self.elemental_resistance;
         u.element_leader = self.leader;
+        u.targeting.elite = self.elite;
         Ok(u)
     }
 }
