@@ -3,7 +3,6 @@
 Alternates order each repeat and records the load average around each block,
 so a machine-load spike is visible instead of being read as a backend result.
 """
-import argparse
 import json
 import os
 import statistics
@@ -13,11 +12,8 @@ from functools import partial
 import gymnasium as gym
 import numpy as np
 from arkguardrl_core.native_gym import ArkGuardNativeEnv
-from bench_slots import Policy
-from native_batch_slots import NativeSlotBatch
-
-REFERENCE_LIBRARY = None
-
+from benchmarks.bench_slots import Policy
+from benchmarks.native_batch_slots import NativeSlotBatch
 
 def load():
     """Load average where the platform reports one; Windows reports CPU instead."""
@@ -53,10 +49,9 @@ def make_worker(data_root, core, library, cpus, priority):
     return env
 
 
-def gym_block(n, steps):
+def gym_block(n, steps, data_root, core, reference_library, cpus, priority):
     envs = gym.vector.AsyncVectorEnv(
-        [partial(make_worker, ARGS.data_root, ARGS.core, REFERENCE_LIBRARY,
-                 ARGS.cpus, ARGS.priority) for _ in range(n)],
+        [partial(make_worker, data_root, core, reference_library, cpus, priority) for _ in range(n)],
         context='spawn', shared_memory=True,
         autoreset_mode=gym.vector.AutoresetMode.DISABLED)
     try:
@@ -75,9 +70,9 @@ def gym_block(n, steps):
         envs.close()
 
 
-def slot_block(n, steps, threads):
-    with NativeSlotBatch(ARGS.data_root, core=ARGS.core, num_envs=n, threads=threads,
-                         native_library=ARGS.slots_library) as batch:
+def slot_block(n, steps, threads, data_root, core, slots_library):
+    with NativeSlotBatch(data_root, core=core, num_envs=n, threads=threads,
+                         native_library=slots_library) as batch:
         obs, _ = batch.reset(seed=42)
         policy = Policy(n)
         policy.reset()
@@ -91,35 +86,22 @@ def slot_block(n, steps, threads):
         return n * steps / (time.perf_counter() - started)
 
 
-def main():
-    global ARGS, REFERENCE_LIBRARY
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data-root', required=True)
-    parser.add_argument('--core', default='band_chen')
-    parser.add_argument('--reference-library', required=True)
-    parser.add_argument('--slots-library', required=True)
-    parser.add_argument('--envs', type=int, default=4)
-    parser.add_argument('--threads', type=int, default=4)
-    parser.add_argument('--steps', type=int, default=192)
-    parser.add_argument('--repeats', type=int, default=4)
-    parser.add_argument('--cpus', help="Comma separated CPU indexes applied to every measured process")
-    parser.add_argument('--priority', choices=('normal', 'high'),
-                        help='Process priority applied to every measured process (Windows)')
-    parser.add_argument('--out')
-    ARGS = parser.parse_args()
-    ARGS.cpus = [int(c) for c in ARGS.cpus.split(',')] if ARGS.cpus else None
-    REFERENCE_LIBRARY = ARGS.reference_library
-    n = ARGS.envs
+def run(*, data_root, reference_library, slots_library, core="band_chen",
+        envs=4, threads=4, steps=192, repeats=4, cpus=None, priority=None,
+        output=None):
+    if priority not in (None, "normal", "high"):
+        raise ValueError("Invalid process priority")
+    n = envs
     records = {'gym': [], 'slots': []}
-    for repeat in range(ARGS.repeats):
+    for repeat in range(repeats):
         order = ('gym', 'slots') if repeat % 2 == 0 else ('slots', 'gym')
         for name in order:
             before = load()
             if name == 'gym':
-                value = gym_block(n, ARGS.steps)
+                value = gym_block(n, steps, data_root, core, reference_library, cpus, priority)
             else:
-                scheduling(ARGS.cpus, ARGS.priority)
-                value = slot_block(n, ARGS.steps, ARGS.threads)
+                scheduling(cpus, priority)
+                value = slot_block(n, steps, threads, data_root, core, slots_library)
             after = load()
             records[name].append({'decisions_per_second': value, 'before': before, 'after': after})
             print(json.dumps({name: round(value, 1), 'repeat': repeat,
@@ -129,14 +111,12 @@ def main():
     summary['slots_over_gym_pct'] = 100 * (summary['slots'] / summary['gym'] - 1)
     summary = {k: round(v, 1) for k, v in summary.items()}
     print(json.dumps(summary), flush=True)
-    if ARGS.out:
-        with open(ARGS.out, 'w') as handle:
+    if output:
+        with open(output, 'w') as handle:
             handle.write(json.dumps(dict(
                 scope='Interleaved A/B, scripted numeric policy, masked reset, resets in loop, '
                       'no model/training; load average recorded per block',
-                envs=n, threads=ARGS.threads, steps=ARGS.steps, repeats=ARGS.repeats,
+                envs=n, threads=threads, steps=steps, repeats=repeats,
                 summary=summary, records=records), indent=2) + '\n')
 
-
-if __name__ == '__main__':
-    main()
+    return dict(summary=summary, records=records)

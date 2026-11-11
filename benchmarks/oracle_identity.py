@@ -8,12 +8,12 @@ and compares every result against arkguardrl.contracts.
 
 Run with an environment that has the project's [gym] extras installed, e.g.:
 
-    python benchmarks/oracle_identity.py --data-root ../ArkGuardRL/game/data
+    from benchmarks.oracle_identity import run
+    run(data_root="../ArkGuardRL/game/data", library="target/release/lib_native.dylib")
 
---no-real skips episode collection and checks only handwritten/fuzzed samples.
+Set include_real=False to check only handwritten/fuzzed samples.
 The script writes nothing inside the repository.
 """
-import argparse
 import json
 import os
 from pathlib import Path
@@ -22,12 +22,9 @@ import random
 import shutil
 import struct
 import subprocess
-import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
 
 RUNNER_SOURCE = r'''#[path = __IDENTITY_PATH__]
 mod identity;
@@ -104,10 +101,10 @@ def build_runner(root, keep=False):
         if result.returncode == 0:
             break
     else:
-        raise SystemExit(f"cargo build failed:\n{result.stdout}\n{result.stderr}")
+        raise RuntimeError(f"cargo build failed:\n{result.stdout}\n{result.stderr}")
     binary = build / "target/release/identity-oracle"
     if not binary.exists():
-        raise SystemExit(f"missing built runner at {binary}")
+        raise RuntimeError(f"missing built runner at {binary}")
     return binary, (None if keep else build)
 
 
@@ -121,10 +118,10 @@ def run_rust(binary, requests):
     result = subprocess.run([str(binary)], input=payload, capture_output=True,
                             text=True, timeout=600)
     if result.returncode != 0:
-        raise SystemExit(f"runner failed ({result.returncode}):\n{result.stderr[-4000:]}")
+        raise RuntimeError(f"runner failed ({result.returncode}):\n{result.stderr[-4000:]}")
     lines = result.stdout.splitlines()
     if len(lines) != len(requests):
-        raise SystemExit(f"runner returned {len(lines)} lines for {len(requests)} requests")
+        raise RuntimeError(f"runner returned {len(lines)} lines for {len(requests)} requests")
     return [json.loads(line) for line in lines]
 
 
@@ -405,51 +402,34 @@ def json_samples(requests, seen, count, rng):
             value, "json fuzz")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", default=str(ROOT.parent / "ArkGuardRL/game/data"))
-    default_library = ROOT / ("target/release/lib_native.dylib"
-                              if platform.system() == "Darwin"
-                              else "target/release/lib_native.so")
-    parser.add_argument("--library", default=str(default_library))
-    parser.add_argument("--seeds", default="7,11")
-    parser.add_argument("--max-steps", type=int, default=400)
-    parser.add_argument("--float-samples", type=int, default=5000)
-    parser.add_argument("--json-samples", type=int, default=300)
-    parser.add_argument("--no-real", action="store_true",
-                        help="skip episode collection (handwritten/fuzzed samples only)")
-    parser.add_argument("--keep-build", action="store_true",
-                        help="keep the throwaway crate for debugging")
-    parser.add_argument("--runner-bin", help="reuse an already built runner")
-    parser.add_argument("--show", type=int, default=20,
-                        help="maximum differences to print per group")
-    args = parser.parse_args()
+def run(*, data_root=None, library=None, seeds=(7, 11), max_steps=400,
+        float_count=5000, json_count=300, include_real=True, keep_build=False,
+        runner_bin=None, max_differences=20):
 
     requests, seen = [], set()
     try:
         from arkguardrl import contracts  # noqa: F401  (fail early, clear message)
     except ImportError as exc:
-        raise SystemExit(f"run from the repository with its dependencies installed: {exc}")
+        raise ValueError(f"run from the repository with its dependencies installed: {exc}")
 
     real = None
-    if not args.no_real:
-        if not Path(args.data_root).is_dir():
-            raise SystemExit(f"missing data root {args.data_root}; pass --data-root or --no-real")
-        if not Path(args.library).exists():
-            raise SystemExit(f"missing native library {args.library}; pass --library or --no-real")
-        seeds = [int(seed) for seed in args.seeds.split(",") if seed]
-        real = collect_real(requests, seen, args.data_root, args.library, seeds,
-                            args.max_steps)
+    if include_real:
+        if data_root is None or not Path(data_root).is_dir():
+            raise ValueError(f"missing data root {data_root}; provide data_root or set include_real=False")
+        if library is None or not Path(library).exists():
+            raise ValueError(f"missing native library {library}; provide library or set include_real=False")
+        real = collect_real(requests, seen, data_root, library, seeds,
+                            max_steps)
 
     manual_samples(requests, seen)
     rng = random.Random(20261109)
-    float_samples(requests, seen, args.float_samples, rng)
-    json_samples(requests, seen, args.json_samples, random.Random(7))
+    float_samples(requests, seen, float_count, rng)
+    json_samples(requests, seen, json_count, random.Random(7))
 
-    if args.runner_bin:
-        binary, cleanup = Path(args.runner_bin), None
+    if runner_bin:
+        binary, cleanup = Path(runner_bin), None
     else:
-        binary, cleanup = build_runner(ROOT, keep=args.keep_build)
+        binary, cleanup = build_runner(ROOT, keep=keep_build)
 
     try:
         responses = run_rust(binary, requests)
@@ -488,7 +468,7 @@ def main():
         if low is not None and (low < -(2 ** 63) or high > 2 ** 64 - 1):
             print("WARNING: real data exceeds serde_json's 64-bit integer domain")
     else:
-        print("real episodes: skipped (--no-real)")
+        print("real episodes: skipped")
     print(f"requests: {len(requests)}")
 
     print("\n== results ==")
@@ -506,13 +486,13 @@ def main():
             by_group.setdefault(entry[0]["group"], []).append(entry)
         for group, items in sorted(by_group.items()):
             print(f"-- {group} --")
-            for request, want, got in items[:args.show]:
+            for request, want, got in items[:max_differences]:
                 print(f"label: {request['label']}")
                 print(f"input: {json.dumps(request['value'], ensure_ascii=False)}")
                 print(f"python: {json.dumps(want, ensure_ascii=False)}")
                 print(f"rust:   {json.dumps(got, ensure_ascii=False)}")
-            if len(items) > args.show:
-                print(f"... {len(items) - args.show} more in {group}")
+            if len(items) > max_differences:
+                print(f"... {len(items) - max_differences} more in {group}")
 
     show(differences, "differences")
     show(known_differences, "known limitations")
@@ -524,7 +504,3 @@ def main():
           + (f" ({len(known_differences)} known limitation sample(s))"
              if known_differences else ""))
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

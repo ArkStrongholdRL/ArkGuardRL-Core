@@ -1,15 +1,22 @@
 # 性能测量
 
+先执行 `python -m pip install -e ".[gym]"`，从仓库根目录导入以下函数。参数通过 Python 关键字传入，函数返回结果字典，`output` 指定报告路径。
+
 ## 多环境并行
 
 Gym `AsyncVectorEnv` 和 Rust slots 均可继续用于向量化实验。slots 支持 1–64 个环境、显式局部重置及部分槽位推进，输出数组独立持有内存。战斗、公开账本、奖励、公开候选参数准备、枚举与过滤、数值编码在 Rust 中并行执行，直接复用单环境账本和候选模块。Python 负责快照绑定检查及独立输出数组的装配。批量绑定仅提供账本重置、当前候选编码、索引推进及空间读取；选中槽位全部初始化成功后统一提交重置。
 
 ```sh
 PYO3_PYTHON="$(command -v python)" cargo build --release --locked --manifest-path crates/slots/Cargo.toml
-PYTHONPATH=src:benchmarks python benchmarks/bench_slots.py \
-  --data-root /path/to/0.3.3/data \
-  --reference-library target/release/lib_native.dylib \
-  --slots-library crates/slots/target/release/lib_native_slots.dylib
+```
+
+```python
+from benchmarks.bench_slots import run
+
+if __name__ == "__main__":
+    run(data_root="/path/to/0.3.3/data",
+        reference_library="target/release/lib_native.dylib",
+        slots_library="crates/slots/target/release/lib_native_slots.dylib")
 ```
 
 上述动态库名适用于 macOS，Linux 使用 `.so`。Windows 使用 `.pyd`。
@@ -59,30 +66,32 @@ Gym 和 slots 已接入此路径。研究侧 `open_session` 改为按 Python／�
 
 按需导出战斗采样帧和可独立打开的 HTML，默认每 3 个逻辑帧采样一次。JSONL 包含动作、公开状态、地图、单位位置与血量、技能开启状态、弹道和终局结果。最大输出默认 128 MiB，达到上限会报告错误。
 
-```sh
-PYTHONPATH=src python benchmarks/native_replay.py --data-root /path/to/data \
-  --native-library target/release/lib_native.dylib --core band_chen --seed 42 \
-  --out /tmp/replay.jsonl --html /tmp/replay.html
+```python
+from benchmarks.native_replay import run
+
+run(data_root="/path/to/data", native_library="target/release/lib_native.dylib",
+    core="band_chen", seed=42, output="/tmp/replay.jsonl", html_output="/tmp/replay.html")
 ```
 
-默认使用购买部署诊断脚本。复现已有策略时可传入 `--actions actions.json`，文件形如 `{"core":"band_chen","engine_seed":123,"actions":[{"t":"g.ready"}]}`，其中 seed 是原生引擎种子。动作序列应覆盖完整对局，导出结果明确记录胜负。HTML 支持播放、拖动和倍速，也可通过 `native_replay.html` 选择 JSONL 文件。采样式回放使用网格、圆点和血条展示战斗。
+默认使用购买部署诊断脚本。复现已有策略时可传入 `action_file="actions.json"`，文件形如 `{"core":"band_chen","engine_seed":123,"actions":[{"t":"g.ready"}]}`，其中 seed 是原生引擎种子。动作序列应覆盖完整对局，导出结果明确记录胜负。HTML 支持播放、拖动和倍速，也可通过 `native_replay.html` 选择 JSONL 文件。采样式回放使用网格、圆点和血条展示战斗。
 
-`--actions` 也接受上述回放 JSONL，以及含初始种子和动作的 `arkguardrl/native-trajectory-v1` JSONL。导入旧轨迹时，原生会话负责开局配置，记录中的 `g.band` 必须与 `--core` 相同。跨版本规则差异可能导致动作被拒绝或战果变化，导出时会执行动作并计算终局。通关验收添加 `--require-victory`，实际终局失败时命令返回错误。只有画面或状态快照的轨迹可用于播放，重新执行还需要种子和动作。
+`action_file` 也接受上述回放 JSONL，以及含初始种子和动作的 `arkguardrl/native-trajectory-v1` JSONL。导入旧轨迹时，原生会话负责开局配置，记录中的 `g.band` 必须与 `core` 相同。跨版本规则差异可能导致动作被拒绝或战果变化，导出时会执行动作并计算终局。通关验收添加 `require_victory=True`，实际终局失败时函数抛出异常。只有画面或状态快照的轨迹可用于播放，重新执行还需要种子和动作。
 
-Huawei 的 `stronghold-human-seat-trajectory/v1` JSONL 也可作为 `--actions` 输入，使用完整单人绝境记录的原始种子、固定 `diy` 配置和开局重刷次数。导入时移除 `rid`，帧导出省略原记录中被拒绝的动作。当前支持阿米娅、萨卡兹、陈和休露丝核心。自选配置沿用四个槽位 ID，商店、库存、合成、出售与盟约读取组装后的干员数据。当前自选战斗技能实现为克莱门莎 S3，其他自选干员已有数值组装，部署到战斗时会报告尚未支持。
+Huawei 的 `stronghold-human-seat-trajectory/v1` JSONL 也可作为 `action_file` 输入，使用完整单人绝境记录的原始种子、固定 `diy` 配置和开局重刷次数。导入时移除 `rid`，帧导出省略原记录中被拒绝的动作。当前支持阿米娅、萨卡兹、陈和休露丝核心。自选配置沿用四个槽位 ID，商店、库存、合成、出售与盟约读取组装后的干员数据。当前自选战斗技能实现为克莱门莎 S3，其他自选干员已有数值组装，部署到战斗时会报告尚未支持。
 
 ## 真实单人记录回归
 
 当前以 Huawei 的完整单人绝境轨迹作为主要回归输入，保留 9 项针对性 Rust 测试，覆盖预算、回执、快照隔离及已发现的重入错误。本机轨迹存放在忽略目录 `benchmarks/local/huawei-solo/`。
 
-```sh
-PYTHONPATH=src python benchmarks/human_records.py \
-  --records benchmarks/local/huawei-solo --data-root /path/to/data \
-  --native-library target/release/lib_native.dylib \
-  --out benchmarks/local/human-records.json
+```python
+from benchmarks.human_records import run
+
+run(records_dir="benchmarks/local/huawei-solo", data_root="/path/to/data",
+    native_library="target/release/lib_native.dylib",
+    output="benchmarks/local/human-records.json")
 ```
 
-逐决策比较阶段、回合、LP、资金、棋子与装备库存、部署、盟约层数、选择和商店，并比较动作接受情况及最终胜负、通过回合数和隐藏关进度。显示元数据和战斗浮点累计统计在这个比较范围之外。只读的 `g.unitStats` 请求会跳过。缺少种子、尚未支持的核心与房间配置单独报告；漂移或执行错误会让命令返回非零退出码。
+逐决策比较阶段、回合、LP、资金、棋子与装备库存、部署、盟约层数、选择和商店，并比较动作接受情况及最终胜负、通过回合数和隐藏关进度。显示元数据和战斗浮点累计统计在这个比较范围之外。只读的 `g.unitStats` 请求会跳过。缺少种子、尚未支持的核心与房间配置单独报告；漂移或执行错误会让函数抛出异常。
 
 当前 63 份记录共 9,262 个决策，61 份一致、2 份已知漂移、0 执行错误；全部最终胜负、通过回合数及隐藏关进度一致。[回归结果](../../benchmarks/local/huawei-pr-cleanup-regression-20261110.json)
 
@@ -98,11 +107,14 @@ Gym 通过 `ArkGuardNativeEnv(..., diy=picks)` 固定配置。也可先调用 `N
 
 独立 env 测量使用 `.[gym]` 安装与 `gym_env.py`，不加载模型、Torch、PPO 或轨迹采集器：
 
-```sh
-python benchmarks/gym_env.py --engine-root /path/to/engine \
-  --vector sync --envs 1 --steps 256 --repeats 3 --out artifacts/gym-sync-1.json
-python benchmarks/gym_env.py --engine-root /path/to/engine \
-  --vector async --envs 4 --steps 256 --repeats 3 --out artifacts/gym-async-4.json
+```python
+from benchmarks.gym_env import run
+
+if __name__ == "__main__":
+    run(engine_root="/path/to/engine", vector="sync", envs=1,
+        output="artifacts/gym-sync-1.json")
+    run(engine_root="/path/to/engine", vector="async", envs=4,
+        output="artifacts/gym-async-4.json")
 ```
 
 动作在有效候选行中均匀抽样，每个 env 使用独立 RNG。每次重复从相同游戏/RNG 种子重新开始；
@@ -113,10 +125,12 @@ python benchmarks/gym_env.py --engine-root /path/to/engine \
 
 ## 原生绝境单环境
 
-```sh
-python benchmarks/native_session.py --data-root /path/to/Stronghold-Protocol/data \
-  --native-library target/release/lib_native.dylib --cycles 5 --repeats 3 \
-  --out benchmarks/local/native.json
+```python
+from benchmarks.native_session import run
+
+run(data_root="/path/to/Stronghold-Protocol/data",
+    native_library="target/release/lib_native.dylib",
+    output="benchmarks/local/native.json")
 ```
 
 此脚本不加载模型、不训练、不并发调度。三个核心分别以 Gym seed 42、99 生成完整动作序列，
@@ -127,10 +141,12 @@ python benchmarks/native_session.py --data-root /path/to/Stronghold-Protocol/dat
 
 ### 与当前原版 Node 直接对照
 
-```sh
-python benchmarks/node_compare.py --reference-root /path/to/Stronghold-Protocol \
-  --native-library target/release/lib_native.dylib \
-  --out benchmarks/local/node-comparison.json
+```python
+from benchmarks.node_compare import run
+
+run(reference_root="/path/to/Stronghold-Protocol",
+    native_library="target/release/lib_native.dylib",
+    output="benchmarks/local/node-comparison.json")
 ```
 
 使用独立测速桥接的常驻 Node Match，与原生 PyO3 会话重放相同种子、动作；逐局核对终局公开字段。

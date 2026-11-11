@@ -1,5 +1,4 @@
 """Compare Python/Rust ledgers on the same complete Desperation episodes."""
-import argparse
 import json
 from pathlib import Path
 import statistics
@@ -65,20 +64,14 @@ def parity(left, right, seed, actions):
     return len(actions)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--data-root', required=True)
-    parser.add_argument('--native-library', required=True)
-    parser.add_argument('--cycles', type=int, default=20)
-    parser.add_argument('--repeats', type=int, default=5)
-    parser.add_argument('--out', type=Path, required=True)
-    args = parser.parse_args()
-    if min(args.cycles, args.repeats) < 1:
-        parser.error('Positive cycles and repeats required')
-    options = dict(core='band_chen', native_library=args.native_library, profile=True)
+def run(*, data_root, native_library, output, cycles=20, repeats=5):
+    output = Path(output)
+    if min(cycles, repeats) < 1:
+        raise ValueError('Positive cycles and repeats required')
+    options = dict(core='band_chen', native_library=native_library, profile=True)
     results, parity_steps = [], 0
-    with ArkGuardNativeEnv(args.data_root, native_ledger=False, **options) as left, \
-            ArkGuardNativeEnv(args.data_root, native_ledger=True, **options) as right:
+    with ArkGuardNativeEnv(data_root, native_ledger=False, **options) as left, \
+            ArkGuardNativeEnv(data_root, native_ledger=True, **options) as right:
         for roster in (False, True):
             cases = [(seed, *pilot(left, seed, roster)) for seed in (42, 99)]
             for seed, _, actions, _ in cases:
@@ -94,12 +87,12 @@ def main():
             for env in (left, right):
                 measure(env, None, cases, 2, 'gym')
             runs = {'python': [], 'rust': []}
-            for repeat in range(args.repeats):
+            for repeat in range(repeats):
                 order = (('python', left), ('rust', right))
                 if repeat % 2:
                     order = order[::-1]
                 for name, env in order:
-                    runs[name].append(measure(env, None, cases, args.cycles, 'gym'))
+                    runs[name].append(measure(env, None, cases, cycles, 'gym'))
             medians = {name: statistics.median(run['decisions_per_second'] for run in values)
                        for name, values in runs.items()}
             result = dict(workload='buy_deploy' if roster else 'empty',
@@ -107,12 +100,10 @@ def main():
                           runs=runs)
             results.append(result)
             print(json.dumps({key: value for key, value in result.items() if key != 'runs'}), flush=True)
-    output = dict(core='band_chen', seeds=[42, 99], cycles=args.cycles, repeats=args.repeats,
+    output_data = dict(core='band_chen', seeds=[42, 99], cycles=cycles, repeats=repeats,
                   scope='Complete Gym decisions, same release library, alternating Python/Rust ledger runs.',
                   parity_decisions=parity_steps, results=results)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(output, indent=2) + '\n')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(output_data, indent=2) + '\n')
 
-
-if __name__ == '__main__':
-    main()
+    return output_data

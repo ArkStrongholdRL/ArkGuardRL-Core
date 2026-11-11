@@ -373,17 +373,12 @@ def encode_observation(state, catalog, history):
     return encode_decision(state, (), catalog, snapshot)[0]
 
 
-def main():
+def audit(*, engine_root, snapshot=None):
     """Read-only field/catalog audit; does not start games or import Torch."""
-    import argparse
     import json
     from pathlib import Path
     from .catalog import PublicCatalog
-    parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument("--engine-root", required=True)
-    parser.add_argument("--snapshot", help="Optional single raw public observation JSON")
-    args = parser.parse_args()
-    catalog = PublicCatalog(args.engine_root)
+    catalog = PublicCatalog(engine_root)
     from .dynamic import OBS_DIM as WIRE_DIM
     summary = {"schema": FEATURE_SCHEMA, "catalog": catalog.schema,
                "data_sha256": catalog.data_sha256, "wire_observation_dim": WIRE_DIM, "internal_encoder_slots": OBS_DIM, "static_definition_sha256": catalog.definitions()[1],
@@ -417,8 +412,8 @@ def main():
         "partial_ids": [key for key, row in definitions.items() if not mechanism_supported(row)],
         "source": "data/garrisons.json; server/sim/content/garrisons/meta.js",
         "limitation": "Structural garrison coverage only; skills/talents/items and live per-copy counters are incomplete"}
-    if args.snapshot:
-        state = json.loads(Path(args.snapshot).read_text())
+    if snapshot:
+        state = json.loads(Path(snapshot).read_text())
         catalog.validate_state(state)
         observer = PublicProgress()
         observer.observe(state)
@@ -429,8 +424,4 @@ def main():
         summary["snapshot"]["entity_bindings"] = [{"index": i + 1, "kind": row.get("kind"),
             "id": row.get("id"), "area": area} for i, (row, area) in enumerate(tables["raw_entities"])]
         summary["snapshot"]["history_note"] = "Single-snapshot partial progress and empty attempt history; not training evidence"
-    print(json.dumps(summary, ensure_ascii=False, allow_nan=False, indent=2))
-
-
-if __name__ == "__main__":
-    main()
+    return summary
