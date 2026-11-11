@@ -13,7 +13,7 @@ import gymnasium as gym
 import numpy as np
 from arkguardrl_core.native_gym import ArkGuardNativeEnv
 from benchmarks.bench_slots import Policy
-from benchmarks.native_batch_slots import NativeSlotBatch
+from arkguardrl_core.native_batch import NativeSlotBatch
 
 def load():
     """Load average where the platform reports one; Windows reports CPU instead."""

@@ -18,12 +18,11 @@ CI 在 PR、main 推送和手动触发时构建并导入三个模块。Python 3.
 ## 多环境
 
 ```python
-from benchmarks.bench_slots import run
+from arkguardrl_core.native_batch import NativeSlotBatch
 
-if __name__ == "__main__":
-    result = run(data_root="/path/to/data",
-                 reference_library="target/release/lib_native.dylib",
-                 slots_library="crates/slots/target/release/lib_native_slots.dylib")
+with NativeSlotBatch(data_root="/path/to/data", core="band_chen", num_envs=4,
+                     threads=4, native_library="crates/slots/target/release/lib_native_slots.dylib") as env:
+    obs, info = env.reset(seed=42)
 ```
 
 Rust slots 支持 1–64 个环境、局部 reset 和部分槽位 step。Gym Async 使用 `spawn`，调用入口需放在主模块保护内。
@@ -67,9 +66,3 @@ run(data_root="/path/to/data", native_library="target/release/lib_native.dylib",
 原生测速覆盖空阵容和购买部署，计入 reset、公开观测及接口开销，预热和初始化单独处理。Node 对照复用常驻 Match。回归比较动作接受结果、决策状态和最终战果，漂移或执行错误会抛异常。
 
 首页图表使用 2026-11-09 的 Rust／Node 会话对照记录。种子 42／99，每轮十局、共三轮，采用决策吞吐中位数。两端执行相同购买部署动作并核对终局，计时包含 reset 与公开观测。Rust 为 PyO3 JSON 会话，Node 为常驻 Match JSON 桥接。
-
-| 核心 | Node 决策／秒 | Rust 决策／秒 | Rust／Node |
-| --- | ---: | ---: | ---: |
-| 阿米娅 | 403.4 | 532.9 | 1.32× |
-| 萨卡兹 | 279.3 | 380.2 | 1.36× |
-| 陈 | 450.7 | 594.7 | 1.32× |

@@ -5,9 +5,8 @@ from numbers import Integral
 from uuid import uuid4
 
 from arkguardrl.candidates import CandidateBlocked, Decision, DecisionHistory, build_decision
-from arkguardrl.contracts import fingerprint, canonical
+from arkguardrl.contracts import Transition, fingerprint, canonical
 from arkguardrl.decision_session import DecisionSession
-from arkguardrl.environment import Transition
 from .native_env import NativeDecisionEnv
 
 

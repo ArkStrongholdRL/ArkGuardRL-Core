@@ -5,15 +5,13 @@ that owned snapshot. Public transitions are decoded independently from the same
 transport JSON, preserving caller isolation without Python recursive deepcopy.
 """
 from copy import deepcopy
-import importlib.machinery
-import importlib.util
 import json
 from pathlib import Path
 
-from arkguardrl.contracts import action_id
-from arkguardrl.environment import Transition
+from arkguardrl.contracts import Transition, action_id
 from arkguardrl.feedback import PublicProgress
 from arkguardrl.observation import validate_state
+from .native_runtime import load_extension
 
 
 def load_native(library=None):
@@ -23,12 +21,7 @@ def load_native(library=None):
             return _native
         except ImportError as exc:
             raise RuntimeError("Build crates/python and pass its dynamic library as native_library") from exc
-    path = str(Path(library).resolve(strict=True))
-    loader = importlib.machinery.ExtensionFileLoader("_native", path)
-    spec = importlib.util.spec_from_file_location("_native", path, loader=loader)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_extension("_native", library)
 
 
 class NativePool:

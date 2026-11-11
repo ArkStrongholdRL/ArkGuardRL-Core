@@ -11,7 +11,7 @@ import time
 import gymnasium as gym
 import numpy as np
 from arkguardrl_core.native_gym import ArkGuardNativeEnv
-from benchmarks.native_batch_slots import NativeSlotBatch
+from arkguardrl_core.native_batch import NativeSlotBatch
 
 
 class Policy:

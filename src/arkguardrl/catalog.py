@@ -11,9 +11,9 @@ import json
 from pathlib import Path
 import subprocess
 
-from .engine.session import ENGINE_REVISION
 from .observation import validate_state
 
+ENGINE_REVISION = "c9d804f470b8d7422ae04eb66faf671cef21ad52"
 CATALOG_SCHEMA = "arkguardrl/external-public-catalog031-v4"
 
 

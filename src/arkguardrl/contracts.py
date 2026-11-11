@@ -1,10 +1,24 @@
-"""Identities for native actions and their public decision context; no engine queries."""
+"""Public transition records and identities for actions and decision contexts."""
 import hashlib
 import json
 from functools import lru_cache
+from dataclasses import dataclass
 
 ACTION_SCHEMA = "arkguardrl/native-intent-v1"
 CONTEXT_SCHEMA = "arkguardrl/decision-context-v1"
+
+
+@dataclass(frozen=True)
+class Transition:
+    observation: dict
+    terminated: bool
+    truncated: bool
+    reason: str | None
+    accepted: bool | None = None
+    metrics: dict | None = None
+    action_id: str | None = None
+    execution: dict | None = None
+    progress: dict | None = None
 
 
 def canonical(value):

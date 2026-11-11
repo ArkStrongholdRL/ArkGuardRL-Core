@@ -9,9 +9,8 @@ import shutil
 import subprocess
 from threading import Thread
 
+from ..catalog import ENGINE_REVISION
 from ..observation import SCHEMA, validate_state
-
-ENGINE_REVISION = "c9d804f470b8d7422ae04eb66faf671cef21ad52"
 
 
 class NativeSession:

@@ -13,7 +13,6 @@ from arkguardrl.decision_session import DecisionSession
 from arkguardrl.dynamic import OBS_DIM, ACTION_DIM
 from arkguardrl.rewards import NativeProgressCore
 from arkguardrl.routing import SCHEDULES
-from .routes.session import RouteEnv, RouteSessionPool
 
 
 class ArkGuardEnv(gym.Env):
@@ -55,12 +54,14 @@ class ArkGuardEnv(gym.Env):
         self._done = True
 
     def _make_pool(self):
+        from .routes.session import RouteSessionPool
         return RouteSessionPool(inline_geometry=False)
 
     def _load_catalog(self):
         return PublicCatalog(self.engine_root, self.expected_data_sha256)
 
     def _make_environment(self):
+        from .routes.session import RouteEnv
         return RouteEnv(self.engine_root, session_pool=self._pool, deadline=float("inf"),
             expected_data_sha256=self.catalog.data_sha256, timeout=self.timeout,
             max_decisions=self.max_decisions, max_advances=self.max_advances)

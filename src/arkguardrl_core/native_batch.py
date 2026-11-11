@@ -2,8 +2,6 @@
 
 Build the _native_slots extension from crates/slots/Cargo.toml.
 """
-import importlib.machinery
-import importlib.util
 import json
 from copy import deepcopy
 from dataclasses import replace
@@ -13,19 +11,13 @@ from uuid import uuid4
 
 import numpy as np
 from arkguardrl.catalog import PublicCatalog
-from arkguardrl.candidates import Decision
+from arkguardrl.candidates import Decision, MAX_CANDIDATES
+from arkguardrl.dynamic import OBS_DIM, ACTION_DIM
 from arkguardrl.contracts import canonical
 from arkguardrl_core.native_ledger import NativeLedgerHistory
 from arkguardrl_core.native_policy import metadata
+from .native_runtime import load_extension
 
-
-def load_slots(path):
-    path = str(Path(path).resolve(strict=True))
-    loader = importlib.machinery.ExtensionFileLoader('_native_slots', path)
-    spec = importlib.util.spec_from_file_location('_native_slots', path, loader=loader)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 class _Slot:
@@ -53,14 +45,14 @@ class NativeSlotBatch:
     have advanced when a different worker fails. A full reset recovers the batch.
     """
     def __init__(self, data_root, *, core, num_envs=1, threads=1, native_library,
-                 banned=(), max_candidates=16384, max_decisions=1024,
+                 banned=(), max_candidates=MAX_CANDIDATES, max_decisions=1024,
                  max_advances=4096, tick_budget=4096, wall_seconds=None,
                  max_output_bytes=256 << 20):
         if type(num_envs) is not int or not 1 <= num_envs <= 64:
             raise ValueError('num_envs must be 1..64')
         if type(threads) is not int or not 1 <= threads <= num_envs:
             raise ValueError('threads must be 1..num_envs')
-        if type(max_candidates) is not int or not 1 <= max_candidates <= 16384:
+        if type(max_candidates) is not int or not 1 <= max_candidates <= MAX_CANDIDATES:
             raise ValueError('Invalid candidate capacity')
         if any(type(n) is not int or n <= 0 for n in (max_decisions, max_advances)):
             raise ValueError('Invalid decision/advance budgets')
@@ -68,10 +60,10 @@ class NativeSlotBatch:
             raise ValueError('Invalid tick budget')
         if wall_seconds is not None and (not np.isfinite(wall_seconds) or wall_seconds <= 0):
             raise ValueError('Invalid wall budget')
-        output_bytes = num_envs * (4784 * 4 + max_candidates * (41 * 4 + 17) + 10)
+        output_bytes = num_envs * (OBS_DIM * 4 + max_candidates * (ACTION_DIM * 4 + 17) + 10)
         if output_bytes > max_output_bytes:
             raise ValueError('Batch output exceeds memory limit')
-        native = load_slots(native_library)
+        native = load_extension("_native_slots", native_library)
         catalog = native.NativeCatalog(str(Path(data_root).resolve()), 64 << 20)
         self.catalog = PublicCatalog.from_native(catalog)
         self.catalog.definitions()
@@ -121,15 +113,15 @@ class NativeSlotBatch:
             if slot.decision is not None:
                 slot.decision = replace(slot.decision, actions=candidates)
             slot.info['candidate_count'] = len(candidates)
-        obs = dict(observation=np.empty((n, 4784), np.float32),
-                   candidates=np.zeros((n, k, 41), np.float32),
+        obs = dict(observation=np.empty((n, OBS_DIM), np.float32),
+                   candidates=np.zeros((n, k, ACTION_DIM), np.float32),
                    schedules=np.zeros((n, k), np.int64), experts=np.zeros((n, k), np.int64),
                    action_mask=np.zeros((n, k), np.int8))
         for i, slot in enumerate(self.slots):
             obs['observation'][i] = np.frombuffer(buffers[0][i], dtype='<f4')
             count = len(slot.decision.actions) if slot.decision else 0
             if count:
-                obs['candidates'][i, :count] = np.frombuffer(buffers[1][i], dtype='<f4').reshape(count, 41)
+                obs['candidates'][i, :count] = np.frombuffer(buffers[1][i], dtype='<f4').reshape(count, ACTION_DIM)
                 obs['schedules'][i, :count] = np.frombuffer(buffers[2][i], dtype='<i8')
                 obs['experts'][i, :count] = np.frombuffer(buffers[3][i], dtype='<i8')
                 obs['action_mask'][i, :count] = 1
