@@ -437,6 +437,16 @@ impl Context<'_> {
         tile: [i32; 2],
         duration: f64,
     ) -> Result<Option<Id>, String> {
+        // A ranged Manifold split creates an independent timed clone. Reusing
+        // its prepared original would target the skill held by the attack callback.
+        let split_clone = key == "token_10030_mlyss_wtrman"
+            && self
+                .world
+                .unit(self.unit)?
+                .operator
+                .tactical
+                .mlyss()
+                .is_ok_and(|state| state.clone_of.is_some());
         let prepared = self
             .host
             .roster
@@ -446,12 +456,14 @@ impl Context<'_> {
             .iter()
             .copied()
             .find(|&id| {
-                self.world.unit(id).is_ok_and(|u| {
-                    u.deployment.kind == crate::battle::deploy::Kind::Token
-                        && u.deployment.uid.is_some()
-                        && !u.removed
-                        && u.summoner == Some(self.unit)
-                }) && self.host.tac_def(id).is_ok_and(|def| def.key == key)
+                !split_clone
+                    && self.world.unit(id).is_ok_and(|u| {
+                        u.deployment.kind == crate::battle::deploy::Kind::Token
+                            && u.deployment.uid.is_some()
+                            && !u.removed
+                            && u.summoner == Some(self.unit)
+                    })
+                    && self.host.tac_def(id).is_ok_and(|def| def.key == key)
             });
         if let Some(token) = prepared {
             if !Host::tac_up(self.world, token) && !self.redeploy_free(token)? {
