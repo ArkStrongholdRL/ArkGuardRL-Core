@@ -121,6 +121,7 @@ impl Preparation {
                 let tier = self.rules.chess[&holder.key].tier;
                 if sacrifice {
                     let mut removed = self.take(self.find(target).unwrap());
+                    self.remove_tokens(removed.uid);
                     for equipped in removed.items.drain(..) {
                         self.stow(equipped)?;
                     }
