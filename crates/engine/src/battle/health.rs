@@ -167,6 +167,8 @@ pub struct World {
     deployment_sequence: u64,
     attack_sequence: u64,
     units: BTreeMap<Id, Unit>,
+    retired_ally_feedback: Vec<serde_json::Value>,
+    dropped_ally_feedback: u64,
     pools: BTreeMap<Id, StoredPool>,
     players: BTreeMap<Id, PlayerTotals>,
     capacities: [usize; 3],
@@ -233,6 +235,8 @@ impl World {
             deployment_sequence: 0,
             attack_sequence: 0,
             units: BTreeMap::new(),
+            retired_ally_feedback: Vec::new(),
+            dropped_ally_feedback: 0,
             pools: BTreeMap::new(),
             players: BTreeMap::new(),
             capacities: [unit_capacity, pool_capacity, player_capacity],
@@ -290,9 +294,51 @@ impl World {
         if !u.removed || u.pins > 0 || u.blocked_by.is_some() || !u.blocking.is_empty() {
             return Err("Cannot release a retained or still linked unit".into());
         }
+        if u.side == Side::Ally {
+            if self.retired_ally_feedback.len() < 4096 {
+                let feedback = self.ally_feedback(id)?;
+                self.retired_ally_feedback.push(feedback);
+            } else {
+                self.dropped_ally_feedback += 1;
+            }
+        }
         super::enemy::clear(self, id)?;
         self.units.remove(&id);
         Ok(())
+    }
+    fn ally_feedback(&self, id: Id) -> Result<serde_json::Value, String> {
+        let u = self.unit(id)?;
+        let source = u.summoner;
+        let owner_uid = source.and_then(|owner| self.unit(owner).ok()?.deployment.uid);
+        Ok(serde_json::json!({
+            "battleUnitId": id, "sourceUid": u.deployment.uid,
+            "ownerSourceUid": owner_uid,
+            "ownerAttributionComplete": source.is_none() || owner_uid.is_some(),
+            "kind": match u.deployment.kind {
+                super::deploy::Kind::Operator => "operator",
+                super::deploy::Kind::Token => "token",
+                super::deploy::Kind::Device => "device",
+                super::deploy::Kind::Enemy => "enemy",
+            },
+            "damage": u.damage_dealt, "healing": u.healing_done,
+            "taken": u.damage_taken, "attacks": u.attacks,
+            "kills": u.deployment.kills,
+        }))
+    }
+    /// Public measured contributions, including permanently removed allies.
+    pub(crate) fn contribution_feedback(&self) -> Result<serde_json::Value, String> {
+        let mut units = self.retired_ally_feedback.clone();
+        for (&id, u) in &self.units {
+            if u.side == Side::Ally {
+                units.push(self.ally_feedback(id)?);
+            }
+        }
+        Ok(serde_json::json!({
+            "complete": self.dropped_ally_feedback == 0,
+            "partial": self.dropped_ally_feedback != 0,
+            "droppedUnits": self.dropped_ally_feedback,
+            "missingMetrics": [], "units": units,
+        }))
     }
     pub fn pool(&self, id: Id) -> Option<&Pool> {
         self.pools.get(&id).map(|p| &p.value)

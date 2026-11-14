@@ -863,6 +863,10 @@ impl Preparation {
                             .earn(gain.trunc() as u64)
                             .map_err(|_| Error::Capacity)?;
                     }
+                    self.record_economy_feedback(json!({"sourceBond": id,
+                        "effect": "bond_layer_gain_coin", "amount": gain.trunc() as u64,
+                        "destination": if pending { "pendingFunds" } else { "funds" },
+                        "complete": true}));
                 }
             }
             if id == "visiShip" {

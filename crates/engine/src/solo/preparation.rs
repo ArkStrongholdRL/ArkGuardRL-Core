@@ -187,6 +187,8 @@ pub(super) struct Preparation {
     bounties: Vec<bounties::Bounty>,
     meta: Option<Meta>,
     free_refreshes: u64,
+    pub(in crate::solo) economy_feedback: Vec<Value>,
+    pub(in crate::solo) dropped_economy_feedback: u64,
     grid: Arc<DeployMap>,
     boss: bool,
     deploy_cap: usize,
@@ -286,6 +288,8 @@ impl Preparation {
             rules,
             meta,
             free_refreshes: 0,
+            economy_feedback: Vec::new(),
+            dropped_economy_feedback: 0,
             grid: Arc::new(grid),
             boss,
             deploy_cap,
@@ -315,6 +319,14 @@ impl Preparation {
                 .map_err(|e| e.to_string())?;
         }
         Ok(prep)
+    }
+    fn record_economy_feedback(&mut self, mut event: Value) {
+        event["round"] = json!(self.meta.as_ref().map(|meta| meta.round));
+        if self.economy_feedback.len() < 4096 {
+            self.economy_feedback.push(event);
+        } else {
+            self.dropped_economy_feedback += 1;
+        }
     }
     pub fn begin_round(
         &mut self,

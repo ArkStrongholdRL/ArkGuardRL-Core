@@ -42,7 +42,9 @@ impl Session {
         session.public_setup = public_setup;
         Ok(session)
     }
-    pub(in crate::solo) fn from_runner(run: Runner) -> Self {
+    pub(in crate::solo) fn from_runner(mut run: Runner) -> Self {
+        // Setup grants precede the first decision and are not action outcomes.
+        run.take_feedback();
         Self {
             run,
             revision: 0,
@@ -122,6 +124,18 @@ impl Session {
             "accepted": accepted, "rejection": rejection, "ticks": ticks,
         }))
     }
+    fn feedback_receipt(
+        &mut self,
+        accepted: Option<bool>,
+        rejection: Option<&str>,
+        ticks: usize,
+    ) -> Result<Value, String> {
+        let mut receipt = self.receipt(accepted, rejection, ticks)?;
+        let mut feedback = self.run.take_feedback();
+        feedback["revision"] = json!(self.revision);
+        receipt["feedback"] = feedback;
+        Ok(receipt)
+    }
     pub fn status(&self) -> Result<Value, String> {
         self.healthy()?;
         self.receipt(None, None, 0)
@@ -161,7 +175,7 @@ impl Session {
         match result {
             Err(error) if self.run.phase() != Phase::Faulted && is_rejection(&error) => {
                 self.revision += 1;
-                self.receipt(Some(false), Some(&error), 0)
+                self.feedback_receipt(Some(false), Some(&error), 0)
             }
             Err(error) => self.fail(error),
             Ok(()) => {
@@ -170,7 +184,7 @@ impl Session {
                     Ok(a) => a,
                     Err(error) => return self.fail(error),
                 };
-                self.receipt(Some(true), None, advance.ticks)
+                self.feedback_receipt(Some(true), None, advance.ticks)
             }
         }
     }
@@ -185,7 +199,7 @@ impl Session {
             Err(error) => return self.fail(error),
         };
         self.revision += 1;
-        self.receipt(None, None, advance.ticks)
+        self.feedback_receipt(None, None, advance.ticks)
     }
 }
 fn is_rejection(error: &str) -> bool {

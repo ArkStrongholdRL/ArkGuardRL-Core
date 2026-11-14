@@ -141,6 +141,7 @@ pub struct Runner {
     rounds_passed: u32,
     limits: Limits,
     last_result: Option<FieldResult>,
+    battle_feedback: Option<Value>,
     prep: Option<preparation::Preparation>,
     map: crate::battle::runtime::MapConfig,
     draft: Option<draft::Flow>,
@@ -294,6 +295,7 @@ impl Runner {
             rounds_passed: 0,
             limits,
             last_result: None,
+            battle_feedback: None,
             prep: None,
             map: Default::default(),
             draft: None,
@@ -715,6 +717,12 @@ impl Runner {
                 Ok(value) => value,
                 Err(error) => return self.fail(error),
             };
+            let mut feedback = match field.contribution_feedback() {
+                Ok(value) => value,
+                Err(error) => return self.fail(error),
+            };
+            feedback["round"] = json!(self.index + 1);
+            self.battle_feedback = Some(feedback);
             let gains = field.layer_gains();
             if let Err(error) = self.settle(result, layers, &gains) {
                 return self.fail(error);
@@ -743,6 +751,22 @@ impl Runner {
         } else {
             None
         })
+    }
+    pub(in crate::solo) fn take_feedback(&mut self) -> Value {
+        let economy = self
+            .prep
+            .as_mut()
+            .map(|prep| {
+                json!({"events": std::mem::take(&mut prep.economy_feedback),
+                "droppedEvents": std::mem::take(&mut prep.dropped_economy_feedback),
+                "coverage": ["miraShip.freeRefresh", "miraShip.funds", "visiShip.funds",
+                    "investShip.extraGarrisonInvocation"],
+                "complete": false, "partial": true,
+                "missing": ["otherEconomicEffects", "investShip.nonCurrencyOutcomes"]})
+            })
+            .unwrap_or(Value::Null);
+        json!({"schema": "arkguard.public-feedback.v1",
+            "battle": self.battle_feedback.take(), "economy": economy})
     }
     pub fn last_result(&self) -> Result<Option<FieldResult>, String> {
         self.healthy()?;
