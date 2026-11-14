@@ -130,6 +130,11 @@ class NativeLedgerEnv(NativeDecisionEnv):
             raise ValueError('Numeric encoding requires the current public snapshot and catalog')
         return encode(self.session, state, actions, history, native_history=True)
 
+    @property
+    def feedback(self):
+        """Public measured outcomes from the most recent native decision."""
+        return deepcopy(getattr(self, '_ledger', {}).get('feedback'))
+
     def _consume(self, raw):
         ledger = json.loads(raw)
         state = ledger['observation']

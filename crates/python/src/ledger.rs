@@ -14,6 +14,7 @@ pub struct DecisionLedger {
     pub blocked: BTreeSet<String>,
     progress: PublicProgress,
     reward: NativeProgressCore,
+    feedback: Value,
 }
 
 impl DecisionLedger {
@@ -31,6 +32,7 @@ impl DecisionLedger {
             blocked: BTreeSet::new(),
             progress,
             reward,
+            feedback: Value::Null,
         })
     }
 
@@ -45,6 +47,7 @@ impl DecisionLedger {
         #[derive(serde::Serialize)]
         struct Snapshot<'a> {
             observation: &'a Value,
+            feedback: &'a Value,
             history: &'a Value,
             blocked: &'a BTreeSet<String>,
             execution: Option<Value>,
@@ -53,6 +56,7 @@ impl DecisionLedger {
         }
         serde_json::to_string(&Snapshot {
             observation: &self.state,
+            feedback: &self.feedback,
             history: &self.policy_history,
             blocked: &self.blocked,
             execution,
@@ -72,6 +76,7 @@ impl DecisionLedger {
         let before = Arc::clone(&self.state);
         // Preserve the immediate receipt before advancing the resulting battle.
         let mut transport = session.step(action, 0)?;
+        let mut receipts = vec![transport["feedback"].clone()];
         let accepted = transport["accepted"]
             .as_bool()
             .ok_or("Missing action acceptance")?;
@@ -91,6 +96,7 @@ impl DecisionLedger {
                 return Err("Combat budget exhausted before a decision boundary".into());
             }
             transport = session.advance(tick_budget)?;
+            receipts.push(transport["feedback"].clone());
             advances += 1;
             if transport["budgetExhausted"] != true {
                 after = Arc::new(session.observation()?);
@@ -107,6 +113,9 @@ impl DecisionLedger {
             accepted,
         )?;
         let reward = self.reward.step(&before, &after)?;
+        self.feedback = json!({"schema": "arkguard.decision-feedback.v1",
+            "decisionRevision": before["revision"], "resultRevision": after["revision"],
+            "receipts": receipts});
         self.state = after;
         self.snapshot(Some(execution), Some(reward), advances)
     }

@@ -98,7 +98,8 @@ class NativeSlotBatch:
             slot.decision = None
         slot.info = dict(candidate_count=0,
                          phase=slot.state['phase'], round=slot.state['round'],
-                         engine_seed=slot.engine_seed, reason=slot.reason or '')
+                         engine_seed=slot.engine_seed, reason=slot.reason or '',
+                         feedback=deepcopy(slot._ledger.get('feedback')))
 
     def _output(self):
         n, k = self.num_envs, self.max_candidates

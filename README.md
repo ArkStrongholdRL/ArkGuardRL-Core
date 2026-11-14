@@ -71,6 +71,38 @@ Linux 动态库为 `lib_native.so`，Windows 使用 CI 的 `_native*.pyd`。[跨
 - 自然结束为 `terminated`，预算耗尽为 `truncated`，原因见 `info["reason"]`。相同种子可复现，`reset(seed=None)` 延续 RNG 流。
 - Gym 支持 Sync／Async，Rust slots 支持 1–64 个环境及局部重置。Async `spawn` 入口使用 `if __name__ == "__main__"`。
 
+### 逐决策公开反馈
+
+NativeSolo 和 NativeBatch 的 decision ledger JSON 现在包含独立的 `feedback` 字段。
+`NativeLedgerEnv.feedback` 和 Rust slots 的 `info["feedback"]` 返回该侧带记录。
+重置时为 `null`，每次决策替换为 `arkguard.decision-feedback.v1`，包含
+`decisionRevision`、`resultRevision` 和按 transport revision 排列的 `receipts`。
+每个 receipt 使用 `arkguard.public-feedback.v1`，携带 `revision`、`battle`、`economy`。
+反馈由动作及后续自动战斗共同生成，初始设置授予发生在首个决策之前。
+
+`battle` 在战斗结算时包含 1 起算 `round`、`units`、`complete`、`partial`、
+`droppedUnits`、`missingMetrics`。每行有局内 `battleUnitId`、准备阶段 `sourceUid`、
+召唤者 `ownerSourceUid`、`ownerAttributionComplete`、`kind`，以及真实累计的
+`damage`、`healing`、`taken`、`attacks`、`kills`。
+`damage` 是异阵营归属伤害，`taken` 是实际 HP 损失，`healing` 是有效治疗量，
+`attacks` 使用现有攻击事件计数，`kills` 使用 `deployment.kills` 的直接击杀归属。
+直接击杀计数与出怪 ledger 的 `creditedKills` 有各自口径，召唤物单列，调用方可按
+`ownerSourceUid` 汇总。准备棋子 UID 缺失或召唤者已释放时对应值为 `null`，
+归属缺失独立标记。最多保留 4096 条已移除盟友的最终统计，另加入结算时仍在
+注册表中的盟友（受现有 unit 容量约束）。移除记录超出后 `droppedUnits > 0`、
+`partial=true`。完整性描述计数保留情况，技能实现覆盖另行判断。
+当前接口未提供阻挡次数和阻挡时长。
+
+`economy.events` 包含 1 起算 `round` 和 `sourceBond`、`effect`。
+`miraShip`／`visiShip` 的层数返金报告实际 `amount` 和入账 `destination`
+（`funds` 或 `pendingFunds`），`miraShip` 免费刷新报告已授予次数。
+`investShip` 报告额外驻守调用的 `sourceUid`、`garrisonId`、1 起算 `invocation`，
+以及实际 `fundsDelta`、`pendingFundsDelta`、`freeRefreshesDelta`。
+该增量包含调用内嵌套效果，返金事件可能同时描述其中的入账，消费方须避免重复累计。
+物品和层数等非货币结果尚缺归属，故 invest 事件 `complete=false`。
+经济总对象始终标 `complete=false`、`partial=true`，用 `coverage`／`missing` 列明范围。
+单次累积最多保留 4096 个经济事件，截断数见 `droppedEvents`。
+
 ## 性能
 
 ![同种子同动作购买部署对局，Rust 相对 Node 在三个核心上为 1.32–1.36 倍](docs/assets/benchmark-throughput.svg)

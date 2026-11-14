@@ -176,8 +176,21 @@ impl Preparation {
                     }
                 }
             }
-            for _ in 0..self.gain_repeat(hook)? {
+            for invocation in 0..self.gain_repeat(hook)? {
+                let before = (player.funds, player.pending, self.free_refreshes);
                 self.run_rule(&rule, &call, player)?;
+                if invocation > 0 {
+                    self.record_economy_feedback(json!({
+                        "sourceBond": "investShip", "effect": "extraGarrisonInvocation",
+                        "sourceUid": call.piece.uid, "garrisonId": id,
+                        "invocation": invocation + 1,
+                        "fundsDelta": player.funds as i64 - before.0 as i64,
+                        "pendingFundsDelta": player.pending as i64 - before.1 as i64,
+                        "freeRefreshesDelta": self.free_refreshes as i64 - before.2 as i64,
+                        "complete": false,
+                        "missing": ["nonCurrencyOutcomes"],
+                    }));
+                }
             }
         }
         Ok(())
@@ -352,6 +365,9 @@ impl Preparation {
                     if self.meta.as_mut().unwrap().rng.next_f64() < chance {
                         self.free_refreshes =
                             add(self.free_refreshes, 1).map_err(|_| Error::Capacity)?;
+                        self.record_economy_feedback(json!({"sourceBond": "miraShip",
+                            "effect": "bond_refresh_shop_next_free", "amount": 1,
+                            "destination": "freeRefreshes", "complete": true}));
                     }
                 }
             }

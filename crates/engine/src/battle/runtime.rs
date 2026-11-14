@@ -814,6 +814,14 @@ impl Field {
     }
     /// Owned accounting snapshot. This internal field result is not a policy
     /// observation and exposes no provisional success for a faulted execution.
+    /// Settled public event counters only, separate from policy observations.
+    pub fn contribution_feedback(&self) -> Result<Value, String> {
+        self.healthy()?;
+        if !self.finished() {
+            return Err("Contribution feedback requires completed combat".into());
+        }
+        self.core.world.contribution_feedback()
+    }
     pub fn result(&self) -> Result<FieldResult, String> {
         self.healthy()?;
         if !self.finished() {
