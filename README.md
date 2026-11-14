@@ -88,8 +88,9 @@ NativeSolo 和 NativeBatch 的 decision ledger JSON 现在包含独立的 `feedb
 `attacks` 使用现有攻击事件计数，`kills` 使用 `deployment.kills` 的直接击杀归属。
 直接击杀计数与出怪 ledger 的 `creditedKills` 有各自口径，召唤物单列，调用方可按
 `ownerSourceUid` 汇总。准备棋子 UID 缺失或召唤者已释放时对应值为 `null`，
-归属缺失独立标记。永久移除盟友的最终统计保留，最多 4096 行，超出后
-`droppedUnits > 0`、`partial=true`。完整性描述计数保留情况，技能实现覆盖另行判断。
+归属缺失独立标记。最多保留 4096 条已移除盟友的最终统计，另加入结算时仍在
+注册表中的盟友（受现有 unit 容量约束）。移除记录超出后 `droppedUnits > 0`、
+`partial=true`。完整性描述计数保留情况，技能实现覆盖另行判断。
 当前接口未提供阻挡次数和阻挡时长。
 
 `economy.events` 包含 1 起算 `round` 和 `sourceBond`、`effect`。
